@@ -171,4 +171,100 @@ describe('normalizeScenarioPreviewResponse', () => {
     expect(result.rawShape).toContain('stories');
     expect(result.rawShape).toContain('totalScenarios');
   });
+
+  it('supports { scenarios: [...] } top-level from MCP runner', () => {
+    const input = {
+      scenarios: [
+        { sourceIssueKey: 'AA-1', title: 'Login test', steps: ['1. Open page\nEsperado: Page loads'], expectedResult: 'Success', preconditions: ['User exists'] },
+        { sourceIssueKey: 'AA-1', title: 'Logout test', steps: ['1. Click logout\nEsperado: Logged out'], expectedResult: 'Done', preconditions: [] },
+        { sourceIssueKey: 'AA-2', title: 'Search test', steps: ['1. Type query'], expectedResult: 'Results shown' },
+      ],
+      rejected: [{ sourceIssueKey: 'AA-3', reason: 'Not executable' }],
+      summary: { generated: 3, valid: 3, invalid: 0, rejected: 1 },
+    };
+    const result = normalizeScenarioPreviewResponse(input);
+    expect(result.stories).toHaveLength(2);
+    expect(result.stories[0].jiraKey).toBe('AA-1');
+    expect(result.stories[0].scenarios).toHaveLength(2);
+    expect(result.stories[1].jiraKey).toBe('AA-2');
+    expect(result.stories[1].scenarios).toHaveLength(1);
+    expect(result.totalScenarios).toBe(3);
+  });
+
+  it('groups flat scenarios by sourceIssueKey into stories', () => {
+    const input = {
+      scenarios: [
+        { sourceIssueKey: 'AA-82', title: 'Escenario 1', steps: ['1. Do thing'], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'Escenario 2', steps: ['1. Do other'], preconditions: [] },
+      ],
+    };
+    const result = normalizeScenarioPreviewResponse(input);
+    expect(result.stories).toHaveLength(1);
+    expect(result.stories[0].jiraKey).toBe('AA-82');
+    expect(result.stories[0].scenarioCount).toBe(2);
+    expect(result.stories[0].scenarios).toHaveLength(2);
+    expect(result.stories[0].scenarios[0].refs).toBe('AA-82');
+  });
+
+  it('falls back to jiraKey when sourceIssueKey is missing', () => {
+    const input = {
+      scenarios: [
+        { jiraKey: 'BB-1', title: 'Test', steps: [], preconditions: [] },
+      ],
+    };
+    const result = normalizeScenarioPreviewResponse(input);
+    expect(result.stories).toHaveLength(1);
+    expect(result.stories[0].jiraKey).toBe('BB-1');
+  });
+
+  it('converts MCP steps with Esperado separator to content/expected', () => {
+    const result = normalizeScenarioPreviewResponse({
+      scenarios: [
+        { sourceIssueKey: 'AA-1', title: 'Step test', steps: ['1. Click\nEsperado: Dialog opens', '2. Confirm'], preconditions: [] },
+      ],
+    });
+    expect(result.stories[0].scenarios[0].custom_steps_separated).toHaveLength(2);
+    expect(result.stories[0].scenarios[0].custom_steps_separated[0].content).toContain('1. Click');
+    expect(result.stories[0].scenarios[0].custom_steps_separated[0].expected).toBe('Dialog opens');
+    expect(result.stories[0].scenarios[0].custom_steps_separated[1].expected).toBe('');
+  });
+
+  it('sets expectedResult as custom_expected when present', () => {
+    const result = normalizeScenarioPreviewResponse({
+      scenarios: [
+        { sourceIssueKey: 'AA-1', title: 'Test', steps: [], preconditions: [], expectedResult: 'All good' },
+      ],
+    });
+    expect(result.stories[0].scenarios[0].custom_expected).toBe('All good');
+  });
+
+  it('does not filter scenarios by status — status field is not required', () => {
+    const result = normalizeScenarioPreviewResponse({
+      scenarios: [
+        { sourceIssueKey: 'AA-1', title: 'No status scenario', steps: ['1. Test'], preconditions: [] },
+      ],
+    });
+    expect(result.stories).toHaveLength(1);
+    expect(result.stories[0].scenarios[0].title).toBe('No status scenario');
+  });
+
+  it('returns totalScenarios=0 when scenarios is empty even if rejected>0', () => {
+    const result = normalizeScenarioPreviewResponse({
+      scenarios: [],
+      rejected: [{ sourceIssueKey: 'AA-1', reason: 'Not executable' }],
+    });
+    expect(result.stories).toHaveLength(0);
+    expect(result.totalScenarios).toBe(0);
+  });
+
+  it('uses scenarios.length for totalScenarios when no explicit totalScenarios/total/count', () => {
+    const result = normalizeScenarioPreviewResponse({
+      scenarios: [
+        { sourceIssueKey: 'AA-1', title: 'S1', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-1', title: 'S2', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-2', title: 'S3', steps: [], preconditions: [] },
+      ],
+    });
+    expect(result.totalScenarios).toBe(3);
+  });
 });

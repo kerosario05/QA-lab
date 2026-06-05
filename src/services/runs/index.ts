@@ -31,6 +31,13 @@ export interface RunStatusData {
   currentTest?: string;
 }
 
+export function toRunLogEntry(entry: { line?: string; message?: string; level?: string; timestamp?: string }): LogEntry {
+  if (entry.line !== undefined) {
+    return { message: entry.line, timestamp: undefined, level: undefined };
+  }
+  return { message: entry.message ?? '', level: entry.level, timestamp: entry.timestamp };
+}
+
 /** Callbacks para el stream SSE de logs */
 export interface StreamCallbacks {
   onLog:    (entry: LogEntry) => void;

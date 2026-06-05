@@ -87,8 +87,24 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
       return { ok: false, errorCode, error: errorMsg, message: `HTTP ${res.status}` };
     }
 
+    const rawScenariosCount = Array.isArray(parsed.scenarios) ? parsed.scenarios.length : 0;
+    const rawRejectedCount = Array.isArray(parsed.rejected) ? parsed.rejected.length : 0;
+    const firstKeys = rawScenariosCount > 0
+      ? (parsed.scenarios as any[]).slice(0, 3).map((s: any) => s.sourceIssueKey ?? s.jiraKey ?? s.title ?? '?').join(',')
+      : 'none';
+
+    console.log(`[scenario-preview] provider rawShape=${Object.keys(parsed).join(',')}`);
+    console.log(`[scenario-preview] provider counts scenarios=${rawScenariosCount} rejected=${rawRejectedCount}`);
+    if (rawScenariosCount > 0) {
+      console.log(`[scenario-preview] provider firstScenarioKeys=${firstKeys}`);
+    }
+    if (rawRejectedCount > 0) {
+      const firstReasons = (parsed.rejected as any[]).slice(0, 3).map((r: any) => r.reason ?? '?').join(' | ');
+      console.log(`[scenario-preview] provider firstRejectedReasons=${firstReasons}`);
+    }
+
     const normalized = normalizeScenarioPreviewResponse(parsed);
-    console.log(`[scenario-preview] provider response status=${res.status} rawShape=${normalized.rawShape} totalScenarios=${normalized.totalScenarios}`);
+    console.log(`[scenario-preview] normalized stories=${normalized.stories.length} totalScenarios=${normalized.totalScenarios}`);
 
     return {
       ok: true,
