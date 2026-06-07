@@ -30,6 +30,11 @@ export interface ActiveRun {
   project: string;
   triggered: string;
   startedAt: string;
+  completedAt?: string;
+  finishedAt?: string;
+  lastEventAt?: string;
+  receivedFinalEventAt?: string;
+  durationMs?: number;
   progress: number;
   total: number;
   completed: number;

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  computeLiveExecutionElapsedMs,
   computeLiveExecutionMetrics,
+  getLiveExecutionElapsedSeconds,
   getLiveExecutionOutcome,
   getLiveExecutionStatusText,
+  isTerminalRunStatus,
 } from './state';
 import type { ActiveRun } from '../../types';
 
@@ -11,7 +14,7 @@ const baseRun: ActiveRun = {
   jobId: 'job-1',
   project: 'Kiosko',
   triggered: 'Carlos',
-  startedAt: 'ahora',
+  startedAt: '2026-06-05T10:00:00.000Z',
   progress: 0,
   total: 7,
   completed: 0,
@@ -20,7 +23,6 @@ const baseRun: ActiveRun = {
   currentTest: '',
   eta: '',
   status: 'running',
-  jobType: 'scenario-preview',
 };
 
 describe('LiveExecution state', () => {
@@ -161,5 +163,53 @@ describe('LiveExecution state', () => {
     expect(outcome.isTechnicalFailure).toBe(false);
     expect(outcome.subtitle).toContain('7 de 8');
     expect(metrics.dominantFailure).toBe(null);
+  });
+
+  it('isTerminalRunStatus detecta estados finales', () => {
+    expect(isTerminalRunStatus('completed')).toBe(true);
+    expect(isTerminalRunStatus('completed_with_failures')).toBe(true);
+    expect(isTerminalRunStatus('failed')).toBe(true);
+    expect(isTerminalRunStatus('cancelled')).toBe(true);
+    expect(isTerminalRunStatus('stopped')).toBe(true);
+    expect(isTerminalRunStatus('timeout')).toBe(true);
+    expect(isTerminalRunStatus('error')).toBe(true);
+    expect(isTerminalRunStatus('running')).toBe(false);
+  });
+
+  it('elapsed en running usa Date.now - startedAt', () => {
+    const now = new Date('2026-06-05T10:00:12.000Z').getTime();
+    expect(computeLiveExecutionElapsedMs(baseRun, { status: 'running' }, now)).toBe(12_000);
+    expect(getLiveExecutionElapsedSeconds(baseRun, { status: 'running' }, now)).toBe(12);
+  });
+
+  it('elapsed terminal usa durationMs cuando viene del backend', () => {
+    const now = new Date('2026-06-05T10:01:00.000Z').getTime();
+    expect(
+      computeLiveExecutionElapsedMs(baseRun, {
+        status: 'completed',
+        durationMs: 42_000,
+        completedAt: '2026-06-05T10:00:42.000Z',
+      }, now),
+    ).toBe(42_000);
+  });
+
+  it('elapsed terminal usa completedAt-startedAt cuando no hay durationMs', () => {
+    const now = new Date('2026-06-05T10:01:00.000Z').getTime();
+    expect(
+      computeLiveExecutionElapsedMs(baseRun, {
+        status: 'completed',
+        completedAt: '2026-06-05T10:00:42.000Z',
+      }, now),
+    ).toBe(42_000);
+  });
+
+  it('elapsed terminal falla sin seguir avanzando si solo hay finishedAt', () => {
+    const now = new Date('2026-06-05T10:01:00.000Z').getTime();
+    expect(
+      computeLiveExecutionElapsedMs(baseRun, {
+        status: 'failed',
+        finishedAt: '2026-06-05T10:00:42.000Z',
+      }, now),
+    ).toBe(42_000);
   });
 });

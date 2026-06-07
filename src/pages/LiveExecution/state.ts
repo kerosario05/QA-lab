@@ -29,6 +29,12 @@ export type LiveExecutionStatusLike = {
   currentTest?: string;
   currentCase?: string;
   errorMessage?: string;
+  startedAt?: string;
+  completedAt?: string;
+  finishedAt?: string;
+  lastEventAt?: string;
+  receivedFinalEventAt?: string;
+  durationMs?: number;
   summary?: LiveExecutionSummaryLike;
 };
 
@@ -54,8 +60,62 @@ export type LiveExecutionOutcome = {
   usesObservationsCopy: boolean;
 };
 
+const TERMINAL_STATUSES = new Set([
+  'completed',
+  'completed_with_failures',
+  'failed',
+  'cancelled',
+  'stopped',
+  'timeout',
+  'error',
+  'done',
+]);
+
 function getNumeric(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function parseDateMs(value?: string | null): number | null {
+  if (!value?.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function isTerminalRunStatus(status?: string | null): boolean {
+  if (!status?.trim()) return false;
+  return TERMINAL_STATUSES.has(status.trim().toLowerCase());
+}
+
+export function getRunStartTimeMs(run: Pick<ActiveRun, 'startedAt'> | null, data?: LiveExecutionStatusLike): number | null {
+  return parseDateMs(data?.startedAt) ?? parseDateMs(run?.startedAt ?? null);
+}
+
+export function getRunEndTimeMs(data?: LiveExecutionStatusLike): number | null {
+  return parseDateMs(data?.completedAt)
+    ?? parseDateMs(data?.finishedAt)
+    ?? parseDateMs(data?.receivedFinalEventAt)
+    ?? parseDateMs(data?.lastEventAt)
+    ?? null;
+}
+
+export function computeLiveExecutionElapsedMs(
+  run: Pick<ActiveRun, 'startedAt'> | null,
+  data?: LiveExecutionStatusLike,
+  now: number = Date.now(),
+): number {
+  const startedAtMs = getRunStartTimeMs(run, data);
+  if (startedAtMs == null) return 0;
+
+  const durationMs = getNumeric(data?.durationMs);
+  if (isTerminalRunStatus(data?.status)) {
+    const endMs = getRunEndTimeMs(data);
+    if (durationMs != null) return Math.max(0, durationMs);
+    if (endMs != null) return Math.max(0, endMs - startedAtMs);
+    return 0;
+  }
+
+  if (durationMs != null) return Math.max(0, durationMs);
+  return Math.max(0, now - startedAtMs);
 }
 
 export function computeLiveExecutionMetrics(
@@ -106,6 +166,14 @@ export function computeLiveExecutionMetrics(
       return ordered[0]?.[0] ?? null;
     })(),
   };
+}
+
+export function getLiveExecutionElapsedSeconds(
+  run: Pick<ActiveRun, 'startedAt'> | null,
+  data?: LiveExecutionStatusLike,
+  now: number = Date.now(),
+): number {
+  return Math.floor(computeLiveExecutionElapsedMs(run, data, now) / 1000);
 }
 
 export function getLiveExecutionStatusText(status: string, completed: number): string {

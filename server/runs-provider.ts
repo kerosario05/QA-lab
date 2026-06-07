@@ -135,14 +135,14 @@ async function fetchProvider(url: string, body: unknown, timeoutMs: number): Pro
   }
 }
 
-export async function requestDiscoveryBatch(caseIds: number[], sectionName?: string): Promise<RunProviderResponse> {
+export async function requestDiscoveryBatch(caseIds: number[], sectionName?: string, testRailProjectName?: string): Promise<RunProviderResponse> {
   const config = getRunProviderConfig();
   if (!config.baseUrl) {
     return { ok: false, errorCode: 'RUN_PROVIDER_NOT_CONFIGURED', error: 'Run provider base URL is not set' };
   }
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}${config.endpointDiscovery}`;
-  const body = {
+  const body: Record<string, unknown> = {
     caseIds,
     sectionName: sectionName || undefined,
     overwrite: true,
@@ -151,13 +151,29 @@ export async function requestDiscoveryBatch(caseIds: number[], sectionName?: str
     rerunActive: true,
   };
 
+  if (testRailProjectName) {
+    body.testRailProjectName = testRailProjectName;
+  }
+
   console.log(`[runs] provider request discovery-batch caseIds=${caseIds.length}`);
   const result = await fetchProvider(url, body, config.timeoutMs);
   console.log(`[runs] provider response ok=${result.ok} jobId=${result.jobId ?? '—'} status=${result.status ?? '—'}`);
   return result;
 }
 
-export async function requestScenarioPreviewRun(stories: Story[], projectId?: number, suiteId?: number, sectionId?: number): Promise<RunProviderResponse> {
+export async function requestScenarioPreviewRun(
+  stories: Story[],
+  projectId?: number,
+  suiteId?: number,
+  sectionId?: number,
+  testRailProjectName?: string,
+  sectionName?: string,
+  sectionSlug?: string,
+  launchId?: string,
+  testRunId?: number,
+  publishedCases?: Array<{ scenarioId: string; caseId: number; title?: string }>,
+  jiraKey?: string,
+): Promise<RunProviderResponse> {
   const config = getRunProviderConfig();
   if (!config.baseUrl) {
     return { ok: false, errorCode: 'RUN_PROVIDER_NOT_CONFIGURED', error: 'Run provider base URL is not set' };
@@ -169,12 +185,18 @@ export async function requestScenarioPreviewRun(stories: Story[], projectId?: nu
   }
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}${config.endpointPreview}`;
-  const body = {
+  const body: Record<string, unknown> = {
     scenarios,
     appSlug: 'arquitectura-automatizacion',
     testrailProjectId: (projectId && projectId > 0) ? projectId : undefined,
     testrailSuiteId: (suiteId && suiteId > 0) ? suiteId : undefined,
     testrailSectionId: (sectionId && sectionId > 0) ? sectionId : undefined,
+    sectionName: sectionName || undefined,
+    sectionSlug: sectionSlug || undefined,
+    launchId: launchId || undefined,
+    testRunId: testRunId || undefined,
+    publishedCases: publishedCases || undefined,
+    jiraKey: jiraKey || undefined,
     options: {
       overwrite: true,
       autoPromote: true,
@@ -183,7 +205,13 @@ export async function requestScenarioPreviewRun(stories: Story[], projectId?: nu
     },
   };
 
-  console.log(`[runs] provider request scenario-preview stories=${stories.length} scenarios=${scenarios.length}`);
+  if (testRailProjectName) {
+    body.testRailProjectName = testRailProjectName;
+  }
+
+  const scenarioIds = (publishedCases ?? []).map(pc => pc.scenarioId).join(",");
+  const caseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");
+  console.log(`[runs] provider request scenario-preview stories=${stories.length} scenarios=${scenarios.length} launchId=${launchId ?? '—'} testRunId=${testRunId ?? '—'} publishedCases=${publishedCases?.length ?? 0} scenarioIds=${scenarioIds} caseIds=${caseIds} jiraKey=${jiraKey ?? '—'}`);
   const result = await fetchProvider(url, body, config.timeoutMs);
   console.log(`[runs] provider response ok=${result.ok} jobId=${result.jobId ?? '—'} status=${result.status ?? '—'}`);
   return result;

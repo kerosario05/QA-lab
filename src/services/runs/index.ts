@@ -6,8 +6,14 @@ export interface RunPayload {
   projectId: number;
   suiteId: number;
   sectionId?: number;
+  sectionName?: string;
+  sectionSlug?: string;
   stories: Story[];
   existingCaseIds: number[];
+  launchId?: string;
+  testRunId?: number;
+  publishedCases?: Array<{ scenarioId: string; caseId: number; title?: string }>;
+  jiraKey?: string;
 }
 
 export interface RunCreateResponse {
@@ -29,13 +35,27 @@ export interface RunStatusData {
   failed?: number;
   completed?: number;
   currentTest?: string;
+  startedAt?: string;
+  completedAt?: string;
+  finishedAt?: string;
+  lastEventAt?: string;
+  receivedFinalEventAt?: string;
+  durationMs?: number;
 }
 
-export function toRunLogEntry(entry: { line?: string; message?: string; level?: string; timestamp?: string }): LogEntry {
-  if (entry.line !== undefined) {
-    return { message: entry.line, timestamp: undefined, level: undefined };
+export function toRunLogEntry(entry: Record<string, unknown> | string): LogEntry | null {
+  if (typeof entry === 'string') {
+    const msg = entry.trim();
+    if (!msg) return null;
+    return { message: msg };
   }
-  return { message: entry.message ?? '', level: entry.level, timestamp: entry.timestamp };
+  const raw = (entry.message ?? entry.line ?? entry.log ?? entry.text ?? '') as string;
+  if (!raw.trim()) return null;
+  return {
+    message: raw,
+    level: entry.level as string | undefined,
+    timestamp: entry.timestamp as string | undefined,
+  };
 }
 
 /** Callbacks para el stream SSE de logs */
@@ -53,6 +73,25 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
+}
+
+/** Aplana campos anidados de `summary` y mapea `currentCase` → `currentTest` */
+function normalizeRunData(raw: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...raw };
+  const summary = raw.summary as Record<string, unknown> | undefined;
+  if (summary) {
+    if (out.passed === undefined && summary.passed !== undefined) out.passed = summary.passed;
+    if (out.failed === undefined && summary.failed !== undefined) out.failed = summary.failed;
+    if (out.completed === undefined && summary.completed !== undefined) out.completed = summary.completed;
+    if (out.total === undefined) {
+      if (summary.total !== undefined) out.total = summary.total;
+      else if (summary.totalStories !== undefined) out.total = summary.totalStories;
+      else if (summary.scenarioCount !== undefined) out.total = summary.scenarioCount;
+    }
+    if (out.progress === undefined && summary.progress !== undefined) out.progress = summary.progress;
+  }
+  if (!out.currentTest && raw.currentCase) out.currentTest = raw.currentCase;
+  return out;
 }
 
 /** Parsea y consume un stream SSE de `GET /api/runs/{jobId}/logs`.
@@ -95,15 +134,16 @@ function streamLogs(jobId: string, cb: StreamCallbacks): () => void {
               const evt  = currentEvent || 'message';
 
               if (evt === 'log') {
-                cb.onLog(data as LogEntry);
+                const entry = toRunLogEntry(data);
+                if (entry) cb.onLog(entry);
               } else if (evt === 'status') {
-                cb.onStatus(data as RunStatusData);
+                cb.onStatus(normalizeRunData(data) as RunStatusData);
               } else if (evt === 'done') {
-                cb.onDone(data as RunStatusData);
+                cb.onDone(normalizeRunData(data) as RunStatusData);
               } else if (evt === 'message') {
-                // evento genérico: si tiene `message` lo trato como log
-                if ((data as any).message) cb.onLog(data as LogEntry);
-                else                       cb.onStatus(data as RunStatusData);
+                const entry = toRunLogEntry(data);
+                if (entry) cb.onLog(entry);
+                else cb.onStatus(normalizeRunData(data) as RunStatusData);
               }
             } catch {
               // dato malformado, ignorar
@@ -121,9 +161,43 @@ function streamLogs(jobId: string, cb: StreamCallbacks): () => void {
   return () => controller.abort();
 }
 
+export interface LaunchExecutionPayload {
+  appSlug: string;
+  projectId: number;
+  suiteId?: number;
+  sectionId?: number;
+  sectionName?: string;
+  sectionSlug?: string;
+  testrailSectionId?: number;
+  jiraKey?: string;
+  sprintName?: string;
+  selectedScenarios: Array<{
+    title: string;
+    steps: string[];
+    expectedResult: string;
+    preconditions: string[];
+    sourceIssueKey?: string;
+  }>;
+  publishStrategy?: 'always_create' | 'use_existing';
+}
+
+export interface LaunchExecutionResponse {
+  ok: boolean;
+  launchId?: string;
+  status?: string;
+  publishedCases?: Array<{ scenarioId: string; caseId: number; title: string }>;
+  testRunId?: number;
+  manifestPath?: string;
+  error?: string;
+  message?: string;
+}
+
 export const runsProxy = {
   create: (payload: RunPayload): Promise<RunCreateResponse> =>
     request('/api/runs/from-scenarios', { method: 'POST', body: JSON.stringify(payload) }),
+
+  launchExecution: (payload: LaunchExecutionPayload): Promise<LaunchExecutionResponse> =>
+    request('/api/runs/launch-execution', { method: 'POST', body: JSON.stringify(payload) }),
 
   streamLogs,
 };

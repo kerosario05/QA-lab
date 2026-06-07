@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getRunProviderConfig, requestDiscoveryBatch, requestScenarioPreviewRun } from '../runs-provider';
+import { resolveTestRailProjectName, shouldMigrateAppConfig, normalizeAppSlug } from '../app-config-service';
+import { TestRailClient } from '../testrail-client';
 
 const router = Router();
 
@@ -38,18 +40,43 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
   }
 
   try {
+    const projectId = Number(body?.projectId ?? 0);
+
+    // Resolver nombre del proyecto TestRail para migración automática de perfil
+    let testRailProjectName = body?.testRailProjectName as string | undefined;
+    if (!testRailProjectName && projectId > 0) {
+      const trClient = new TestRailClient();
+      testRailProjectName = await resolveTestRailProjectName(projectId, null, trClient).catch(() => null) ?? undefined;
+    }
+
+    // Loggear si se migrará el perfil
+    if (testRailProjectName) {
+      const appSlug = normalizeAppSlug(testRailProjectName);
+      if (shouldMigrateAppConfig(appSlug)) {
+        console.log(`[runs] app-config migration: projectId=${projectId} name="${testRailProjectName}" slug="${appSlug}"`);
+      }
+    }
+
     let result;
 
     if (hasCaseIds) {
       console.log(`[runs] delegating to discovery-batch caseIds=${existingCaseIds.length}`);
-      const projectId = Number(body?.projectId ?? 0);
-      result = await requestDiscoveryBatch(existingCaseIds);
+      result = await requestDiscoveryBatch(existingCaseIds, undefined, testRailProjectName);
     } else {
       console.log(`[runs] delegating to scenario-preview stories=${stories.length}`);
-      const projectId = Number(body?.projectId ?? 0);
       const suiteId = Number(body?.suiteId ?? 0);
       const sectionId = body?.sectionId ? Number(body.sectionId) : undefined;
-      result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId);
+      const sectionName = body?.sectionName as string | undefined;
+      const sectionSlug = body?.sectionSlug as string | undefined;
+      const launchId = body?.launchId as string | undefined;
+      const testRunId = body?.testRunId ? Number(body.testRunId) : undefined;
+      const publishedCases = Array.isArray(body?.publishedCases)
+        ? (body.publishedCases as Array<{ scenarioId: string; caseId: number; title?: string }>)
+        : undefined;
+      const jiraKey = body?.jiraKey as string | undefined;
+      const pubCaseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");
+      console.log(`[runs] forwarding launch metadata launchId=${launchId ?? '—'} testRunId=${testRunId ?? '—'} publishedCases=${publishedCases?.length ?? 0} caseIds=${pubCaseIds} jiraKey=${jiraKey ?? '—'}`);
+      result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId, testRailProjectName, sectionName, sectionSlug, launchId, testRunId, publishedCases, jiraKey);
     }
 
     if (!result.ok) {
@@ -66,6 +93,44 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.log(`[runs] error code=RUN_PROVIDER_ERROR message=${(err?.message ?? '').slice(0, 200)}`);
     return sendJson(res, 502, { ok: false, errorCode: 'RUN_PROVIDER_ERROR', error: 'Run provider request failed', message: err?.message ?? '' });
+  }
+});
+
+// POST /api/runs/launch-execution — proxy to MCP runner
+router.post('/launch-execution', async (req: Request, res: Response) => {
+  const config = getRunProviderConfig();
+  if (!config.baseUrl) {
+    return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
+  }
+
+  const body = req.body as Record<string, unknown>;
+  const scenarios = Array.isArray(body.selectedScenarios) ? body.selectedScenarios : [];
+  console.log(`[launch] proxy launch-execution request scenarios=${scenarios.length} sectionId=${body.sectionId ?? body.testrailSectionId ?? "(none)"}`);
+
+  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/launch-execution`;
+
+  try {
+    const upstreamRes = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const bodyText = await upstreamRes.text();
+    let parsed: any;
+    try { parsed = JSON.parse(bodyText); } catch { parsed = null; }
+
+    if (!upstreamRes.ok) {
+      console.log(`[launch] proxy launch-execution failed status=${upstreamRes.status} error=${parsed?.error ?? bodyText.slice(0, 200)}`);
+      return sendJson(res, upstreamRes.status, parsed ?? { ok: false, error: 'Provider error', errorCode: `PROVIDER_${upstreamRes.status}` });
+    }
+
+    const caseIds = parsed?.publishedCases?.map((pc: any) => pc.caseId).join(",");
+    console.log(`[launch] proxy launch-execution success launchId=${parsed?.launchId} testRunId=${parsed?.testRunId} publishedCases=${parsed?.publishedCases?.length} caseIds=${caseIds}`);
+    return sendJson(res, 200, parsed);
+  } catch (err: any) {
+    console.log(`[launch] proxy launch-execution failed error=${(err?.message ?? '').slice(0, 200)}`);
+    return sendJson(res, 502, { ok: false, error: 'Provider proxy error', errorCode: 'RUN_PROVIDER_ERROR', message: err?.message ?? '' });
   }
 });
 

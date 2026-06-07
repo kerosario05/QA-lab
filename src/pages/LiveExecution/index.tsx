@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   ChevronLeft, FileText, Lock, Pause, Square, CheckCircle2,
-  Loader2, Check, Terminal, Maximize2, AlertCircle,
+  Loader2, Terminal, Maximize2, AlertCircle,
 } from 'lucide-react';
 import {
   RadialBarChart, RadialBar,
@@ -11,6 +11,12 @@ import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
 import { runsProxy } from '../../services/runs';
 import type { ActiveRun } from '../../types';
+import {
+  computeLiveExecutionElapsedMs,
+  getLiveExecutionElapsedSeconds,
+  isTerminalRunStatus,
+  type LiveExecutionStatusLike,
+} from './state';
 
 interface LiveExecutionScreenProps {
   run: ActiveRun | null;
@@ -52,16 +58,55 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const logsEndRef   = useRef<HTMLDivElement>(null);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
+  const lastStatusRef = useRef<LiveExecutionStatusLike | null>(null);
+  const timerRef = useRef<number | null>(null);
 
-  const isDone   = DONE_STATUSES.has(jobStatus);
+  const isDone   = DONE_STATUSES.has(jobStatus) || isTerminalRunStatus(jobStatus);
   const isFailed = jobStatus === 'failed' || jobStatus === 'error';
   const total    = run?.total || 0;
 
+  const syncElapsed = (data?: LiveExecutionStatusLike | null, now?: number) => {
+    const elapsedSeconds = getLiveExecutionElapsedSeconds(run, data ?? lastStatusRef.current ?? undefined, now);
+    setElapsed(elapsedSeconds);
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+      console.debug(`[live-execution] timer stopped jobId=${run?.jobId || run?.id}`);
+    }
+  };
+
   // Wall-clock timer
   useEffect(() => {
-    const t = setInterval(() => setElapsed(e => e + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
+    if (!run) {
+      setElapsed(0);
+      stopTimer();
+      return;
+    }
+
+    const currentStatus = lastStatusRef.current ?? { status: jobStatus, startedAt: run.startedAt };
+    syncElapsed(currentStatus);
+
+    if (isTerminalRunStatus(currentStatus.status ?? jobStatus)) {
+      console.debug(
+        `[live-execution] terminal status received status=${currentStatus.status ?? jobStatus} durationMs=${computeLiveExecutionElapsedMs(run, currentStatus)}`,
+      );
+      stopTimer();
+      return;
+    }
+
+    stopTimer();
+
+    timerRef.current = window.setInterval(() => {
+      syncElapsed(lastStatusRef.current ?? currentStatus, Date.now());
+    }, 1000);
+
+    return () => {
+      stopTimer();
+    };
+  }, [run?.jobId, run?.startedAt, jobStatus]);
 
   // Auto-scroll logs to bottom
   useEffect(() => {
@@ -73,12 +118,18 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     if (!run?.jobId) return;
 
     const applyStatus = (data: any) => {
+      lastStatusRef.current = data;
       if (data.progress    != null) setProgress(data.progress);
       if (data.completed   != null) setCompleted(data.completed);
       if (data.passed      != null) setPassed(data.passed);
       if (data.failed      != null) setFailed(data.failed);
-      if (data.currentTest)         setCurrentTestName(data.currentTest);
+      if (data.currentTest || data.currentCase) setCurrentTestName(data.currentTest || data.currentCase);
       if (data.status)              setJobStatus(data.status);
+      if (isTerminalRunStatus(data.status)) {
+        syncElapsed(data);
+        console.debug(`[live-execution] terminal status received status=${data.status} durationMs=${computeLiveExecutionElapsedMs(run, data)}`);
+        stopTimer();
+      }
     };
 
     const cleanup = runsProxy.streamLogs(run.jobId, {
@@ -91,14 +142,18 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       },
       onStatus: applyStatus,
       onDone: data => {
+        lastStatusRef.current = data;
         applyStatus(data);
         const finalStatus = data.status || 'completed';
+        const isSuccess   = finalStatus === 'completed' || finalStatus === 'done';
         setJobStatus(finalStatus);
         if (data.progress == null) setProgress(100);
+        syncElapsed(data);
+        stopTimer();
         setLogs(prev => [...prev, {
           time: formatNow(),
-          type: DONE_STATUSES.has(finalStatus) && finalStatus !== 'completed' ? 'error' : 'success',
-          msg:  finalStatus === 'completed'
+          type: isSuccess ? 'success' : 'error',
+          msg:  isSuccess
             ? `✓ Ejecución completada · ${data.passed ?? passed} pasaron · ${data.failed ?? failed} fallaron`
             : `✗ Ejecución terminada con estado: ${finalStatus}`,
         }]);
@@ -110,7 +165,23 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     return cleanup;
   }, [run?.jobId]);
 
-  const eta = total > 0 && progress > 0
+  useEffect(() => {
+    if (isTerminalRunStatus(jobStatus)) {
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+        console.debug(`[live-execution] timer stopped jobId=${run?.jobId || run?.id}`);
+      }
+    }
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [jobStatus, run?.jobId, run?.id]);
+
+  const eta = !isDone && total > 0 && progress > 0
     ? Math.max(0, Math.round(((100 - progress) / progress) * elapsed))
     : 0;
 

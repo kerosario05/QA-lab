@@ -390,32 +390,142 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       ? trCases.map(c => c.id)
       : selectedTrCaseIds;
 
-    const payload: RunPayload = {
-      projectId: Number(config.testRailProject) || 0,
-      suiteId: suiteId ?? 0,
-      sectionId: selectedSection?.id,
-      stories: selectedStories,
-      existingCaseIds: existingIds,
+    const normalizeSectionSlug = (name: string): string =>
+      name
+        .toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+
+    const sectionNameValue = selectedSection?.name;
+    const sectionSlugValue = sectionNameValue ? normalizeSectionSlug(sectionNameValue) : undefined;
+    const projectIdValue = Number(config.testRailProject) || 0;
+
+    // ── Client-side validation ──
+    if (!projectIdValue) {
+      setLaunchError('Selecciona un proyecto TestRail antes de lanzar.');
+      return;
+    }
+    if (!selectedSection?.id) {
+      setLaunchError('Selecciona una sección TestRail antes de lanzar.');
+      return;
+    }
+    if (!config.automationProject) {
+      setLaunchError('Selecciona un proyecto de automatización (appSlug) antes de lanzar.');
+      return;
+    }
+    if (selectedStories.length === 0 || selectedStories.every((s: any) => !s.scenarios?.length)) {
+      setLaunchError('No hay escenarios seleccionados para lanzar.');
+      return;
+    }
+
+    console.log(`[launch] selectedSection id=${selectedSection.id} name="${sectionNameValue}" slug=${sectionSlugValue}`);
+    console.log(`[launch] payload projectId=${projectIdValue} sectionId=${selectedSection.id} appSlug=${config.automationProject} scenarios=${selectedStories.length}`);
+    console.log(`[launch] scenarioIds=${selectedStories.map((s: any) => s.jiraKey).join(",")}`);
+    console.log(`[launch] firstScenarioSteps=${selectedStories[0]?.scenarios?.[0]?.custom_steps_separated?.length ?? "?"} expectedResultPresent=${Boolean(selectedStories[0]?.scenarios?.[0]?.custom_expected)}`);
+
+    // Construir escenarios seleccionados desde selectedStories con IDs únicos
+    let scenarioIndex = 0;
+    const selectedScenarios = selectedStories.flatMap((st: any) =>
+      (st.scenarios ?? []).map((sc: any) => {
+        scenarioIndex++;
+        const sid = `LAUNCH-${String(scenarioIndex).padStart(3, "0")}`;
+        return {
+          scenarioId: sid,
+          title: sc.title || `${st.jiraKey} Scenario ${scenarioIndex}`,
+          steps: Array.isArray(sc.custom_steps_separated)
+            ? sc.custom_steps_separated.map((s: any) => `${s.content}`)
+            : (Array.isArray(sc.steps) ? sc.steps : []),
+          expectedResult: sc.custom_expected || '',
+          preconditions: sc.custom_preconds ? [sc.custom_preconds] : [],
+          sourceIssueKey: st.jiraKey,
+        };
+      })
+    );
+    console.log(`[launch] scenarioIds=${selectedScenarios.map((s: any) => s.scenarioId).join(",")}`);
+    console.log(`[launch] sourceScenarioIds=${selectedScenarios.map((s: any) => s.sourceIssueKey).join(",")}`);
+
+    const launchPayload = {
+      appSlug: config.automationProject || '',
+      projectId: projectIdValue,
+      suiteId: suiteId ?? undefined,
+      sectionId: selectedSection.id,
+      sectionName: sectionNameValue,
+      sectionSlug: sectionSlugValue,
+      jiraKey: stories[0]?.jiraKey,
+      sprintName: undefined as string | undefined,
+      selectedScenarios,
+      publishStrategy: 'always_create' as const,
     };
 
     setIsLaunching(true);
     setLaunchError(null);
+
+    // Fase 1: Publish + TestRun (launch-execution endpoint)
     try {
-      const { jobId, status } = await runsProxy.create(payload);
-      const newRun: ActiveRun = {
-        id: jobId,
-        jobId,
-        project: proj?.name || 'Proyecto',
-        triggered: 'Carlos M.',
-        startedAt: 'Hace 0m',
-        progress: 0,
-        total: runAll ? (trTotalCaseCount || totalSelected) : totalSelected,
-        completed: 0, passed: 0, failed: 0,
-        currentTest: '',
-        eta: '—',
-        status,
-      };
-      onLaunch(newRun);
+      const launchResult = await runsProxy.launchExecution(launchPayload);
+      if (!launchResult.ok) {
+        setLaunchError(launchResult.message || launchResult.error || 'Error al publicar escenarios en TestRail');
+        setIsLaunching(false);
+        return;
+      }
+      console.log(`[launch] launch successful launchId=${launchResult.launchId} testRunId=${launchResult.testRunId} cases=${launchResult.publishedCases?.length}`);
+
+      // Fase 2: (futura) discovery job — por ahora solo creamos el job para mantener compatibilidad
+      try {
+        const runJiraKey = launchPayload.jiraKey || stories[0]?.jiraKey;
+        const runPayload: RunPayload = {
+          projectId: projectIdValue,
+          suiteId: suiteId ?? 0,
+          sectionId: selectedSection.id,
+          sectionName: sectionNameValue,
+          sectionSlug: sectionSlugValue,
+          stories: selectedStories,
+          existingCaseIds: existingIds,
+          launchId: launchResult.launchId,
+          testRunId: launchResult.testRunId,
+          publishedCases: launchResult.publishedCases?.map(pc => ({
+            scenarioId: pc.scenarioId,
+            caseId: pc.caseId,
+            title: pc.title,
+          })),
+          jiraKey: runJiraKey,
+        };
+        console.log(`[launch] create discovery job jiraKey=${runJiraKey} launchId=${launchResult.launchId} testRunId=${launchResult.testRunId}`);
+        const { jobId, status } = await runsProxy.create(runPayload);
+        const newRun: ActiveRun = {
+          id: jobId,
+          jobId,
+          project: proj?.name || 'Proyecto',
+          triggered: 'Carlos M.',
+          startedAt: 'Hace 0m',
+          progress: 0,
+          total: runAll ? (trTotalCaseCount || totalSelected) : totalSelected,
+          completed: 0, passed: 0, failed: 0,
+          currentTest: '',
+          eta: '—',
+          status,
+        };
+        onLaunch(newRun);
+      } catch (jobErr: any) {
+        // Job creation failed but publish succeeded — still show success
+        console.log(`[launch] job creation failed but publish succeeded: ${jobErr.message}`);
+        onLaunch({
+          id: `launch-${launchResult.launchId}`,
+          jobId: `launch-${launchResult.launchId}`,
+          project: proj?.name || 'Proyecto',
+          triggered: 'Carlos M.',
+          startedAt: 'Hace 0m',
+          progress: 0,
+          total: launchResult.publishedCases?.length || totalSelected,
+          completed: launchResult.publishedCases?.length || 0,
+          passed: 0, failed: 0,
+          currentTest: '',
+          eta: '—',
+          status: 'test_run_created',
+        });
+      }
     } catch (e: any) {
       setLaunchError(e.message ?? 'Error al crear la ejecución');
     } finally {

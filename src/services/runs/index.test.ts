@@ -16,4 +16,38 @@ describe('runs service log mapping', () => {
       level: 'info',
     });
   });
+
+  it('maneja payload con { log }', () => {
+    expect(toRunLogEntry({ log: 'texto desde log' })).toEqual({
+      timestamp: undefined,
+      level: undefined,
+      message: 'texto desde log',
+    });
+  });
+
+  it('maneja payload con { text }', () => {
+    expect(toRunLogEntry({ text: 'texto plano' })).toEqual({
+      timestamp: undefined,
+      level: undefined,
+      message: 'texto plano',
+    });
+  });
+
+  it('maneja string directo', () => {
+    expect(toRunLogEntry('linea directa')).toEqual({
+      message: 'linea directa',
+    });
+  });
+
+  it('retorna null para string vacío', () => {
+    expect(toRunLogEntry('')).toBeNull();
+  });
+
+  it('retorna null para objeto con línea vacía', () => {
+    expect(toRunLogEntry({ line: '' })).toBeNull();
+  });
+
+  it('retorna null para objeto vacío', () => {
+    expect(toRunLogEntry({})).toBeNull();
+  });
 });
