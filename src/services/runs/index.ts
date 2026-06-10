@@ -199,5 +199,27 @@ export const runsProxy = {
   launchExecution: (payload: LaunchExecutionPayload): Promise<LaunchExecutionResponse> =>
     request('/api/runs/launch-execution', { method: 'POST', body: JSON.stringify(payload) }),
 
+  /** Descarga el archivo DOCX de evidencia para un jobId */
+  downloadEvidence: async (jobId: string): Promise<void> => {
+    const res = await fetch(`${PROXY}/api/runs/${jobId}/evidence-docx`);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+
+    // Obtener el nombre del archivo desde el header o usar uno por defecto
+    const contentDisposition = res.headers.get('Content-Disposition');
+    const filenameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    const filename = filenameMatch ? filenameMatch[1].replace(/['"]/g, '') : `evidencia-${jobId}.docx`;
+
+    // Descargar el archivo
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
+
   streamLogs,
 };

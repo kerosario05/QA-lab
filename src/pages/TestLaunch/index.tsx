@@ -33,6 +33,17 @@ interface LaunchConfig {
 }
 
 export function TestLaunch({ onLaunch }: TestLaunchProps) {
+  // Normalize TestRail project name to appSlug for automation framework
+  const normalizeAppSlug = (name: string): string =>
+    name
+      .trim()
+      .toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[_\s]+/g, "-")
+      .replace(/[^a-z0-9-]/g, "")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
   const [step, setStep] = useState(1);
   const [config, setConfig] = useState<LaunchConfig>({
     automationProject: '', source: 'both', jiraProject: '', sprint: '',
@@ -817,7 +828,13 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                               const isSel = String(t.id) === config.testRailProject;
                               return (
                                 <button key={t.id} type="button"
-                                  onClick={() => { setConfig({ ...config, testRailProject: String(t.id) }); setTrDropdownOpen(false); setTrSearch(''); }}
+                                  onClick={() => {
+                                    const appSlug = normalizeAppSlug(t.name);
+                                    console.log(`[testrail-select] projectId=${t.id} name="${t.name}" appSlug="${appSlug}"`);
+                                    setConfig({ ...config, testRailProject: String(t.id), automationProject: appSlug });
+                                    setTrDropdownOpen(false);
+                                    setTrSearch('');
+                                  }}
                                   className={cn('w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
                                 >
                                   <div className="flex items-center gap-2.5 min-w-0">

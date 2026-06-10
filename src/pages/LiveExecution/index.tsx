@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   ChevronLeft, FileText, Lock, Pause, Square, CheckCircle2,
-  Loader2, Terminal, Maximize2, AlertCircle,
+  Loader2, Terminal, Maximize2, AlertCircle, Download,
 } from 'lucide-react';
 import {
   RadialBarChart, RadialBar,
@@ -197,8 +197,23 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
           <div className="flex items-center gap-2">
             {isDone ? (
               <>
-                <button className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]">
-                  <FileText size={11} /> Ver reporte
+                <button
+                  onClick={async () => {
+                    try {
+                      const jobId = run?.jobId || run?.id;
+                      if (!jobId) {
+                        console.error('No jobId available');
+                        return;
+                      }
+                      await runsProxy.downloadEvidence(jobId);
+                    } catch (err) {
+                      console.error('Error downloading evidence:', err);
+                      alert('Error al descargar el documento. Verifique que la evidencia esté disponible.');
+                    }
+                  }}
+                  className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]"
+                >
+                  <Download size={11} /> Descargar documento
                 </button>
                 <button
                   onClick={() => onCloseExecution?.({ id: run?.jobId || run?.id, project: run?.project, total, passed, failed, duration: formatTime(elapsed) })}

@@ -182,6 +182,57 @@ router.get('/:jobId/logs', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/runs/:jobId/evidence-docx — evidence download proxy
+router.get('/:jobId/evidence-docx', async (req: Request, res: Response) => {
+  const config = getRunProviderConfig();
+  if (!config.baseUrl) {
+    return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
+  }
+
+  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(req.params.jobId)}/evidence-docx`;
+
+  try {
+    const upstreamRes = await fetch(upstreamUrl);
+
+    if (!upstreamRes.ok) {
+      const bodyText = await upstreamRes.text().catch(() => '');
+      let parsed: any;
+      try { parsed = JSON.parse(bodyText); } catch { parsed = null; }
+      return sendJson(res, upstreamRes.status, parsed ?? { ok: false, error: 'Provider error', errorCode: `PROVIDER_${upstreamRes.status}` });
+    }
+
+    // Forward headers
+    const contentType = upstreamRes.headers.get('Content-Type');
+    const contentDisposition = upstreamRes.headers.get('Content-Disposition');
+
+    if (contentType) res.setHeader('Content-Type', contentType);
+    if (contentDisposition) res.setHeader('Content-Disposition', contentDisposition);
+
+    // Stream the file
+    const upstreamBody = upstreamRes.body;
+    if (!upstreamBody) {
+      return sendJson(res, 502, { ok: false, error: 'No response body from provider', errorCode: 'RUN_PROVIDER_INVALID_RESPONSE' });
+    }
+
+    const reader = upstreamBody.getReader();
+    let aborted = false;
+    req.on('close', () => { aborted = true; });
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || aborted) break;
+      res.write(value);
+    }
+
+    if (!aborted) res.end();
+  } catch (err: any) {
+    if (!res.headersSent) {
+      return sendJson(res, 502, { ok: false, error: 'Provider proxy error', errorCode: 'RUN_PROVIDER_ERROR', message: err?.message ?? '' });
+    }
+    if (!res.writableEnded) res.end();
+  }
+});
+
 // GET /api/runs/:jobId — status proxy
 router.get('/:jobId', async (req: Request, res: Response) => {
   const config = getRunProviderConfig();
