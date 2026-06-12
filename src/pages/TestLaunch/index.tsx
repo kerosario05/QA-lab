@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Check, Boxes, GitBranch, Database,
-  Layers, Search, Rocket, Loader2, ScanLine, AlertCircle, X, Sparkles,
+  Layers, Search, Rocket, Loader2, ScanLine, AlertCircle, X, Sparkles, Package,
 } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
@@ -14,6 +14,8 @@ import { scenariosProxy, normalizeScenarioPreviewResponse } from '../../services
 import type { Story } from '../../services/scenarios';
 import { runsProxy } from '../../services/runs';
 import type { RunPayload } from '../../services/runs';
+import { newmanProxy } from '../../services/newman';
+import type { NewmanRunPayload, NewmanCollection } from '../../services/newman';
 import type { ActiveRun, TestRailProject, JiraProject, JiraSprint } from '../../types';
 import { canContinueFromStep3 } from './step3-launch-gate';
 
@@ -30,6 +32,7 @@ interface LaunchConfig {
   testRailProject: string;
   selectedCases: string[];
   runAll: boolean;
+  newmanCollection: string;
 }
 
 export function TestLaunch({ onLaunch }: TestLaunchProps) {
@@ -48,6 +51,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [config, setConfig] = useState<LaunchConfig>({
     automationProject: '', source: 'both', jiraProject: '', sprint: '',
     status: 'Desestimado', testRailProject: '', selectedCases: [], runAll: false,
+    newmanCollection: '',
   });
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
@@ -136,6 +140,16 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [sprintLoading, setSprintLoading] = useState(false);
   const [sprintError, setSprintError] = useState<string | null>(null);
 
+  // ── Newman state ─────────────────────────────────────────────
+  const [newmanCollections, setNewmanCollections] = useState<NewmanCollection[]>([]);
+  const [newmanCollLoading, setNewmanCollLoading] = useState(false);
+  const [newmanCollError, setNewmanCollError] = useState<string | null>(null);
+  const [newmanCollDropdownOpen, setNewmanCollDropdownOpen] = useState(false);
+  const [newmanCollDropdownPos, setNewmanCollDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [newmanCollSearch, setNewmanCollSearch] = useState('');
+  const newmanCollTriggerRef = useRef<HTMLButtonElement>(null);
+  const newmanCollPanelRef = useRef<HTMLDivElement>(null);
+
   // ── Stories state (step 3) ───────────────────────────────────
   const [stories, setStories] = useState<Story[]>([]);
   const [totalScenarios, setTotalScenarios] = useState(0);
@@ -164,6 +178,18 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       .catch(e => setJiraError(e.message))
       .finally(() => setJiraLoading(false));
   }, []);
+
+  // ── Fetch Newman collections when API project is selected ────
+  useEffect(() => {
+    const proj = projects.find(p => p.id === config.automationProject);
+    if (proj?.type !== 'api') return;
+    setNewmanCollLoading(true);
+    setNewmanCollError(null);
+    newmanProxy.getCollections()
+      .then(cols => setNewmanCollections(Array.isArray(cols) ? cols : []))
+      .catch(e => setNewmanCollError(e.message))
+      .finally(() => setNewmanCollLoading(false));
+  }, [config.automationProject]);
 
   // ── Fetch active sprint when Jira project changes ────────────
   useEffect(() => {
@@ -269,12 +295,19 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         setJiraDropdownOpen(false);
       if (!trSectionTriggerRef.current?.contains(target) && !trSectionPanelRef.current?.contains(target))
         setTrSectionDropdownOpen(false);
+      if (!newmanCollTriggerRef.current?.contains(target) && !newmanCollPanelRef.current?.contains(target))
+        setNewmanCollDropdownOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   const handleStep2Advance = () => {
+    const proj = projects.find(p => p.id === config.automationProject);
+    if (proj?.type === 'api') {
+      setStep(4);
+      return;
+    }
     setStep3Tab(config.source === 'testrail' ? 'cases' : 'scenarios');
     setStep(3);
   };
@@ -358,7 +391,12 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   const canAdvance = () => {
     if (step === 1) return config.automationProject;
+    const selectedProject = projects.find(p => p.id === config.automationProject);
+    const isApiProject = selectedProject?.type === 'api';
     if (step === 2) {
+      if (isApiProject) {
+        return !!(config.newmanCollection && config.testRailProject && selectedSection);
+      }
       if (config.source === 'jira') return config.jiraProject && config.sprint;
       if (config.source === 'testrail') return config.testRailProject;
       return config.jiraProject && config.sprint && config.testRailProject;
@@ -379,8 +417,58 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     return true;
   };
 
+  const handleNewmanLaunch = async () => {
+    const proj = projects.find(p => p.id === config.automationProject);
+    if (!config.newmanCollection) { setLaunchError('Selecciona una colección Newman.'); return; }
+    if (!config.testRailProject) { setLaunchError('Selecciona un proyecto TestRail.'); return; }
+    if (!selectedSection?.id) { setLaunchError('Selecciona una sección TestRail.'); return; }
+    if (!trSuiteId) { setLaunchError('No se pudo obtener el suite de TestRail.'); return; }
+
+    setIsLaunching(true);
+    setLaunchError(null);
+
+    try {
+      const payload: NewmanRunPayload = {
+        collection: config.newmanCollection,
+        testrailProjectId: Number(config.testRailProject),
+        testrailSuiteId: trSuiteId,
+        testrailSectionId: selectedSection.id,
+        testrailRunName: `Regresión API - ${config.newmanCollection}`,
+      };
+      const result = await newmanProxy.run(payload);
+      if (!result.ok) {
+        setLaunchError(result.error || 'Error al lanzar la colección Newman');
+        return;
+      }
+      const collectionTotal = newmanCollections.find(c => c.name === config.newmanCollection)?.requestCount ?? 0;
+      const newRun: ActiveRun = {
+        id: result.jobId,
+        jobId: result.jobId,
+        project: proj?.name || 'Portal Cliente',
+        runType: 'api',
+        collectionName: config.newmanCollection,
+        triggered: 'Manual',
+        startedAt: new Date().toISOString(),
+        progress: 0,
+        total: collectionTotal,
+        completed: 0, passed: 0, failed: 0,
+        currentTest: '',
+        eta: '—',
+        status: 'running',
+      };
+      onLaunch(newRun);
+    } catch (e: any) {
+      setLaunchError(e.message ?? 'Error al lanzar la ejecución Newman');
+    } finally {
+      setIsLaunching(false);
+    }
+  };
+
   const handleLaunch = async () => {
     const proj = projects.find(p => p.id === config.automationProject);
+    if (proj?.type === 'api') {
+      return handleNewmanLaunch();
+    }
     const suiteId = trSuiteId ?? undefined;
     const totalSelected = config.selectedCases.length + selectedTrCaseIds.length;
     const runAll = config.runAll || totalSelected === 0;
@@ -544,12 +632,40 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     }
   };
 
-  const steps = [
-    { n: 1, label: 'Proyecto', icon: Boxes },
-    { n: 2, label: 'Fuentes', icon: GitBranch },
-    { n: 3, label: 'Casos', icon: ScanLine },
-    { n: 4, label: 'Lanzar', icon: Rocket },
-  ];
+  // ── Computed: project type ───────────────────────────────────
+  const selectedProject = projects.find(p => p.id === config.automationProject);
+  const isApiProject = selectedProject?.type === 'api';
+
+  // ── Newman collection dropdown helpers ───────────────────────
+  const openNewmanCollDropdown = () => {
+    if (newmanCollLoading) return;
+    if (!newmanCollDropdownOpen && newmanCollTriggerRef.current) {
+      const r = newmanCollTriggerRef.current.getBoundingClientRect();
+      setNewmanCollDropdownPos({ top: r.bottom + 6, left: r.left, width: r.width });
+    }
+    setNewmanCollDropdownOpen(o => !o);
+  };
+
+  const filteredCollections = useMemo(() => {
+    if (!newmanCollSearch) return newmanCollections;
+    const s = newmanCollSearch.toLowerCase();
+    return newmanCollections.filter(c => c.name.toLowerCase().includes(s));
+  }, [newmanCollections, newmanCollSearch]);
+
+  const selectedNewmanCollection = newmanCollections.find(c => c.name === config.newmanCollection) ?? null;
+
+  const steps = isApiProject
+    ? [
+        { n: 1, label: 'Proyecto', icon: Boxes },
+        { n: 2, label: 'Configuración', icon: Package },
+        { n: 4, label: 'Lanzar', icon: Rocket },
+      ]
+    : [
+        { n: 1, label: 'Proyecto', icon: Boxes },
+        { n: 2, label: 'Fuentes', icon: GitBranch },
+        { n: 3, label: 'Casos', icon: ScanLine },
+        { n: 4, label: 'Lanzar', icon: Rocket },
+      ];
 
   const showTrCasesTab = (config.source === 'testrail' || config.source === 'both') && !!selectedSection;
   const showScenariosTab = config.source === 'jira' || config.source === 'both';
@@ -616,34 +732,31 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso uno · Elige tu lanzadera</div>
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿Qué proyecto vamos a correr?</h2>
             <p className="text-[13px] text-[#58646D] mb-7">Selecciona el framework de automatización.</p>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-4 max-w-xl">
               {projects.map(p => {
                 const selected = config.automationProject === p.id;
                 return (
                   <button
                     key={p.id}
-                    onClick={() => setConfig({ ...config, automationProject: p.id })}
+                    onClick={() => setConfig({ ...config, automationProject: p.id, newmanCollection: '', testRailProject: '' })}
                     className={cn(
-                      'text-left p-5 rounded-2xl border-2 transition-all relative overflow-hidden',
+                      'text-left p-6 rounded-2xl border-2 transition-all relative overflow-hidden',
                       selected ? 'border-[#1a1f2e] bg-[#1a1f2e] text-white' : 'border-[#E8EBEC] hover:border-[#1a1f2e]/40 bg-white'
                     )}
                   >
-                    {selected && <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full opacity-20" style={{ background: C.green }} />}
+                    {selected && <div className="absolute -right-4 -top-4 w-24 h-24 rounded-full opacity-20" style={{ background: C.green }} />}
                     <div className="flex items-start justify-between mb-3 relative">
-                      <div className="text-[10px] uppercase tracking-wider font-semibold opacity-70">{p.team}</div>
+                      <div className={cn('text-[10px] uppercase tracking-wider font-semibold', selected ? 'text-white/50' : 'text-[#8B999D]')}>
+                        {p.type === 'api' ? 'API · Newman' : 'Web · Playwright'}
+                      </div>
                       {selected && (
                         <div className="w-5 h-5 rounded-full bg-[#48A157] flex items-center justify-center">
                           <Check size={12} className="text-white" strokeWidth={3} />
                         </div>
                       )}
                     </div>
-                    <div className={cn('text-[18px] font-medium leading-tight', selected ? 'text-white' : 'text-[#1a1f2e]')} style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{p.name}</div>
-                    <div className={cn('text-[11px] mt-1', selected ? 'text-white/60' : 'text-[#8B999D]')}>{p.stack}</div>
-                    <div className={cn('flex items-center gap-3 mt-4 pt-3 border-t text-[10px]', selected ? 'border-white/15' : 'border-[#E8EBEC]')}>
-                      <span className={selected ? 'text-white/70' : 'text-[#58646D]'}>{p.automated} TCs</span>
-                      <span className={selected ? 'text-white/30' : 'text-[#BABEC3]'}>·</span>
-                      <span className={selected ? 'text-white/70' : 'text-[#58646D]'}>{p.passRate}% pass</span>
-                    </div>
+                    <div className={cn('text-[22px] font-medium leading-tight', selected ? 'text-white' : 'text-[#1a1f2e]')} style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{p.name}</div>
+                    <div className={cn('text-[12px] mt-1.5', selected ? 'text-white/60' : 'text-[#8B999D]')}>{p.stack}</div>
                   </button>
                 );
               })}
@@ -651,8 +764,233 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           </BentoCard>
         )}
 
-        {/* ════════════════ STEP 2 ════════════════ */}
-        {step === 2 && (
+        {/* ════════════════ STEP 2 · API ════════════════ */}
+        {step === 2 && isApiProject && (
+          <BentoCard className="!p-8">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso dos · Configura la ejecución</div>
+            <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Colección y reporte</h2>
+            <p className="text-[13px] text-[#58646D] mb-7">Elige la colección Newman y el destino TestRail.</p>
+
+            <div className="grid grid-cols-2 gap-5">
+
+              {/* ── Panel Newman ── */}
+              <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-[#E47E2B] flex items-center justify-center"><Package size={15} className="text-white" /></div>
+                  <div className="text-[14px] font-semibold text-[#1a1f2e]">Newman</div>
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Colección</label>
+                  <div className="relative">
+                    <button ref={newmanCollTriggerRef} type="button" onClick={openNewmanCollDropdown} disabled={newmanCollLoading}
+                      className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
+                        newmanCollDropdownOpen ? 'border-[#E47E2B] ring-4 ring-[#E47E2B]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]',
+                        newmanCollLoading && 'opacity-60 cursor-wait')}
+                    >
+                      <span className={cn('text-[13px] truncate', config.newmanCollection ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
+                        {newmanCollLoading ? 'Cargando colecciones...' : (config.newmanCollection || 'Selecciona una colección...')}
+                      </span>
+                      <div className="flex-shrink-0 ml-2">
+                        {newmanCollLoading ? <Loader2 size={14} className="text-[#E47E2B] animate-spin" /> : <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', newmanCollDropdownOpen && 'rotate-180')} />}
+                      </div>
+                    </button>
+                    {newmanCollDropdownOpen && newmanCollDropdownPos && createPortal(
+                      <div ref={newmanCollPanelRef} style={{ position: 'fixed', top: newmanCollDropdownPos.top, left: newmanCollDropdownPos.left, width: newmanCollDropdownPos.width }}
+                        className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(228,126,43,0.22)] z-[9999] overflow-hidden">
+                        <div className="p-2 border-b border-[#F4F1EA]">
+                          <div className="relative">
+                            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
+                            <input autoFocus placeholder="Buscar colección..." value={newmanCollSearch} onChange={e => setNewmanCollSearch(e.target.value)}
+                              className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
+                            {newmanCollSearch && <button onClick={() => setNewmanCollSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
+                          </div>
+                          <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredCollections.length} de {newmanCollections.length} colecciones</div>
+                        </div>
+                        <div className="max-h-[220px] overflow-y-auto">
+                          {filteredCollections.length === 0 ? (
+                            <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">
+                              {newmanCollections.length === 0 ? 'No hay colecciones disponibles' : `Sin resultados para "${newmanCollSearch}"`}
+                            </div>
+                          ) : filteredCollections.map(col => {
+                            const isSel = config.newmanCollection === col.name;
+                            return (
+                              <button key={col.name} type="button"
+                                onClick={() => { setConfig(c => ({ ...c, newmanCollection: col.name })); setNewmanCollDropdownOpen(false); setNewmanCollSearch(''); }}
+                                className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#E47E2B]/5' : 'hover:bg-[#FAFAF7]')}
+                              >
+                                <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#E47E2B] bg-[#E47E2B]' : 'border-[#E8EBEC]')}>
+                                  {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
+                                </div>
+                                <span className={cn('text-[12px] truncate flex-1', isSel ? 'font-semibold text-[#E47E2B]' : 'font-medium text-[#1a1f2e]')}>{col.name}</span>
+                                {col.requestCount > 0 && (
+                                  <span className="text-[10px] font-mono text-[#8B999D] bg-[#F4F1EA] px-1.5 py-0.5 rounded flex-shrink-0 ml-2">{col.requestCount} req</span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>, document.body,
+                    )}
+                  </div>
+                  {newmanCollError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudieron cargar las colecciones</div>}
+                </div>
+
+                {selectedNewmanCollection && (
+                  <div className="bg-white rounded-xl p-4 border border-[#E8EBEC]">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Endpoints</div>
+                      <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
+                        {selectedNewmanCollection.requestCount > 0 ? selectedNewmanCollection.requestCount : '—'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Panel TestRail (API mode) ── */}
+              <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-[#48A157] flex items-center justify-center"><Database size={15} className="text-white" /></div>
+                  <div className="text-[14px] font-semibold text-[#1a1f2e]">TestRail</div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Proyecto</label>
+                  <div className="relative">
+                    <button ref={trTriggerRef} type="button" onClick={openTrDropdown} disabled={trLoading}
+                      className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
+                        trDropdownOpen ? 'border-[#48A157] ring-4 ring-[#48A157]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]',
+                        trLoading && 'opacity-60 cursor-wait')}
+                    >
+                      <span className={cn('text-[13px] truncate', currentTR ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
+                        {trLoading ? 'Cargando proyectos...' : (currentTR?.name ?? 'Selecciona un proyecto...')}
+                      </span>
+                      <div className="flex-shrink-0 ml-2">
+                        {trLoading ? <Loader2 size={14} className="text-[#48A157] animate-spin" /> : <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', trDropdownOpen && 'rotate-180')} />}
+                      </div>
+                    </button>
+                    {trDropdownOpen && trDropdownPos && createPortal(
+                      <div ref={trPanelRef} style={{ position: 'fixed', top: trDropdownPos.top, left: trDropdownPos.left, width: trDropdownPos.width }}
+                        className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(72,161,87,0.22)] z-[9999] overflow-hidden">
+                        <div className="p-2 border-b border-[#F4F1EA]">
+                          <div className="relative">
+                            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
+                            <input autoFocus placeholder="Buscar proyecto..." value={trSearch} onChange={e => setTrSearch(e.target.value)}
+                              className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
+                            {trSearch && <button onClick={() => setTrSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
+                          </div>
+                          <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredTrProjects.length} de {trProjects.length} proyectos</div>
+                        </div>
+                        <div className="max-h-[220px] overflow-y-auto">
+                          {filteredTrProjects.length === 0 ? (
+                            <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{trSearch}"</div>
+                          ) : filteredTrProjects.map(t => {
+                            const isSel = String(t.id) === config.testRailProject;
+                            return (
+                              <button key={t.id} type="button"
+                                onClick={() => {
+                                  setConfig(c => ({ ...c, testRailProject: String(t.id) }));
+                                  setTrDropdownOpen(false);
+                                  setTrSearch('');
+                                }}
+                                className={cn('w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
+                                    {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
+                                  </div>
+                                  <span className={cn('text-[12px] truncate', isSel ? 'font-semibold text-[#48A157]' : 'font-medium text-[#1a1f2e]')}>{t.name}</span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>, document.body,
+                    )}
+                  </div>
+                  {trError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo conectar con TestRail</div>}
+                </div>
+
+                {currentTR && (
+                  <div className="bg-white rounded-xl p-4 border border-[#E8EBEC]">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Suite ID</div>
+                        <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trSuiteId ?? '—'}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Test Cases</div>
+                        <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trTotalCaseCount}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {currentTR && (
+                  <div>
+                    <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Sección</label>
+                    {trSectionsLoading ? (
+                      <div className="flex items-center gap-2 text-[12px] text-[#8B999D] bg-white rounded-xl px-3 py-3 border border-[#E8EBEC]">
+                        <Loader2 size={13} className="animate-spin text-[#48A157]" /> Cargando secciones...
+                      </div>
+                    ) : trSections.length === 0 && !trSectionsError ? (
+                      <div className="text-[11px] text-[#8B999D] bg-white rounded-xl px-3 py-2.5 border border-[#E8EBEC]">Este proyecto no tiene secciones disponibles</div>
+                    ) : (
+                      <div className="relative">
+                        <button ref={trSectionTriggerRef} type="button" onClick={openTrSectionDropdown}
+                          className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
+                            trSectionDropdownOpen ? 'border-[#48A157] ring-4 ring-[#48A157]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]')}
+                        >
+                          <span className={cn('text-[13px] truncate', selectedSection ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
+                            {selectedSection?.name ?? 'Selecciona una sección...'}
+                          </span>
+                          <ChevronDown size={14} className={cn('text-[#8B999D] flex-shrink-0 ml-2 transition-transform duration-200', trSectionDropdownOpen && 'rotate-180')} />
+                        </button>
+                        {trSectionDropdownOpen && trSectionDropdownPos && createPortal(
+                          <div ref={trSectionPanelRef} style={{ position: 'fixed', top: trSectionDropdownPos.top, left: trSectionDropdownPos.left, width: trSectionDropdownPos.width }}
+                            className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(72,161,87,0.22)] z-[9999] overflow-hidden">
+                            <div className="p-2 border-b border-[#F4F1EA]">
+                              <div className="relative">
+                                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
+                                <input autoFocus placeholder="Buscar sección..." value={trSectionSearch} onChange={e => setTrSectionSearch(e.target.value)}
+                                  className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
+                                {trSectionSearch && <button onClick={() => setTrSectionSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
+                              </div>
+                              <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredSections.length} de {trSections.length} secciones</div>
+                            </div>
+                            <div className="max-h-[220px] overflow-y-auto">
+                              {filteredSections.length === 0 ? (
+                                <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{trSectionSearch}"</div>
+                              ) : filteredSections.map(sec => {
+                                const isSel = selectedSection?.id === sec.id;
+                                return (
+                                  <button key={sec.id} type="button"
+                                    onClick={() => { setSelectedSection(sec); setTrSectionDropdownOpen(false); setTrSectionSearch(''); }}
+                                    className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
+                                  >
+                                    <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
+                                      {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
+                                    </div>
+                                    <span className={cn('text-[12px] truncate flex-1', isSel ? 'font-semibold text-[#48A157]' : 'font-medium text-[#1a1f2e]')}>{sec.name}</span>
+                                    {sec.depth > 0 && <span className="text-[10px] text-[#8B999D] font-mono bg-[#F4F1EA] px-1.5 py-0.5 rounded flex-shrink-0 ml-auto">niv. {sec.depth}</span>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>, document.body,
+                        )}
+                      </div>
+                    )}
+                    {trSectionsError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudieron cargar las secciones</div>}
+                  </div>
+                )}
+              </div>
+            </div>
+          </BentoCard>
+        )}
+
+        {/* ════════════════ STEP 2 · WEB ════════════════ */}
+        {step === 2 && !isApiProject && (
           <BentoCard className="!p-8">
             <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso dos · Conecta las fuentes</div>
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿De dónde vienen los casos?</h2>
@@ -1325,8 +1663,63 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           </BentoCard>
         )}
 
-        {/* ════════════════ STEP 4 ════════════════ */}
-        {step === 4 && (
+        {/* ════════════════ STEP 4 · API ════════════════ */}
+        {step === 4 && isApiProject && (
+          <BentoCard className="!p-0 overflow-hidden">
+            <div className="bg-gradient-to-br from-[#2d1a08] via-[#6b3410] to-[#2d1a08] text-white p-8 relative overflow-hidden">
+              <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(circle at 80% 20%, #E47E2B50 0%, transparent 50%)` }} />
+              <div className="absolute right-8 top-8 w-32 h-32 rounded-full border border-white/10" />
+              <div className="absolute right-16 top-16 w-16 h-16 rounded-full border border-white/10" />
+              <div className="relative">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-[#f0a96a] font-semibold mb-2">Listo para ejecutar</div>
+                <h2 className="text-[40px] font-medium leading-none tracking-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
+                  {selectedProject?.name}
+                </h2>
+                <div className="text-[12px] text-white/60 mt-2">{selectedProject?.stack}</div>
+                <div className="grid grid-cols-3 gap-6 mt-7 pt-6 border-t border-white/15">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-white/60">Colección</div>
+                    <div className="text-[20px] font-medium mt-1 truncate" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
+                      {config.newmanCollection || '—'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-white/60">Endpoints</div>
+                    <div className="text-[28px] font-medium mt-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
+                      {selectedNewmanCollection?.requestCount ?? '—'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-white/60">Proyecto TestRail</div>
+                    <div className="text-[18px] font-medium mt-1.5 truncate">{currentTR?.name || '—'}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="p-8 space-y-3">
+              {trSuiteId && (
+                <div className="flex items-center justify-between py-3 border-b border-[#F4F1EA]">
+                  <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Suite ID</span>
+                  <span className="text-[13px] font-semibold text-[#1a1f2e]">{trSuiteId}</span>
+                </div>
+              )}
+              {selectedSection && (
+                <div className="flex items-center justify-between py-3 border-b border-[#F4F1EA]">
+                  <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Sección TestRail</span>
+                  <span className="text-[13px] font-semibold text-[#1a1f2e]">{selectedSection.name}</span>
+                </div>
+              )}
+              <div className="flex items-start gap-2.5 bg-[#FFF7F0] rounded-2xl p-4 mt-4 border border-[#E47E2B]/15">
+                <div className="text-[11px] text-[#58646D] leading-relaxed">
+                  La ejecución correrá la colección <strong className="text-[#1a1f2e]">{config.newmanCollection}</strong> con Newman y reportará los resultados a <strong className="text-[#1a1f2e]">TestRail</strong>.
+                </div>
+              </div>
+            </div>
+          </BentoCard>
+        )}
+
+        {/* ════════════════ STEP 4 · WEB ════════════════ */}
+        {step === 4 && !isApiProject && (
           <BentoCard className="!p-0 overflow-hidden">
             <div className="bg-gradient-to-br from-[#0a2547] via-[#104B99] to-[#0a2547] text-white p-8 relative overflow-hidden">
               <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(circle at 80% 20%, ${C.green}50 0%, transparent 50%), radial-gradient(circle at 20% 80%, #ffffff20 0%, transparent 50%)` }} />
@@ -1335,9 +1728,9 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
               <div className="relative">
                 <div className="text-[10px] uppercase tracking-[0.2em] text-[#5EC470] font-semibold mb-2">Listo para despegar</div>
                 <h2 className="text-[40px] font-medium leading-none tracking-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                  {projects.find(p => p.id === config.automationProject)?.name}
+                  {selectedProject?.name}
                 </h2>
-                <div className="text-[12px] text-white/60 mt-2">{projects.find(p => p.id === config.automationProject)?.stack}</div>
+                <div className="text-[12px] text-white/60 mt-2">{selectedProject?.stack}</div>
                 <div className="grid grid-cols-3 gap-6 mt-7 pt-6 border-t border-white/15">
                   <div>
                     <div className="text-[10px] uppercase tracking-wider text-white/60">Casos</div>
@@ -1389,14 +1782,19 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
         {/* ── Navigation ── */}
         <div className="mt-5 flex items-center justify-between">
-          <button onClick={() => setStep(s => Math.max(1, s - 1))} disabled={step === 1}
+          <button
+            onClick={() => {
+              if (step === 4 && isApiProject) { setStep(2); return; }
+              setStep(s => Math.max(1, s - 1));
+            }}
+            disabled={step === 1}
             className="text-[12px] font-medium px-4 py-2.5 rounded-full disabled:opacity-30 disabled:cursor-not-allowed text-[#58646D] hover:bg-white hover:text-[#1a1f2e] transition flex items-center gap-1.5">
             <ChevronLeft size={13} /> Atrás
           </button>
           {step < 4 ? (
             <button onClick={() => { if (step === 2) { handleStep2Advance(); return; } if (step === 3 && !canAdvance()) return; setStep(s => Math.min(4, s + 1)); }} disabled={!canAdvance()}
               className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5">
-              {step === 2 ? 'Generar escenarios' : 'Continuar'} <ChevronRight size={13} />
+              {step === 2 ? (isApiProject ? 'Continuar' : 'Generar escenarios') : 'Continuar'} <ChevronRight size={13} />
             </button>
           ) : (
             <div className="flex flex-col items-end gap-2">

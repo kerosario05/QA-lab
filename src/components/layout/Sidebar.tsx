@@ -15,18 +15,29 @@ const items = [
 export function Sidebar({ active, onChange }: SidebarProps) {
   return (
     <aside className="w-[240px] bg-white border-r border-[#E8EBEC] flex flex-col">
-      <div className="px-5 py-5 flex items-center gap-2.5">
-        <div className="relative w-9 h-9">
-          <div className="absolute inset-0 rounded-[10px] rotate-6" style={{ background: C.green }} />
-          <div className="absolute inset-0 rounded-[10px] -rotate-3 flex items-center justify-center text-white font-bold text-[14px]" style={{ background: C.blue, fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-            Q
+      {/* BSC brand accent strip */}
+      <div className="h-[3px] w-full" style={{ background: `linear-gradient(90deg, ${C.blue} 0%, ${C.green} 100%)` }} />
+
+      {/* Header: BSC logo + tool name */}
+      <div className="px-5 pt-4 pb-3">
+        <img
+          src="/bsc-logo.png"
+          alt="Banco Santa Cruz"
+          className="h-16 w-auto max-w-[150px] object-contain"
+        />
+        <div className="mt-3 flex items-center justify-between">
+          <div className="text-[15px] font-bold tracking-tight text-[#1a1f2e]">QA Lab</div>
+          <div
+            className="text-[9px] font-semibold uppercase tracking-[0.15em] px-2 py-1 rounded-md inline-flex items-center gap-1.5"
+            style={{ background: `${C.blue}12`, color: C.blue }}
+          >
+            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: C.green }} />
+            Interno
           </div>
         </div>
-        <div>
-          <div className="text-[14px] font-semibold tracking-tight text-[#1a1f2e] leading-tight">QA Lab</div>
-          <div className="text-[10px] text-[#8B999D] uppercase tracking-[0.15em] mt-0.5">Santa Cruz</div>
-        </div>
       </div>
+
+      <div className="mx-5 mb-3 h-px" style={{ background: C.paper }} />
 
       <nav className="flex-1 px-3 pt-2 space-y-0.5">
         {items.map(it => {

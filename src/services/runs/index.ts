@@ -75,21 +75,74 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-/** Aplana campos anidados de `summary` y mapea `currentCase` → `currentTest` */
+/** Aplana campos anidados de `summary`/`stats` y mapea nombres alternativos */
 function normalizeRunData(raw: Record<string, unknown>): Record<string, unknown> {
   const out = { ...raw };
+
+  // Formato summary genérico
   const summary = raw.summary as Record<string, unknown> | undefined;
   if (summary) {
-    if (out.passed === undefined && summary.passed !== undefined) out.passed = summary.passed;
-    if (out.failed === undefined && summary.failed !== undefined) out.failed = summary.failed;
-    if (out.completed === undefined && summary.completed !== undefined) out.completed = summary.completed;
+    if (out.passed    === undefined && summary.passed     !== undefined) out.passed    = summary.passed;
+    if (out.failed    === undefined && summary.failed     !== undefined) out.failed    = summary.failed;
+    if (out.completed === undefined && summary.completed  !== undefined) out.completed = summary.completed;
+    if (out.progress  === undefined && summary.progress   !== undefined) out.progress  = summary.progress;
     if (out.total === undefined) {
-      if (summary.total !== undefined) out.total = summary.total;
-      else if (summary.totalStories !== undefined) out.total = summary.totalStories;
+      if      (summary.total         !== undefined) out.total = summary.total;
+      else if (summary.totalStories  !== undefined) out.total = summary.totalStories;
       else if (summary.scenarioCount !== undefined) out.total = summary.scenarioCount;
     }
-    if (out.progress === undefined && summary.progress !== undefined) out.progress = summary.progress;
   }
+
+  // Formato stats de Newman: { stats: { assertions: { total, failed }, requests: { total, pending, executed } } }
+  const stats = raw.stats as Record<string, any> | undefined;
+  if (stats) {
+    const assertions = stats.assertions as Record<string, any> | undefined;
+    const requests   = stats.requests   as Record<string, any> | undefined;
+
+    if (assertions) {
+      // Newman no incluye assertions.passed — lo calcula como total - failed
+      if (out.passed === undefined) {
+        if (assertions.passed !== undefined) {
+          out.passed = assertions.passed;
+        } else if (assertions.total !== undefined && assertions.failed !== undefined) {
+          out.passed = Math.max(0, Number(assertions.total) - Number(assertions.failed));
+        }
+      }
+      if (out.failed === undefined && assertions.failed !== undefined) out.failed = assertions.failed;
+    }
+
+    if (requests) {
+      // completed = requests ejecutados hasta ahora (total - pending, o executed, o total al final)
+      if (out.completed === undefined) {
+        if (requests.executed !== undefined) {
+          out.completed = requests.executed;
+        } else if (requests.total !== undefined && requests.pending !== undefined) {
+          out.completed = Math.max(0, Number(requests.total) - Number(requests.pending));
+        } else if (requests.total !== undefined) {
+          out.completed = requests.total;
+        }
+      }
+      if (out.total === undefined && requests.total !== undefined) out.total = requests.total;
+    }
+
+    if (out.progress === undefined && out.total && Number(out.total) > 0) {
+      out.progress = Math.round((Number(out.completed ?? 0) / Number(out.total)) * 100);
+    }
+  }
+
+  // itemCount como total alternativo
+  if (out.total === undefined && raw.itemCount !== undefined) out.total = raw.itemCount;
+
+  // Si no hay completed pero hay progress + total, inferirlo (útil en eventos intermedios sin stats)
+  if (out.completed === undefined && out.progress != null && out.total != null && Number(out.total) > 0) {
+    out.completed = Math.round(Number(out.progress) * Number(out.total) / 100);
+  }
+
+  // Si hay passed + failed pero no completed, completados = suma de ambos
+  if (out.completed === undefined && out.passed != null && out.failed != null) {
+    out.completed = Number(out.passed) + Number(out.failed);
+  }
+
   if (!out.currentTest && raw.currentCase) out.currentTest = raw.currentCase;
   return out;
 }

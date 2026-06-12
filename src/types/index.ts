@@ -3,6 +3,7 @@ export interface Project {
   name: string;
   team: string;
   stack: string;
+  type?: 'web' | 'api';
   automated: number;
   runs: number;
   passRate: number;
@@ -28,6 +29,8 @@ export interface ActiveRun {
   id: string;
   jobId?: string;
   project: string;
+  runType?: 'web' | 'api';
+  collectionName?: string;
   triggered: string;
   startedAt: string;
   completedAt?: string;
