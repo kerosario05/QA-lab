@@ -11,7 +11,7 @@ import { trProjectsProxy, trSectionsProxy, fetchProjectSuites, fetchProjectCaseC
 import type { TRSection, TRCase } from '../../services/testrail';
 import { jiraProjectsProxy } from '../../services/jira';
 import { scenariosProxy, normalizeScenarioPreviewResponse } from '../../services/scenarios';
-import type { Story } from '../../services/scenarios';
+import type { Story, BlockedScenario } from '../../services/scenarios';
 import { runsProxy } from '../../services/runs';
 import type { RunPayload } from '../../services/runs';
 import type { ActiveRun, TestRailProject, JiraProject, JiraSprint } from '../../types';
@@ -142,6 +142,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [storiesError, setStoriesError] = useState<string | null>(null);
   const [sprintMeta, setSprintMeta] = useState<{ id: number; name: string } | null>(null);
+  const [blockedScenarios, setBlockedScenarios] = useState<BlockedScenario[]>([]);
   // expanded story jiraKeys (story-level accordion)
   const [expandedStories, setExpandedStories] = useState<string[]>([]);
   // expanded scenario step panel: "jiraKey::scenarioIndex"
@@ -241,6 +242,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         setStories(normalized.stories);
         setTotalScenarios(normalized.totalScenarios);
         setSprintMeta(normalized.sprint);
+        setBlockedScenarios(normalized.blockedScenarios);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
       })
       .catch(e => setStoriesError(e.message))
@@ -306,6 +308,18 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         ? c.selectedCases.filter(k => !keys.includes(k))
         : [...c.selectedCases.filter(k => !keys.includes(k)), ...keys],
     }));
+  };
+
+  const translateReasonCode = (code: string): string => {
+    const translations: Record<string, string> = {
+      needs_route_profile: "Falta routeProfile. Configura el perfil de rutas en app.config.json o ejecuta discovery.",
+      missing_parent_route: "La ruta padre (listado) no está definida. Agrega visibleControls al routeProfile.",
+      missing_intermediate_step: "Faltan pasos intermedios. Agrega intermediates al routeProfile.",
+      missing_detail_selection_step: "Falta domainTerm para selección. Agrega domainTerms al routeProfile.",
+      unsupported_route_target: "Objetivo de ruta no soportado.",
+      ambiguous_route_target: "Objetivo de ruta ambiguo.",
+    };
+    return translations[code] || "Ruta no respaldada.";
   };
 
   const openTrDropdown = () => {
@@ -570,6 +584,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         setStories(normalized.stories);
         setTotalScenarios(normalized.totalScenarios);
         setSprintMeta(normalized.sprint);
+        setBlockedScenarios(normalized.blockedScenarios);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
       })
       .catch(e => setStoriesError(e.message))
@@ -1008,7 +1023,9 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                           <h2 className="text-[22px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
                             {totalScenarios > 0
                               ? <><span className="text-[#104B99]">{totalScenarios}</span> escenarios · <span className="text-[#58646D] text-[18px]">{stories.length} historias</span></>
-                              : 'Sin escenarios para este filtro'
+                              : blockedScenarios.length > 0
+                                ? <><span className="text-[#DC2626]">{blockedScenarios.length}</span> {blockedScenarios.length === 1 ? 'historia bloqueada' : 'historias bloqueadas'}</>
+                                : 'Sin escenarios para este filtro'
                             }
                           </h2>
                           {sprintMeta && (
@@ -1069,8 +1086,35 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                 {/* ── Tab: Escenarios Jira (historias agrupadas) ── */}
                 {(step3Tab === 'scenarios' || !showTrCasesTab) && showScenariosTab && (
                   stories.length === 0 ? (
-                    <div className="p-12 text-center">
-                      <div className="text-[13px] text-[#8B999D]">No hay escenarios con estado "{config.status}" en el sprint activo.</div>
+                    <div className="p-12">
+                      {blockedScenarios.length > 0 ? (
+                        <div>
+                          <div className="text-center mb-6">
+                            <div className="text-[13px] text-[#1a1f2e] font-semibold">Se encontraron historias, pero no se pudieron generar escenarios.</div>
+                            <div className="text-[12px] text-[#8B999D] mt-1">Las siguientes historias fueron bloqueadas por falta de routeProfile o rutas incompletas:</div>
+                          </div>
+                          <div className="max-w-2xl mx-auto space-y-3">
+                            {blockedScenarios.map(blocked => (
+                              <div key={blocked.sourceIssueKey} className="bg-[#FEF2F2] border border-[#FCA5A5]/30 rounded-xl p-4">
+                                <div className="flex items-start gap-3">
+                                  <AlertCircle size={16} className="text-[#DC2626] flex-shrink-0 mt-0.5" />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="text-[10px] font-mono font-bold text-[#DC2626] bg-[#DC2626]/10 px-2 py-0.5 rounded-full">{blocked.sourceIssueKey}</span>
+                                      <span className="text-[12px] font-semibold text-[#1a1f2e] truncate">{blocked.title}</span>
+                                    </div>
+                                    <div className="text-[11px] text-[#7C2D12] leading-relaxed">{translateReasonCode(blocked.reasonCode)}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-center">
+                          <div className="text-[13px] text-[#8B999D]">No hay escenarios con estado "{config.status}" en el sprint activo.</div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="max-h-[520px] overflow-y-auto divide-y divide-[#F4F1EA]">

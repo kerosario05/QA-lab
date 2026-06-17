@@ -54,3 +54,30 @@ export interface ScenariosApiError extends Error {
   method?: string;
   rawBody?: string;
 }
+
+export type DiagnosticCode =
+  | "needs_route_profile"
+  | "missing_parent_route"
+  | "missing_intermediate_step"
+  | "missing_detail_selection_step"
+  | "unsupported_route_target"
+  | "ambiguous_route_target";
+
+export interface ScenarioDiagnostic {
+  level: "error" | "warning" | "info";
+  code: DiagnosticCode;
+  message: string;
+  context?: Record<string, unknown>;
+}
+
+export interface BlockedScenario {
+  sourceIssueKey: string;
+  title: string;
+  status: "blocked";
+  reasonCode: DiagnosticCode;
+  reason: string;
+  diagnostics: ScenarioDiagnostic[];
+  appSlug: string;
+  appProfilePath?: string;
+  suggestedAction: string;
+}

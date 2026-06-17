@@ -1,10 +1,11 @@
-import type { Story, StoryScenario } from './types';
+import type { Story, StoryScenario, BlockedScenario } from './types';
 
 export interface NormalizedPreviewResponse {
   stories: Story[];
   totalScenarios: number;
   sprint: { id: number; name: string } | null;
   rawShape: string;
+  blockedScenarios: BlockedScenario[];
 }
 
 function parseMcpStep(step: string): { content: string; expected: string } {
@@ -60,7 +61,7 @@ export function normalizeScenarioPreviewResponse(response: unknown): NormalizedP
     : typeof response;
 
   const empty = (): NormalizedPreviewResponse => ({
-    stories: [], totalScenarios: 0, sprint: null, rawShape,
+    stories: [], totalScenarios: 0, sprint: null, rawShape, blockedScenarios: [],
   });
 
   if (!response || typeof response !== 'object') return empty();
@@ -96,5 +97,9 @@ export function normalizeScenarioPreviewResponse(response: unknown): NormalizedP
     ? { id: Number((data.sprint as Record<string, unknown>).id ?? 0), name: String((data.sprint as Record<string, unknown>).name ?? '') }
     : null;
 
-  return { stories, totalScenarios, sprint, rawShape };
+  const blockedScenarios: BlockedScenario[] = Array.isArray(data.blockedScenarios)
+    ? (data.blockedScenarios as BlockedScenario[])
+    : [];
+
+  return { stories, totalScenarios, sprint, rawShape, blockedScenarios };
 }
