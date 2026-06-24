@@ -22,6 +22,9 @@ export interface ScenarioPreviewPayload {
   testrailSectionName?: string;
   appSlug?: string;
   effectiveTargetAppSlug?: string;
+  selectedIssueKeys?: string[];
+  privateDiscoveryArtifacts?: any;
+  scenarioRouteEvidence?: any;
 }
 
 export interface ProviderResponse {
@@ -29,6 +32,8 @@ export interface ProviderResponse {
   stories?: any[];
   totalScenarios?: number;
   rejected?: any[];
+  blockedScenarios?: any[];
+  warnings?: any[];
   errorCode?: string;
   error?: string;
   message?: string;
@@ -54,6 +59,7 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
 
   console.log(`[scenario-preview] provider request projectKey=${payload.projectKey} sprintId=${payload.sprintId ?? '—'} activeSprint=${!!payload.activeSprint} endpoint=${config.endpoint}`);
+  console.log(`[qa-lab:scenario-preview-provider-payload] bodyKeys=${Object.keys(payload).join(",")} selectedIssueKeys=${(payload.selectedIssueKeys as string[])?.join(",") ?? "none"} privateArtifacts=${payload.privateDiscoveryArtifacts ? "present" : "absent"}`);
 
   try {
     const res = await fetch(url, {
@@ -111,6 +117,8 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
       stories: normalized.stories,
       totalScenarios: normalized.totalScenarios,
       rejected: Array.isArray(parsed.rejected) ? parsed.rejected : undefined,
+      blockedScenarios: Array.isArray(parsed.blockedScenarios) ? parsed.blockedScenarios : normalized.blockedScenarios,
+      warnings: Array.isArray(parsed.warnings) ? parsed.warnings : undefined,
       rawShape: normalized.rawShape,
     };
   } catch (err: any) {

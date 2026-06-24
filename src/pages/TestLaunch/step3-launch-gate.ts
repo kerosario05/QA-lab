@@ -17,6 +17,11 @@ export function canContinueFromStep3(input: Step3LaunchGateInput): boolean {
   if (usesJira && input.storiesLoading) return false;
   if (usesTestRail && input.trCasesLoading) return false;
 
+  // Pre-generation phase: HUs loaded but no scenarios yet → allow if at least one HU is selected
+  if (usesJira && input.totalScenarios === 0 && !input.storiesError) {
+    return (input.selectedScenarioKeys?.length ?? 0) > 0;
+  }
+
   const hasJiraData = usesJira && !input.storiesError && input.totalScenarios > 0;
   const hasTestRailData = usesTestRail && !input.trCasesError && input.trCasesCount > 0;
 

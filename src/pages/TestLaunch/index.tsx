@@ -30,6 +30,7 @@ interface LaunchConfig {
   testRailProject: string;
   selectedCases: string[];
   runAll: boolean;
+  privateDiscoveryArtifacts?: any;
 }
 
 export function TestLaunch({ onLaunch }: TestLaunchProps) {
@@ -49,6 +50,9 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     automationProject: '', source: 'both', jiraProject: '', sprint: '',
     status: 'Desestimado', testRailProject: '', selectedCases: [], runAll: false,
   });
+  const lastSelectedIssueKeysRef = useRef<string[]>([]);
+  const issueKeysFromSelection = (selectedCases: string[]) =>
+    [...new Set(selectedCases.map(k => k.split("::")[0]).filter(Boolean))];
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
 
@@ -143,6 +147,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [storiesError, setStoriesError] = useState<string | null>(null);
   const [sprintMeta, setSprintMeta] = useState<{ id: number; name: string } | null>(null);
   const [blockedScenarios, setBlockedScenarios] = useState<BlockedScenario[]>([]);
+  const [discoveryBlockError, setDiscoveryBlockError] = useState<{ reasonCode: string; message: string; issueKey: string } | null>(null);
   // expanded story jiraKeys (story-level accordion)
   const [expandedStories, setExpandedStories] = useState<string[]>([]);
   // expanded scenario step panel: "jiraKey::scenarioIndex"
@@ -223,31 +228,230 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     return () => clearInterval(interval);
   }, [config.testRailProject, trSuiteId]);
 
-  // ── Fetch stories when entering Step 3 ──────────────────────
-  useEffect(() => {
-    if (step !== 3 || !config.jiraProject || !activeSprint) return;
-    setConfig(c => ({ ...c, selectedCases: [] }));
+  // Guards para prevenir loop infinito de preview
+  const previewInFlightRef = useRef(false);
+  const lastPreviewRequestKeyRef = useRef<string | null>(null);
+
+  // ── Manual scenario preview (only triggered by user action) ──────────────────────
+  const runScenarioPreview = (reason: "manual" | "retry") => {
+    // GUARD: only allow manual or retry
+    if (reason !== "manual" && reason !== "retry") {
+      console.warn("[front:scenario-preview-skip] reason=not_manual_or_retry", { reason });
+      return;
+    }
+    if (!activeSprint || !config.jiraProject) {
+      console.log(`[front:scenario-preview-skip] reason=missing_config`);
+      return;
+    }
     const sprintId = activeSprint.id;
-    console.log('[scenario-preview] request', { projectKey: config.jiraProject, sprintId, activeSprint: !sprintId });
-    setStoriesLoading(true);
-    setStoriesError(null);
-    scenariosProxy.post({
+    const selectedJiraKeys = issueKeysFromSelection(config.selectedCases);
+    const explicitSelectedIssueKeys = selectedJiraKeys.length > 0 ? selectedJiraKeys : lastSelectedIssueKeysRef.current;
+    const appSlug = config.automationProject || undefined;
+
+    if (selectedJiraKeys.length > 0) lastSelectedIssueKeysRef.current = selectedJiraKeys;
+
+    const requestKey = JSON.stringify({
+      projectKey: config.jiraProject,
+      sprintId,
+      status: config.status,
+      selectedIssueKeys: explicitSelectedIssueKeys,
+      appSlug,
+    });
+
+    if (previewInFlightRef.current) {
+      console.log(`[front:scenario-preview-skip] reason=in_flight`);
+      return;
+    }
+
+    if (reason !== "retry" && lastPreviewRequestKeyRef.current === requestKey) {
+      console.log(`[front:scenario-preview-skip] reason=duplicate`);
+      return;
+    }
+
+    const isLoadingStories = stories.length === 0;
+    if (!isLoadingStories && explicitSelectedIssueKeys.length === 0) {
+      setStoriesError("Selecciona al menos una HU para generar escenarios");
+      console.log(`[front:scenario-preview-skip] reason=no_selection`);
+      return;
+    }
+
+    const testArtifacts = (() => { try { const v = import.meta.env.VITE_TEST_PRIVATE_DISCOVERY_ARTIFACTS; return v ? JSON.parse(v) : undefined; } catch { return undefined; } })();
+    const effectivePrivateArtifacts = config.privateDiscoveryArtifacts || testArtifacts || undefined;
+
+    const requestBody = {
+      source: config.source,
       projectKey: config.jiraProject,
       status: config.status,
       maxResults: 50,
       ...(sprintId ? { sprintId } : { activeSprint: true }),
-    })
-      .then(data => {
-        const normalized = normalizeScenarioPreviewResponse(data);
+      selectedIssueKeys: explicitSelectedIssueKeys,
+      ...(appSlug ? { appSlug } : {}),
+      ...(config.testrailProjectId ? { testrailProjectId: config.testrailProjectId } : {}),
+      ...(config.suiteId ? { testrailSuiteId: config.suiteId } : {}),
+      ...(config.sectionId ? { testrailSectionId: config.sectionId } : {}),
+      ...(effectivePrivateArtifacts ? { privateDiscoveryArtifacts: effectivePrivateArtifacts } : {}),
+    };
+
+    console.log(`[front:scenario-preview-trigger] reason=${reason} selectedIssueKeys=${explicitSelectedIssueKeys.join(",") || "none"}`);
+    console.log("[front:scenario-preview-body]", requestBody);
+    console.log("[front:scenario-preview-request]", { bodyKeys: Object.keys(requestBody), selectedIssueKeys: explicitSelectedIssueKeys, appSlug, projectKey: config.jiraProject, sprintId });
+    previewInFlightRef.current = true;
+    setStoriesLoading(true);
+    setStoriesError(null);
+    scenariosProxy.post(requestBody)
+      .then(async data => {
+        let normalized = normalizeScenarioPreviewResponse(data);
+        const privateBlocked = normalized.blockedScenarios.find(blocked =>
+          blocked.diagnostics?.some((diag: any) =>
+            diag?.context?.reasonCode === 'private_catalog_required' ||
+            diag?.context?.requiresAuth === true ||
+            String(diag?.context?.intent ?? '').startsWith('private/')
+          )
+        );
+
+        // Handle private catalog requirement: run discovery → retry automatically
+        if (privateBlocked && !effectivePrivateArtifacts) {
+          const privateContext = privateBlocked.diagnostics?.find((diag: any) =>
+            diag?.context?.reasonCode === 'private_catalog_required' ||
+            diag?.context?.requiresAuth === true ||
+            String(diag?.context?.intent ?? '').startsWith('private/')
+          )?.context as any;
+          const privateAppSlug = privateBlocked.appSlug ?? appSlug;
+          const derivedIssueKey = privateBlocked.sourceIssueKey || privateBlocked.jiraKey || (privateBlocked as any).issueKey;
+
+          if (!privateAppSlug) {
+            console.warn("[front:private-discovery-skip]", { reason: 'missing_app_slug', issueKey: derivedIssueKey ?? 'unknown' });
+          } else if (!derivedIssueKey) {
+            console.warn("[front:private-discovery-skip]", { reason: 'missing_issue_key', appSlug: privateAppSlug });
+          } else {
+            // Show loading state while discovering private catalog
+            setStoriesLoading(true);
+            console.log("[front:private-discovery-request]", { appSlug: privateAppSlug, issueKey: derivedIssueKey, intent: privateContext?.intent, source: 'preview_rejection' });
+
+            try {
+              const apiBase = import.meta.env.VITE_API_URL ?? '';
+              const privateRes = await fetch(`${apiBase}/api/scenarios/private-discovery`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  appSlug: privateAppSlug,
+                  issueKey: derivedIssueKey,
+                  title: privateBlocked.title,
+                  ...(privateContext?.intent ? { intent: privateContext.intent } : {}),
+                  dryRun: false,
+                  headless: true,
+                  headed: false,
+                  source: 'qa_lab_internal',
+                }),
+              });
+              const privateArtifacts = await privateRes.json().catch(() => null);
+              console.log("[front:private-discovery-response]", {
+                ok: privateArtifacts?.ok,
+                reasonCode: privateArtifacts?.reasonCode,
+                privateDiscoveryStarted: privateArtifacts?.privateDiscoveryStarted,
+                routes: privateArtifacts?.discoveredRoutes?.length ?? 0,
+              });
+
+              if (privateRes.ok && privateArtifacts?.ok) {
+                // Discovery succeeded: retry preview with artifacts (transparent to user)
+                console.log("[front:scenario-preview-retry-with-private-artifacts]", { issueKey: derivedIssueKey, appSlug: privateAppSlug });
+                setConfig(c => ({ ...c, privateDiscoveryArtifacts: privateArtifacts }));
+                setDiscoveryBlockError(null);  // Clear any previous errors
+                const retryData = await scenariosProxy.post({ ...requestBody, privateDiscoveryArtifacts: privateArtifacts });
+                normalized = normalizeScenarioPreviewResponse(retryData);
+                // Use retry result (should have scenarios now), don't show the original blocked
+              } else {
+                // Discovery failed: record error, don't show as blockedScenarios
+                const reasonCode = privateArtifacts?.reasonCode ?? `HTTP_${privateRes.status}`;
+                console.log("[front:private-discovery-final-block]", {
+                  issueKey: derivedIssueKey,
+                  reasonCode,
+                  stage: 'private_discovery'
+                });
+                setDiscoveryBlockError({
+                  reasonCode,
+                  message: privateArtifacts?.message ?? `Private discovery failed (${reasonCode})`,
+                  issueKey: derivedIssueKey,
+                });
+                // Clear stories/scenarios but keep error visible
+                normalized = { stories: [], totalScenarios: 0, sprint: null, rawShape: {}, blockedScenarios: [] };
+              }
+            } catch (err) {
+              console.error("[front:private-discovery-error]", { error: String(err) });
+              setDiscoveryBlockError({
+                reasonCode: 'discovery_exception',
+                message: `Error during private discovery: ${String(err)}`,
+                issueKey: derivedIssueKey,
+              });
+              normalized = { stories: [], totalScenarios: 0, sprint: null, rawShape: {}, blockedScenarios: [] };
+            }
+          }
+        }
+
+        // Assign final results to UI
         setStories(normalized.stories);
         setTotalScenarios(normalized.totalScenarios);
         setSprintMeta(normalized.sprint);
         setBlockedScenarios(normalized.blockedScenarios);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
+        lastPreviewRequestKeyRef.current = requestKey;
       })
       .catch(e => setStoriesError(e.message))
+      .finally(() => {
+        previewInFlightRef.current = false;
+        setStoriesLoading(false);
+      });
+  };
+
+  // ── Load Jira issues when entering Step 3 (for selection before preview) ──────────────────────
+  useEffect(() => {
+    if (step !== 3 || !config.jiraProject || !activeSprint) return;
+    console.log(`[front:scenarios-step-entered] step=3 jiraProject=${config.jiraProject} sprintId=${activeSprint.id}`);
+
+    setStoriesLoading(true);
+    setStoriesError(null);
+    setStories([]);
+
+    // Load Jira issues for this sprint
+    const url = `/api/jira/projects/${encodeURIComponent(config.jiraProject)}/sprint/${activeSprint.id}/issues`;
+    console.log("[front:jira-issues-request]", { url });
+    fetch(url)
+      .then(async r => {
+        const contentType = r.headers.get("content-type") ?? "";
+        const rawText = await r.text();
+        console.log("[front:jira-issues-response]", {
+          status: r.status,
+          contentType,
+          bodySample: rawText.slice(0, 120),
+        });
+        if (!r.ok || !contentType.includes("application/json")) {
+          throw new Error(
+            `Jira issues request failed: status=${r.status} contentType=${contentType} bodySample=${rawText.slice(0, 120)}`
+          );
+        }
+        return JSON.parse(rawText);
+      })
+      .then(data => {
+        if (Array.isArray(data.issues)) {
+          // Map Jira issues to Story shape (without scenarios yet)
+          const stories = data.issues.map((issue: any) => ({
+            jiraKey: issue.key,
+            title: issue.summary,
+            status: issue.status,
+            scenarios: [] // Empty until preview is run
+          }));
+          setStories(stories);
+          console.log(`[front:jira-issues-loaded] count=${stories.length}`);
+        } else {
+          throw new Error('Invalid response from Jira API');
+        }
+      })
+      .catch(e => {
+        console.log(`[front:jira-issues-error] ${e.message}`);
+        setStoriesError(e.message);
+      })
       .finally(() => setStoriesLoading(false));
-  }, [step, config.jiraProject, config.status, activeSprint]);
+  }, [step, config.jiraProject, activeSprint]);
 
   // ── Fetch TR cases when entering Step 3 ─────────────────────
   useEffect(() => {
@@ -277,7 +481,19 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   }, []);
 
   const handleStep2Advance = () => {
+    console.log("[front:generate-scenarios-click]", {
+      source: config.source,
+      appSlug: config.automationProject,
+      jiraProject: config.jiraProject,
+      sprintId: activeSprint?.id,
+      testrailProjectId: config.testrailProjectId,
+      suiteId: config.suiteId,
+      sectionId: config.sectionId,
+    });
     setStep3Tab(config.source === 'testrail' ? 'cases' : 'scenarios');
+    if (config.source === 'jira' || config.source === 'both') {
+      runScenarioPreview("manual");
+    }
     setStep(3);
   };
 
@@ -289,7 +505,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     [stories],
   );
 
-  const storyKeys = (story: Story) => story.scenarios.map((_, i) => scenarioKey(story.jiraKey, i));
+  const storyKeys = (story: Story) => {
+    const keys = story.scenarios.map((_, i) => scenarioKey(story.jiraKey, i));
+    // Fallback: si no hay escenarios cargados, usar el jiraKey directamente
+    return keys.length > 0 ? keys : [story.jiraKey];
+  };
 
   const storySelectionState = (story: Story): 'all' | 'partial' | 'none' => {
     const keys = storyKeys(story);
@@ -302,11 +522,15 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const toggleStorySelection = (story: Story) => {
     const keys = storyKeys(story);
     const state = storySelectionState(story);
+    const newSelectedCases = state === 'all'
+      ? config.selectedCases.filter(k => !keys.includes(k))
+      : [...config.selectedCases.filter(k => !keys.includes(k)), ...keys];
+    const nextSelectedIssueKeys = issueKeysFromSelection(newSelectedCases);
+    lastSelectedIssueKeysRef.current = nextSelectedIssueKeys;
+    console.log("[front:jira-issue-selection]", { issueKey: story.jiraKey, selectedIssueKeys: nextSelectedIssueKeys });
     setConfig(c => ({
       ...c,
-      selectedCases: state === 'all'
-        ? c.selectedCases.filter(k => !keys.includes(k))
-        : [...c.selectedCases.filter(k => !keys.includes(k)), ...keys],
+      selectedCases: newSelectedCases,
     }));
   };
 
@@ -569,26 +793,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const showScenariosTab = config.source === 'jira' || config.source === 'both';
 
   const retryStories = () => {
-    if (!activeSprint) return;
-    const sprintId = activeSprint.id;
-    setStoriesLoading(true);
-    setStoriesError(null);
-    scenariosProxy.post({
-      projectKey: config.jiraProject,
-      status: config.status,
-      maxResults: 50,
-      ...(sprintId ? { sprintId } : { activeSprint: true }),
-    })
-      .then(data => {
-        const normalized = normalizeScenarioPreviewResponse(data);
-        setStories(normalized.stories);
-        setTotalScenarios(normalized.totalScenarios);
-        setSprintMeta(normalized.sprint);
-        setBlockedScenarios(normalized.blockedScenarios);
-        setExpandedStories(normalized.stories.map(s => s.jiraKey));
-      })
-      .catch(e => setStoriesError(e.message))
-      .finally(() => setStoriesLoading(false));
+    runScenarioPreview("retry");
   };
 
   return (
@@ -1021,7 +1226,9 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                       <>
                         <div>
                           <h2 className="text-[22px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                            {totalScenarios > 0
+                            {discoveryBlockError
+                              ? <><span className="text-[#DC2626]">Error técnico</span>: no se pudieron descubrir catálogos privados</>
+                              : totalScenarios > 0
                               ? <><span className="text-[#104B99]">{totalScenarios}</span> escenarios · <span className="text-[#58646D] text-[18px]">{stories.length} historias</span></>
                               : blockedScenarios.length > 0
                                 ? <><span className="text-[#DC2626]">{blockedScenarios.length}</span> {blockedScenarios.length === 1 ? 'historia bloqueada' : 'historias bloqueadas'}</>
@@ -1087,7 +1294,22 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                 {(step3Tab === 'scenarios' || !showTrCasesTab) && showScenariosTab && (
                   stories.length === 0 ? (
                     <div className="p-12">
-                      {blockedScenarios.length > 0 ? (
+                      {discoveryBlockError ? (
+                        <div className="bg-[#FEF2F2] border border-[#FCA5A5] rounded-xl p-6 max-w-2xl mx-auto">
+                          <div className="flex items-start gap-3">
+                            <AlertCircle size={20} className="text-[#DC2626] flex-shrink-0 mt-0.5" />
+                            <div className="flex-1">
+                              <div className="text-[13px] font-semibold text-[#1a1f2e] mb-2">Error técnico: catálogo privado</div>
+                              <div className="text-[12px] text-[#7C2D12] mb-3">{discoveryBlockError.message}</div>
+                              <div className="text-[11px] text-[#8B999D]">
+                                <div><strong>Emisión:</strong> {discoveryBlockError.issueKey}</div>
+                                <div><strong>Código:</strong> {discoveryBlockError.reasonCode}</div>
+                                <div className="mt-2">Verifica que el acceso autenticado esté disponible y reinten ta.</div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : blockedScenarios.length > 0 ? (
                         <div>
                           <div className="text-center mb-6">
                             <div className="text-[13px] text-[#1a1f2e] font-semibold">Se encontraron historias, pero no se pudieron generar escenarios.</div>
@@ -1125,14 +1347,40 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                         return (
                           <div key={story.jiraKey}>
                             {/* ── Story header row ── */}
-                            <div className={cn(
-                              'flex items-center gap-3 px-6 py-3 bg-[#FAFAF9] border-b border-[#F4F1EA]',
-                              selState !== 'none' && 'bg-[#104B99]/3',
-                            )}>
+                            <div
+                              className={cn(
+                                'flex items-center gap-3 px-6 py-3 bg-[#FAFAF9] border-b border-[#F4F1EA] cursor-pointer select-none',
+                                selState !== 'none' && 'bg-[#104B99]/3',
+                              )}
+                              onClick={() => {
+                                const jiraKey = story.jiraKey;
+                                const alreadySelected = config.selectedCases.includes(jiraKey);
+                                const next = alreadySelected
+                                  ? config.selectedCases.filter(k => k !== jiraKey)
+                                  : [...config.selectedCases, jiraKey];
+                                const nextSelectedIssueKeys = issueKeysFromSelection(next);
+                                lastSelectedIssueKeysRef.current = nextSelectedIssueKeys;
+                                console.log("[front:jira-row-click]", { issueKey: jiraKey });
+                                console.log("[front:jira-issue-selection]", { issueKey: jiraKey, selectedIssueKeys: nextSelectedIssueKeys });
+                                setConfig(c => ({ ...c, selectedCases: next }));
+                              }}
+                            >
                               {/* Story checkbox */}
                               <button
                                 type="button"
-                                onClick={() => toggleStorySelection(story)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const jiraKey = story.jiraKey;
+                                  const alreadySelected = config.selectedCases.includes(jiraKey);
+                                  const next = alreadySelected
+                                    ? config.selectedCases.filter(k => k !== jiraKey)
+                                    : [...config.selectedCases, jiraKey];
+                                  const nextSelectedIssueKeys = issueKeysFromSelection(next);
+                                  lastSelectedIssueKeysRef.current = nextSelectedIssueKeys;
+                                  console.log("[front:jira-checkbox-click]", { issueKey: jiraKey });
+                                  console.log("[front:jira-issue-selection]", { issueKey: jiraKey, selectedIssueKeys: nextSelectedIssueKeys });
+                                  setConfig(c => ({ ...c, selectedCases: next }));
+                                }}
                                 className={cn(
                                   'w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors',
                                   selState === 'all' ? 'border-[#104B99] bg-[#104B99]' :
@@ -1177,9 +1425,12 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                               {/* Expand toggle */}
                               <button
                                 type="button"
-                                onClick={() => setExpandedStories(prev =>
-                                  prev.includes(story.jiraKey) ? prev.filter(k => k !== story.jiraKey) : [...prev, story.jiraKey]
-                                )}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedStories(prev =>
+                                    prev.includes(story.jiraKey) ? prev.filter(k => k !== story.jiraKey) : [...prev, story.jiraKey]
+                                  );
+                                }}
                                 className="p-1 rounded-full hover:bg-[#E8EBEC] transition-colors flex-shrink-0"
                               >
                                 <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', isStoryExpanded && 'rotate-180')} />
@@ -1438,7 +1689,15 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             <ChevronLeft size={13} /> Atrás
           </button>
           {step < 4 ? (
-            <button onClick={() => { if (step === 2) { handleStep2Advance(); return; } if (step === 3 && !canAdvance()) return; setStep(s => Math.min(4, s + 1)); }} disabled={!canAdvance()}
+            <button onClick={() => {
+              if (step === 2) { handleStep2Advance(); return; }
+              if (step === 3 && !canAdvance()) return;
+              if (step === 3 && totalScenarios === 0 && (config.source === 'jira' || config.source === 'both')) {
+                runScenarioPreview("manual");
+                return;
+              }
+              setStep(s => Math.min(4, s + 1));
+            }} disabled={!canAdvance()}
               className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5">
               {step === 2 ? 'Generar escenarios' : 'Continuar'} <ChevronRight size={13} />
             </button>

@@ -118,4 +118,22 @@ export class JiraClient {
       return null;
     }
   }
+
+  async getSprintIssues(projectKey: string, sprintId: number): Promise<any[]> {
+    try {
+      const boards = await this.request<{ values?: any[] }>(`/rest/agile/1.0/board?projectKeyOrId=${projectKey}`);
+      if (!boards?.values?.length) {
+        console.log(`[jira-api] getSprintIssues no board for project=${projectKey}`);
+        return [];
+      }
+      const boardId = boards.values[0].id;
+      const result = await this.request<{ issues?: any[] }>(`/rest/agile/1.0/board/${boardId}/sprint/${sprintId}/issue?maxResults=100`);
+      const issues = result?.issues ?? [];
+      console.log(`[jira-api] getSprintIssues project=${projectKey} sprintId=${sprintId} count=${issues.length}`);
+      return issues;
+    } catch (err: any) {
+      console.log(`[jira-api] getSprintIssues error: ${err.message}`);
+      return [];
+    }
+  }
 }

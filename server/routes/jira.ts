@@ -38,4 +38,30 @@ router.get('/projects/:key/sprint/active', async (req: Request, res: Response) =
   }
 });
 
+// GET /api/jira/projects/:key/sprint/:sprintId/issues — Load issues for selection before preview
+router.get('/projects/:key/sprint/:sprintId/issues', async (req: Request, res: Response) => {
+  const projectKey = String(req.params.key);
+  const sprintId = Number(req.params.sprintId);
+  console.log(`[jira-api] sprint_issues request project=${projectKey} sprintId=${sprintId}`);
+
+  try {
+    // Fetch issues from sprint (using Jira client)
+    const issues = await client.getSprintIssues(projectKey, sprintId);
+    console.log(`[jira-api] sprint_issues response project=${projectKey} sprintId=${sprintId} count=${issues.length}`);
+
+    // Map to simple format for UI selection
+    const mapped = issues.map((issue: any) => ({
+      key: issue.key,
+      summary: issue.fields?.summary || issue.fields?.title || issue.key,
+      status: issue.fields?.status?.name || 'Unknown',
+      type: issue.fields?.issuetype?.name || 'Story',
+    }));
+
+    res.json({ ok: true, issues: mapped });
+  } catch (err: any) {
+    console.log(`[jira-api] sprint_issues error project=${projectKey} sprintId=${sprintId}: ${err.message}`);
+    sendError(res, err.status ?? 503, err.message ?? 'Failed to fetch sprint issues');
+  }
+});
+
 export default router;
