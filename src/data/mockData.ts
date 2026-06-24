@@ -2,12 +2,8 @@ import { C } from '../constants/theme';
 import type { Project, Execution, ActiveRun, TestCase, SprintCycle, PendingDefect } from '../types';
 
 export const projects: Project[] = [
-  { id: 'p1', name: 'Core Banking', team: 'Plataforma', stack: 'Selenium · Java', automated: 248, runs: 1842, passRate: 94.2, defects: 12, lastRun: '2h', status: 'success', trend: [88, 91, 89, 93, 92, 94, 94] },
-  { id: 'p2', name: 'Mobile Banking', team: 'Mobile', stack: 'Appium · JS', automated: 186, runs: 1203, passRate: 87.5, defects: 23, lastRun: '45m', status: 'success', trend: [82, 85, 83, 86, 88, 87, 87] },
-  { id: 'p3', name: 'Portal Web Clientes', team: 'Digital', stack: 'Cypress · TS', automated: 312, runs: 2451, passRate: 91.8, defects: 18, lastRun: '15m', status: 'running', trend: [89, 90, 92, 91, 93, 91, 92] },
-  { id: 'p4', name: 'API Pagos', team: 'Backend', stack: 'Newman', automated: 156, runs: 3120, passRate: 96.7, defects: 7, lastRun: '30m', status: 'success', trend: [94, 95, 96, 96, 97, 97, 97] },
-  { id: 'p5', name: 'Originación Créditos', team: 'Productos', stack: 'Selenium · Py', automated: 98, runs: 542, passRate: 82.3, defects: 31, lastRun: '1d', status: 'failed', trend: [78, 80, 79, 82, 81, 82, 82] },
-  { id: 'p6', name: 'Cajeros ATM', team: 'Canales', stack: 'Custom', automated: 64, runs: 412, passRate: 89.1, defects: 9, lastRun: '5h', status: 'success', trend: [85, 87, 88, 89, 88, 89, 89] },
+  { id: 'kiosko', name: 'Kiosko', team: 'Web', type: 'web', stack: 'Playwright · TypeScript', automated: 0, runs: 0, passRate: 0, defects: 0, lastRun: '—', status: 'success', trend: [] },
+  { id: 'portal-cliente', name: 'Portal Cliente', team: 'API', type: 'api', stack: 'Newman', automated: 0, runs: 0, passRate: 0, defects: 0, lastRun: '—', status: 'success', trend: [] },
 ];
 
 export const executionHistory: Execution[] = [

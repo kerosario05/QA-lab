@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   ChevronLeft, FileText, Lock, Pause, Square, CheckCircle2,
-  Loader2, Terminal, Maximize2, AlertCircle, Download,
+  Loader2, Terminal, Maximize2, AlertCircle, Download, FileBarChart2,
 } from 'lucide-react';
 import {
   RadialBarChart, RadialBar,
@@ -10,6 +10,8 @@ import {
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
 import { runsProxy } from '../../services/runs';
+import { newmanProxy } from '../../services/newman';
+import { generateExecutionReport } from '../../utils/generateExecutionReport';
 import type { ActiveRun } from '../../types';
 import {
   computeLiveExecutionElapsedMs,
@@ -46,6 +48,7 @@ const mapLevel = (level?: string): DisplayLog['type'] => {
 
 export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution }: LiveExecutionScreenProps) {
   const [progress,        setProgress]        = useState(run?.progress ?? 0);
+  const [total,           setTotal]           = useState(run?.total ?? 0);
   const [completed,       setCompleted]       = useState(run?.completed ?? 0);
   const [passed,          setPassed]          = useState(run?.passed ?? 0);
   const [failed,          setFailed]          = useState(run?.failed ?? 0);
@@ -63,7 +66,6 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
 
   const isDone   = DONE_STATUSES.has(jobStatus) || isTerminalRunStatus(jobStatus);
   const isFailed = jobStatus === 'failed' || jobStatus === 'error';
-  const total    = run?.total || 0;
 
   const syncElapsed = (data?: LiveExecutionStatusLike | null, now?: number) => {
     const elapsedSeconds = getLiveExecutionElapsedSeconds(run, data ?? lastStatusRef.current ?? undefined, now);
@@ -120,6 +122,8 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     const applyStatus = (data: any) => {
       lastStatusRef.current = data;
       if (data.progress    != null) setProgress(data.progress);
+      if (data.total       != null) setTotal(data.total);
+      if (data.itemCount   != null) setTotal(data.itemCount);
       if (data.completed   != null) setCompleted(data.completed);
       if (data.passed      != null) setPassed(data.passed);
       if (data.failed      != null) setFailed(data.failed);
@@ -197,24 +201,63 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
           <div className="flex items-center gap-2">
             {isDone ? (
               <>
+                {/* Generar Reporte PDF ejecutivo — siempre disponible al terminar */}
                 <button
-                  onClick={async () => {
-                    try {
-                      const jobId = run?.jobId || run?.id;
-                      if (!jobId) {
-                        console.error('No jobId available');
-                        return;
-                      }
-                      await runsProxy.downloadEvidence(jobId);
-                    } catch (err) {
-                      console.error('Error downloading evidence:', err);
-                      alert('Error al descargar el documento. Verifique que la evidencia esté disponible.');
-                    }
+                  onClick={() => {
+                    generateExecutionReport({
+                      jobId:          run?.jobId || run?.id || '—',
+                      project:        run?.project || 'Proyecto',
+                      collectionName: run?.collectionName,
+                      runType:        run?.runType,
+                      triggered:      run?.triggered || 'Manual',
+                      startedAt:      run?.startedAt || new Date().toISOString(),
+                      status:         jobStatus,
+                      total,
+                      completed,
+                      passed,
+                      failed,
+                      elapsed,
+                      logs,
+                    });
                   }}
-                  className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]"
+                  className="text-[11px] border border-[#48A157]/40 bg-[#48A157]/5 text-[#357a42] px-3 py-1.5 rounded-full hover:bg-[#48A157]/10 flex items-center gap-1.5 font-semibold transition"
                 >
-                  <Download size={11} /> Descargar documento
+                  <FileBarChart2 size={11} /> Generar Reporte
                 </button>
+
+                {run?.runType === 'api' ? (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const jobId = run?.jobId || run?.id;
+                        if (!jobId) { console.error('No jobId available'); return; }
+                        await newmanProxy.downloadReport(jobId);
+                      } catch (err) {
+                        console.error('Error downloading report:', err);
+                        alert('Error al descargar el reporte. Verifique que esté disponible.');
+                      }
+                    }}
+                    className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]"
+                  >
+                    <Download size={11} /> Descargar reporte PDF
+                  </button>
+                ) : (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const jobId = run?.jobId || run?.id;
+                        if (!jobId) { console.error('No jobId available'); return; }
+                        await runsProxy.downloadEvidence(jobId);
+                      } catch (err) {
+                        console.error('Error downloading evidence:', err);
+                        alert('Error al descargar el documento. Verifique que la evidencia esté disponible.');
+                      }
+                    }}
+                    className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]"
+                  >
+                    <Download size={11} /> Descargar documento
+                  </button>
+                )}
                 <button
                   onClick={() => onCloseExecution?.({ id: run?.jobId || run?.id, project: run?.project, total, passed, failed, duration: formatTime(elapsed) })}
                   className="text-[11px] bg-gradient-to-r from-[#48A157] to-[#357a42] text-white px-4 py-1.5 rounded-full flex items-center gap-1.5 font-semibold shadow-lg shadow-[#48A157]/20 hover:from-[#5EC470] hover:to-[#48A157]"
@@ -378,7 +421,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
               <ResponsiveContainer width="100%" height={150}>
                 <RadialBarChart
                   innerRadius="65%" outerRadius="100%"
-                  data={[{ name: 'pass', value: completed > 0 ? (passed / completed) * 100 : 0, fill: C.green }]}
+                  data={[{ name: 'pass', value: (passed + failed) > 0 ? (passed / (passed + failed)) * 100 : 0, fill: C.green }]}
                   startAngle={90} endAngle={-270}
                 >
                   <PolarAngleAxis type="number" domain={[0, 100]} angleAxisId={0} tick={false} />
@@ -387,7 +430,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                 <div className="text-[24px] font-medium leading-none text-[#1a1f2e]" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                  {completed > 0 ? Math.round((passed / completed) * 100) : 0}<span className="text-[12px] text-[#8B999D]">%</span>
+                  {(passed + failed) > 0 ? Math.round((passed / (passed + failed)) * 100) : 0}<span className="text-[12px] text-[#8B999D]">%</span>
                 </div>
                 <div className="text-[9px] text-[#8B999D] uppercase tracking-wider mt-1">Pass rate</div>
               </div>
