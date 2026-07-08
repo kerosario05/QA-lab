@@ -37,7 +37,7 @@ beforeAll(async () => {
   mockApp.post('/api/runs/scenario-preview-html', (_req, res) => {
     res.status(500).send('<html>Server Error</html>');
   });
-  mockApp.get('/api/runs/:jobId/logs', (req, res) => {
+  mockApp.get('/api/runs/:jobId/logs', (_req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.write('event: status\ndata: {"status":"running"}\n\n');
     res.write('event: done\ndata: {"status":"done","exitCode":0}\n\n');
@@ -48,8 +48,8 @@ beforeAll(async () => {
   });
 
   await Promise.all([
-    new Promise<void>((resolve) => { server = app.listen(PORT, resolve); }),
-    new Promise<void>((resolve) => { mockProvider = mockApp.listen(MOCK_PROVIDER_PORT, resolve); }),
+    new Promise<void>((resolve) => { server = app.listen(PORT, () => resolve()); }),
+    new Promise<void>((resolve) => { mockProvider = mockApp.listen(MOCK_PROVIDER_PORT, () => resolve()); }),
   ]);
 });
 

@@ -22,10 +22,13 @@ export interface ScenarioPreviewPayload {
   testrailSectionName?: string;
   appSlug?: string;
   effectiveTargetAppSlug?: string;
+  selectedIssueKeys?: string[]; // NEW: Issue keys selected by user for preview
 }
 
 export interface ProviderResponse {
   ok: boolean;
+  status?: number;
+  body?: any;
   stories?: any[];
   totalScenarios?: number;
   rejected?: any[];
@@ -33,6 +36,7 @@ export interface ProviderResponse {
   error?: string;
   message?: string;
   rawShape?: string;
+  rawEngineResponse?: any;
 }
 
 export function getScenarioPreviewConfig(): ScenarioPreviewProviderConfig {
@@ -53,7 +57,10 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
 
-  console.log(`[scenario-preview] provider request projectKey=${payload.projectKey} sprintId=${payload.sprintId ?? '—'} activeSprint=${!!payload.activeSprint} endpoint=${config.endpoint}`);
+  console.log(
+    `[scenario-preview] provider request projectKey=${payload.projectKey} sprintId=${payload.sprintId ?? '—'} activeSprint=${!!payload.activeSprint} ` +
+    `selectedIssueKeys=${payload.selectedIssueKeys ? JSON.stringify(payload.selectedIssueKeys) : 'undefined'} endpoint=${config.endpoint}`
+  );
 
   try {
     const res = await fetch(url, {
@@ -112,6 +119,7 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
       totalScenarios: normalized.totalScenarios,
       rejected: Array.isArray(parsed.rejected) ? parsed.rejected : undefined,
       rawShape: normalized.rawShape,
+      rawEngineResponse: parsed, // Full engine response for downstream orchestration
     };
   } catch (err: any) {
     clearTimeout(timeoutId);
@@ -124,5 +132,73 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
     const errMsg = err?.message ?? 'Unknown provider error';
     console.log(`[scenario-preview] provider error code=PREVIEW_PROVIDER_ERROR message=${errMsg.slice(0, 200)}`);
     return { ok: false, errorCode: 'PREVIEW_PROVIDER_ERROR', error: 'Provider request failed', message: errMsg };
+  }
+}
+
+// ── Route discovery proxy ─────────────────────────────────────────────────────
+
+export interface RouteDiscoveryPayload {
+  appSlug: string;
+  issueKey: string;
+  huIntent: string;
+  reasonCode: string;
+  currentRouteProfileName?: string;
+  jiraSummary?: string;
+  jiraDescription?: string;
+  acceptanceCriteria?: string;
+  dryRun?: boolean;
+  mode?: string;
+}
+
+export async function requestRouteDiscoveryRun(payload: RouteDiscoveryPayload): Promise<{ ok: boolean; status?: number; body?: any; errorCode?: string; error?: string; message?: string }> {
+  const config = getScenarioPreviewConfig();
+
+  if (!config.baseUrl) {
+    return { ok: false, errorCode: 'ENGINE_NOT_CONFIGURED', error: 'SCENARIO_PREVIEW_BASE_URL is not set' };
+  }
+
+  const url = `${config.baseUrl.replace(/\/+$/, '')}/api/scenarios/route-discovery/run`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+
+  console.log(
+    `[scenario-route-discovery] proxy request issue=${payload.issueKey} appSlug=${payload.appSlug} ` +
+    `huIntent=${payload.huIntent} dryRun=${payload.dryRun !== false}`
+  );
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    const rawBody = await res.text();
+    let parsed: any;
+
+    try {
+      parsed = rawBody.trim() ? JSON.parse(rawBody) : null;
+    } catch {
+      console.log(`[scenario-route-discovery] engine response invalid_json status=${res.status}`);
+      return { ok: false, status: 502, body: null, errorCode: 'INVALID_ENGINE_RESPONSE', error: 'Invalid JSON from engine' };
+    }
+
+    console.log(`[scenario-route-discovery] engine response status=${res.status} discoveryStatus=${parsed?.status ?? 'unknown'}`);
+
+    return { ok: res.ok, status: res.status, body: parsed };
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+
+    if (err.name === 'AbortError') {
+      console.log(`[scenario-route-discovery] engine unavailable reason=timeout`);
+      return { ok: false, errorCode: 'ENGINE_TIMEOUT', error: 'Engine request timed out' };
+    }
+
+    const errMsg = err?.message ?? 'Unknown engine error';
+    console.log(`[scenario-route-discovery] engine unavailable reason=${errMsg.slice(0, 200)}`);
+    return { ok: false, errorCode: 'ENGINE_UNAVAILABLE', error: 'Engine request failed', message: errMsg };
   }
 }

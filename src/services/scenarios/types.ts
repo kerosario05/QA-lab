@@ -9,7 +9,6 @@ export interface StoryScenario {
   custom_preconds: string | null;
   custom_expected?: string;
   custom_steps_separated: ScenarioStep[];
-  routeProfile?: string;
 }
 
 export interface Story {
@@ -44,6 +43,7 @@ export interface ScenariosPreviewParams {
   testrailSectionName?: string;
   appSlug?: string;
   effectiveTargetAppSlug?: string;
+  selectedIssueKeys?: string[]; // NEW: Issue keys selected by user for preview
 }
 
 export interface ScenariosApiError extends Error {

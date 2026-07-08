@@ -43,9 +43,6 @@ export function Topbar({ title, subtitle, action }: TopbarProps) {
           <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-[#48A157] rounded-full" />
         </button>
         {action}
-        <div className="ml-2 pl-3 border-l border-[#E8EBEC] flex items-center opacity-70 hover:opacity-100 transition-opacity">
-          <img src="/bsc-logo.png" alt="Banco Santa Cruz" className="h-6 w-auto object-contain" />
-        </div>
       </div>
     </header>
   );

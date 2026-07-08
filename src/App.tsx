@@ -8,12 +8,17 @@ import { DashboardView } from './pages/Dashboard';
 import { TestLaunch } from './pages/TestLaunch';
 import { LiveExecutionScreen } from './pages/LiveExecution';
 import { ExecutionClosure } from './pages/ExecutionClosure';
+import DefectChecklist from './pages/DefectChecklist';
 import type { ActiveRun, View } from './types';
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [liveRun, setLiveRun] = useState<ActiveRun | null>(null);
   const [closingExecution, setClosingExecution] = useState<any>(null);
+  const [checklistIssueKey, setChecklistIssueKey] = useState<string | null>(null);
+  const [checklistJobId, setChecklistJobId] = useState<string | undefined>(undefined);
+  const [checklistScenarioIds, setChecklistScenarioIds] = useState<string[] | undefined>(undefined);
+  const [prevView, setPrevView] = useState<View | null>(null);
 
   const handleLaunch = (run: ActiveRun) => {
     setLiveRun(run);
@@ -28,6 +33,21 @@ export default function App() {
   const handleCloseLive = () => {
     setLiveRun(null);
     setView('dashboard');
+  };
+
+  const handleOpenChecklist = (issueKey: string, jobId?: string, scenarioIds?: string[]) => {
+    setPrevView(view);
+    setChecklistIssueKey(issueKey);
+    setChecklistJobId(jobId);
+    setChecklistScenarioIds(scenarioIds);
+    setView('checklist');
+  };
+
+  const handleCloseChecklist = () => {
+    setChecklistIssueKey(null);
+    setChecklistJobId(undefined);
+    setView(prevView || 'dashboard');
+    setPrevView(null);
   };
 
   const handleCloseExecution = (execution: any) => {
@@ -119,7 +139,11 @@ export default function App() {
               onClose={handleCloseLive}
               onComplete={() => {}}
               onCloseExecution={handleCloseExecution}
+              onOpenChecklist={handleOpenChecklist}
             />
+          )}
+          {view === 'checklist' && checklistIssueKey && (
+            <DefectChecklist issueKey={checklistIssueKey} jobId={checklistJobId} scenarioIds={checklistScenarioIds} onBack={handleCloseChecklist} />
           )}
           {view === 'close' && (
             <ExecutionClosure

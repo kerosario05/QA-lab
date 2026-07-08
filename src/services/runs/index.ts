@@ -79,7 +79,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 function normalizeRunData(raw: Record<string, unknown>): Record<string, unknown> {
   const out = { ...raw };
 
-  // Formato summary genérico
+  // Formato summary gen├⌐rico
   const summary = raw.summary as Record<string, unknown> | undefined;
   if (summary) {
     if (out.passed    === undefined && summary.passed     !== undefined) out.passed    = summary.passed;
@@ -100,7 +100,7 @@ function normalizeRunData(raw: Record<string, unknown>): Record<string, unknown>
     const requests   = stats.requests   as Record<string, any> | undefined;
 
     if (assertions) {
-      // Newman no incluye assertions.passed — lo calcula como total - failed
+      // Newman no incluye assertions.passed ΓÇö lo calcula como total - failed
       if (out.passed === undefined) {
         if (assertions.passed !== undefined) {
           out.passed = assertions.passed;
@@ -133,7 +133,7 @@ function normalizeRunData(raw: Record<string, unknown>): Record<string, unknown>
   // itemCount como total alternativo
   if (out.total === undefined && raw.itemCount !== undefined) out.total = raw.itemCount;
 
-  // Si no hay completed pero hay progress + total, inferirlo (útil en eventos intermedios sin stats)
+  // Si no hay completed pero hay progress + total, inferirlo (├║til en eventos intermedios sin stats)
   if (out.completed === undefined && out.progress != null && out.total != null && Number(out.total) > 0) {
     out.completed = Math.round(Number(out.progress) * Number(out.total) / 100);
   }
@@ -148,7 +148,7 @@ function normalizeRunData(raw: Record<string, unknown>): Record<string, unknown>
 }
 
 /** Parsea y consume un stream SSE de `GET /api/runs/{jobId}/logs`.
- *  Devuelve una función de cleanup que aborta la conexión. */
+ *  Devuelve una funci├│n de cleanup que aborta la conexi├│n. */
 function streamLogs(jobId: string, cb: StreamCallbacks): () => void {
   const controller = new AbortController();
 
@@ -171,7 +171,7 @@ function streamLogs(jobId: string, cb: StreamCallbacks): () => void {
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
-        buffer = lines.pop() ?? ''; // guarda la línea incompleta al final
+        buffer = lines.pop() ?? ''; // guarda la l├¡nea incompleta al final
 
         for (const raw of lines) {
           const line = raw.trimEnd();
@@ -251,6 +251,16 @@ export const runsProxy = {
 
   launchExecution: (payload: LaunchExecutionPayload): Promise<LaunchExecutionResponse> =>
     request('/api/runs/launch-execution', { method: 'POST', body: JSON.stringify(payload) }),
+
+  getJob: (jobId: string): Promise<Record<string, unknown>> =>
+    request(`/api/runs/${jobId}`),
+
+  rerun: (jobId: string, mode: 'all' | 'failed_only' = 'all', issueKey?: string, checklistUrl?: string): Promise<Record<string, unknown>> => {
+    const body: Record<string, unknown> = { mode };
+    if (issueKey) body.issueKey = issueKey;
+    if (checklistUrl) body.checklistUrl = checklistUrl;
+    return request(`/api/runs/${jobId}/rerun`, { method: 'POST', body: JSON.stringify(body) });
+  },
 
   /** Descarga el archivo DOCX de evidencia para un jobId */
   downloadEvidence: async (jobId: string): Promise<void> => {

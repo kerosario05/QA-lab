@@ -3,7 +3,6 @@ export interface Project {
   name: string;
   team: string;
   stack: string;
-  type?: 'web' | 'api';
   automated: number;
   runs: number;
   passRate: number;
@@ -29,15 +28,8 @@ export interface ActiveRun {
   id: string;
   jobId?: string;
   project: string;
-  runType?: 'web' | 'api';
-  collectionName?: string;
   triggered: string;
   startedAt: string;
-  completedAt?: string;
-  finishedAt?: string;
-  lastEventAt?: string;
-  receivedFinalEventAt?: string;
-  durationMs?: number;
   progress: number;
   total: number;
   completed: number;
@@ -119,7 +111,7 @@ export interface FailedTest {
   reportToJira: boolean;
 }
 
-export type View = 'dashboard' | 'execute' | 'live' | 'close' | 'settings';
+export type View = 'dashboard' | 'execute' | 'live' | 'close' | 'settings' | 'checklist';
 
 export interface Scenario {
   jiraKey: string;

@@ -2,22 +2,20 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Check, Boxes, GitBranch, Database,
-  Layers, Search, Rocket, Loader2, ScanLine, AlertCircle, X, Sparkles, Package,
+  Layers, Search, Rocket, Loader2, ScanLine, AlertCircle, X, Sparkles,
 } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
 import { projects } from '../../data/mockData';
-import { trProjectsProxy, trSectionsProxy, fetchProjectSuites, fetchProjectCaseCount } from '../../services/testrail';
+import { trProjectsProxy, trSectionsProxy } from '../../services/testrail';
+import { fetchProjectSuites, fetchProjectCaseCount } from '../../services/testrail/projects';
 import type { TRSection, TRCase } from '../../services/testrail';
 import { jiraProjectsProxy } from '../../services/jira';
-import { scenariosProxy, normalizeScenarioPreviewResponse } from '../../services/scenarios';
-import type { Story, BlockedScenario } from '../../services/scenarios';
+import { scenariosProxy } from '../../services/scenarios';
+import type { Story } from '../../services/scenarios';
 import { runsProxy } from '../../services/runs';
 import type { RunPayload } from '../../services/runs';
-import { newmanProxy } from '../../services/newman';
-import type { NewmanRunPayload, NewmanCollection } from '../../services/newman';
 import type { ActiveRun, TestRailProject, JiraProject, JiraSprint } from '../../types';
-import { canContinueFromStep3 } from './step3-launch-gate';
 
 interface TestLaunchProps {
   onLaunch: (run: ActiveRun) => void;
@@ -32,31 +30,19 @@ interface LaunchConfig {
   testRailProject: string;
   selectedCases: string[];
   runAll: boolean;
-  newmanCollection: string;
 }
 
 export function TestLaunch({ onLaunch }: TestLaunchProps) {
-  // Normalize TestRail project name to appSlug for automation framework
-  const normalizeAppSlug = (name: string): string =>
-    name
-      .trim()
-      .toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .replace(/[_\s]+/g, "-")
-      .replace(/[^a-z0-9-]/g, "")
-      .replace(/-+/g, "-")
-      .replace(/^-+|-+$/g, "");
-
   const [step, setStep] = useState(1);
   const [config, setConfig] = useState<LaunchConfig>({
     automationProject: '', source: 'both', jiraProject: '', sprint: '',
     status: 'Desestimado', testRailProject: '', selectedCases: [], runAll: false,
-    newmanCollection: '',
   });
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
+  const [selectedIssueForPreview, setSelectedIssueForPreview] = useState<string | null>(null); // NEW: Track selected issue for preview
 
-  // ΓöÇΓöÇ TestRail project state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── TestRail project state ───────────────────────────────────
   const [trProjects, setTrProjects] = useState<TestRailProject[]>([]);
   const [trLoading, setTrLoading] = useState(false);
   const [trError, setTrError] = useState<string | null>(null);
@@ -66,68 +52,30 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const trTriggerRef = useRef<HTMLButtonElement>(null);
   const trPanelRef = useRef<HTMLDivElement>(null);
 
-  // ΓöÇΓöÇ TestRail sections state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── TestRail sections state ──────────────────────────────────
   const [trSections, setTrSections] = useState<TRSection[]>([]);
   const [trSectionsLoading, setTrSectionsLoading] = useState(false);
   const [trSectionsError, setTrSectionsError] = useState<string | null>(null);
   const [selectedSection, setSelectedSection] = useState<TRSection | null>(null);
+  const [selectedSuiteId, setSelectedSuiteId] = useState<number | null>(null);
+  const [caseCount, setCaseCount] = useState<number>(0);
   const [trSectionDropdownOpen, setTrSectionDropdownOpen] = useState(false);
   const [trSectionSearch, setTrSectionSearch] = useState('');
   const [trSectionDropdownPos, setTrSectionDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const trSectionTriggerRef = useRef<HTMLButtonElement>(null);
   const trSectionPanelRef = useRef<HTMLDivElement>(null);
 
-  // ΓöÇΓöÇ Resolve first suite ID for selected TR project ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  const [trSuiteId, setTrSuiteId] = useState<number | null>(null);
-  useEffect(() => {
-    if (!config.testRailProject) {
-      setTrSuiteId(null);
-      setTrTotalCaseCount(0);
-      return;
-    }
-    const project = trProjects.find(p => String(p.id) === config.testRailProject);
-    const first = project?.suites?.[0];
-    if (first) {
-      setTrSuiteId(first.id);
-      return;
-    }
-    const projectId = Number(config.testRailProject);
-    fetchProjectSuites(projectId)
-      .then(suites => {
-        const s = suites[0];
-        if (s) setTrSuiteId(s.id);
-        else setTrSuiteId(null);
-      })
-      .catch(() => setTrSuiteId(null));
-  }, [config.testRailProject, trProjects]);
-
-  // ΓöÇΓöÇ Fetch total case count for selected TR project+suite ΓöÇΓöÇΓöÇΓöÇΓöÇ
-  useEffect(() => {
-    if (!config.testRailProject || !trSuiteId) {
-      setTrTotalCaseCount(0);
-      return;
-    }
-    const projectId = Number(config.testRailProject);
-    const suiteId = trSuiteId;
-    fetchProjectCaseCount(projectId, suiteId)
-      .then(count => setTrTotalCaseCount(count))
-      .catch(() => {
-        console.warn('[testrail-count] failed to load case count', { projectId, suiteId });
-      });
-  }, [config.testRailProject, trSuiteId]);
-
-  // ΓöÇΓöÇ TestRail cases state (tab 2) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── TestRail cases state (tab 2) ─────────────────────────────
   const [trCases, setTrCases] = useState<TRCase[]>([]);
   const [trCasesLoading, setTrCasesLoading] = useState(false);
   const [trCasesError, setTrCasesError] = useState<string | null>(null);
   const [selectedTrCaseIds, setSelectedTrCaseIds] = useState<number[]>([]);
   const [expandedCaseId, setExpandedCaseId] = useState<number | null>(null);
-  const [trTotalCaseCount, setTrTotalCaseCount] = useState(0);
 
-  // ΓöÇΓöÇ Step 3 tab ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Step 3 tab ───────────────────────────────────────────────
   const [step3Tab, setStep3Tab] = useState<'scenarios' | 'cases'>('scenarios');
 
-  // ΓöÇΓöÇ Jira state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Jira state ───────────────────────────────────────────────
   const [jiraProjects, setJiraProjects] = useState<JiraProject[]>([]);
   const [jiraLoading, setJiraLoading] = useState(false);
   const [jiraError, setJiraError] = useState<string | null>(null);
@@ -140,29 +88,18 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [sprintLoading, setSprintLoading] = useState(false);
   const [sprintError, setSprintError] = useState<string | null>(null);
 
-  // ΓöÇΓöÇ Newman state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  const [newmanCollections, setNewmanCollections] = useState<NewmanCollection[]>([]);
-  const [newmanCollLoading, setNewmanCollLoading] = useState(false);
-  const [newmanCollError, setNewmanCollError] = useState<string | null>(null);
-  const [newmanCollDropdownOpen, setNewmanCollDropdownOpen] = useState(false);
-  const [newmanCollDropdownPos, setNewmanCollDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
-  const [newmanCollSearch, setNewmanCollSearch] = useState('');
-  const newmanCollTriggerRef = useRef<HTMLButtonElement>(null);
-  const newmanCollPanelRef = useRef<HTMLDivElement>(null);
-
-  // ΓöÇΓöÇ Stories state (step 3) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Stories state (step 3) ───────────────────────────────────
   const [stories, setStories] = useState<Story[]>([]);
   const [totalScenarios, setTotalScenarios] = useState(0);
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [storiesError, setStoriesError] = useState<string | null>(null);
   const [sprintMeta, setSprintMeta] = useState<{ id: number; name: string } | null>(null);
-  const [blockedScenarios, setBlockedScenarios] = useState<BlockedScenario[]>([]);
   // expanded story jiraKeys (story-level accordion)
   const [expandedStories, setExpandedStories] = useState<string[]>([]);
   // expanded scenario step panel: "jiraKey::scenarioIndex"
   const [expandedScenario, setExpandedScenario] = useState<string | null>(null);
 
-  // ΓöÇΓöÇ Fetch TestRail projects on mount ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Fetch TestRail projects on mount ─────────────────────────
   useEffect(() => {
     setTrLoading(true);
     trProjectsProxy.getAll()
@@ -171,7 +108,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       .finally(() => setTrLoading(false));
   }, []);
 
-  // ΓöÇΓöÇ Fetch Jira projects on mount ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Fetch Jira projects on mount ─────────────────────────────
   useEffect(() => {
     setJiraLoading(true);
     jiraProjectsProxy.getAll()
@@ -180,19 +117,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       .finally(() => setJiraLoading(false));
   }, []);
 
-  // ΓöÇΓöÇ Fetch Newman collections when API project is selected ΓöÇΓöÇΓöÇΓöÇ
-  useEffect(() => {
-    const proj = projects.find(p => p.id === config.automationProject);
-    if (proj?.type !== 'api') return;
-    setNewmanCollLoading(true);
-    setNewmanCollError(null);
-    newmanProxy.getCollections()
-      .then(cols => setNewmanCollections(Array.isArray(cols) ? cols : []))
-      .catch(e => setNewmanCollError(e.message))
-      .finally(() => setNewmanCollLoading(false));
-  }, [config.automationProject]);
-
-  // ΓöÇΓöÇ Fetch active sprint when Jira project changes ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Fetch active sprint when Jira project changes ────────────
   useEffect(() => {
     if (!config.jiraProject) {
       setActiveSprint(null);
@@ -210,84 +135,92 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       .finally(() => setSprintLoading(false));
   }, [config.jiraProject]);
 
-  // ΓöÇΓöÇ Fetch sections when TR project+suiteId known (cache + 60s silent refresh) ΓöÇΓöÇ
-  const lastSectionKeyRef = useRef<string | null>(null);
+  // ── Fetch sections when TR project changes ──
   useEffect(() => {
-    if (!config.testRailProject || !trSuiteId) {
-      if (!config.testRailProject) {
-        setTrSections([]);
-        setSelectedSection(null);
-      }
+    if (!config.testRailProject) {
+      setTrSections([]);
+      setSelectedSuiteId(null);
+      setSelectedSection(null);
       return;
     }
     const projectId = Number(config.testRailProject);
-    const sectionKey = `${projectId}:${trSuiteId}`;
 
-    if (lastSectionKeyRef.current === sectionKey && trSections.length > 0) {
-      return;
-    }
-    lastSectionKeyRef.current = sectionKey;
-
-    // Initial load ΓÇö cache hit = instant, miss = network call
+    // Step 1: fetch suites for this project
     setTrSectionsLoading(true);
     setTrSectionsError(null);
     setSelectedSection(null);
-    trSectionsProxy.getSections(projectId, trSuiteId)
-      .then(data => { setTrSections(data); setTrSectionsError(null); })
-      .catch(e => setTrSectionsError(e.message))
-      .finally(() => setTrSectionsLoading(false));
 
-    // Background refresh every 60s ΓÇö silent, no spinner
-    const interval = setInterval(() => {
-      if (trSuiteId) {
-        trSectionsProxy.getSections(projectId, trSuiteId)
-          .then(data => setTrSections(data))
+    fetchProjectSuites(projectId)
+      .then(suites => {
+        const suiteId = suites?.[0]?.id;
+        if (!suiteId) {
+          setTrSections([]);
+          setTrSectionsLoading(false);
+          return;
+        }
+        setSelectedSuiteId(suiteId);
+
+        // Step 2: fetch case count
+        fetchProjectCaseCount(projectId, suiteId)
+          .then(count => setCaseCount(count))
           .catch(() => {});
-      }
-    }, 60_000);
 
-    return () => clearInterval(interval);
-  }, [config.testRailProject, trSuiteId]);
+        // Step 3: fetch sections
+        return trSectionsProxy.getSections(projectId, suiteId)
+          .then(data => { setTrSections(data); setTrSectionsError(null); })
+          .catch(e => setTrSectionsError(e.message))
+          .finally(() => setTrSectionsLoading(false));
+      })
+      .catch(e => {
+        setTrSectionsError(e.message);
+        setTrSectionsLoading(false);
+      });
+  }, [config.testRailProject]);
 
-  // ΓöÇΓöÇ Fetch stories when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Fetch stories when entering Step 3 ──────────────────────
   useEffect(() => {
-    if (step !== 3 || !config.jiraProject || !activeSprint) return;
-    setConfig(c => ({ ...c, selectedCases: [] }));
-    const sprintId = activeSprint.id;
-    console.log('[scenario-preview] request', { projectKey: config.jiraProject, sprintId, activeSprint: !sprintId });
+    if (step !== 3 || !config.jiraProject) return;
     setStoriesLoading(true);
     setStoriesError(null);
     scenariosProxy.post({
       projectKey: config.jiraProject,
       status: config.status,
       maxResults: 50,
-      ...(sprintId ? { sprintId } : { activeSprint: true }),
+      ...(activeSprint?.id ? { sprintId: activeSprint.id } : { activeSprint: true }),
+      ...(selectedIssueForPreview && { selectedIssueKeys: [selectedIssueForPreview] }), // NEW: Include selected issue if any
     })
       .then(data => {
-        const normalized = normalizeScenarioPreviewResponse(data);
-        setStories(normalized.stories);
-        setTotalScenarios(normalized.totalScenarios);
-        setSprintMeta(normalized.sprint);
-        setBlockedScenarios(normalized.blockedScenarios);
-        setExpandedStories(normalized.stories.map(s => s.jiraKey));
+        const rawStories = data.stories ?? [];
+        setStories(rawStories);
+        setTotalScenarios(data.totalScenarios ?? rawStories.reduce((acc, st) => acc + st.scenarioCount, 0));
+        setSprintMeta(data.sprint);
+        // expand first story by default
+        setExpandedStories(rawStories.slice(0, 1).map((s, i) => `${s.jiraKey}::${i}`));
+        // Auto-select jiraKey if all stories share the same key
+        if (!selectedIssueForPreview) {
+          const uniqueKeys = [...new Set(rawStories.map(s => s.jiraKey))];
+          if (uniqueKeys.length === 1 && uniqueKeys[0]) setSelectedIssueForPreview(uniqueKeys[0]);
+        }
       })
       .catch(e => setStoriesError(e.message))
       .finally(() => setStoriesLoading(false));
-  }, [step, config.jiraProject, config.status, activeSprint]);
+  }, [step, config.jiraProject, config.status, selectedIssueForPreview]);
 
-  // ΓöÇΓöÇ Fetch TR cases when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Fetch TR cases when entering Step 3 ─────────────────────
   useEffect(() => {
-    if (step !== 3 || !config.testRailProject || !selectedSection || !trSuiteId) return;
-    setSelectedTrCaseIds([]);
+    if (step !== 3 || !config.testRailProject || !selectedSection) return;
+    const project = trProjects.find(p => String(p.id) === config.testRailProject);
+    const suiteId = project?.suites?.[0]?.id;
+    if (!suiteId) return;
     setTrCasesLoading(true);
     setTrCasesError(null);
-    trSectionsProxy.getCases(selectedSection.id, Number(config.testRailProject), trSuiteId)
-      .then(response => { setTrCases(response.cases ?? []); setTrCasesError(null); })
+    trSectionsProxy.getCases(selectedSection.id, Number(config.testRailProject), suiteId)
+      .then(data => { setTrCases(data); setTrCasesError(null); })
       .catch(e => setTrCasesError(e.message))
       .finally(() => setTrCasesLoading(false));
-  }, [step, config.testRailProject, selectedSection, trSuiteId]);
+  }, [step, config.testRailProject, selectedSection, trProjects]);
 
-  // ΓöÇΓöÇ Click-outside: close all dropdowns ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Click-outside: close all dropdowns ───────────────────────
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
@@ -297,32 +230,38 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         setJiraDropdownOpen(false);
       if (!trSectionTriggerRef.current?.contains(target) && !trSectionPanelRef.current?.contains(target))
         setTrSectionDropdownOpen(false);
-      if (!newmanCollTriggerRef.current?.contains(target) && !newmanCollPanelRef.current?.contains(target))
-        setNewmanCollDropdownOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   const handleStep2Advance = () => {
-    const proj = projects.find(p => p.id === config.automationProject);
-    if (proj?.type === 'api') {
-      setStep(4);
-      return;
-    }
     setStep3Tab(config.source === 'testrail' ? 'cases' : 'scenarios');
     setStep(3);
   };
 
-  // ΓöÇΓöÇ Helpers for scenario selection keys ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // ── Helpers for scenario selection keys ──────────────────────
   const scenarioKey = (jiraKey: string, i: number) => `${jiraKey}::${i}`;
 
+  /** Returns scenarios for a story. Falls back to treating story itself as a single scenario if scenarios[] is empty. */
+  const getScenarios = (story: Story): StoryScenario[] => {
+    if (Array.isArray(story.scenarios) && story.scenarios.length > 0) return story.scenarios;
+    // Fallback: story itself is a single scenario
+    return [{
+      title: story.title,
+      refs: story.jiraKey,
+      custom_preconds: null,
+      custom_expected: undefined,
+      custom_steps_separated: [],
+    }];
+  };
+
   const allScenarioKeys = useMemo(
-    () => Array.isArray(stories) ? stories.flatMap(st => st.scenarios.map((_, i) => scenarioKey(st.jiraKey, i))) : [],
+    () => (stories ?? []).flatMap(st => getScenarios(st).map((_, i) => scenarioKey(st.jiraKey, i))),
     [stories],
   );
 
-  const storyKeys = (story: Story) => story.scenarios.map((_, i) => scenarioKey(story.jiraKey, i));
+  const storyKeys = (story: Story) => getScenarios(story).map((_, i) => scenarioKey(story.jiraKey, i));
 
   const storySelectionState = (story: Story): 'all' | 'partial' | 'none' => {
     const keys = storyKeys(story);
@@ -341,18 +280,6 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         ? c.selectedCases.filter(k => !keys.includes(k))
         : [...c.selectedCases.filter(k => !keys.includes(k)), ...keys],
     }));
-  };
-
-  const translateReasonCode = (code: string): string => {
-    const translations: Record<string, string> = {
-      needs_route_profile: "Falta routeProfile. Configura el perfil de rutas en app.config.json o ejecuta discovery.",
-      missing_parent_route: "La ruta padre (listado) no está definida. Agrega visibleControls al routeProfile.",
-      missing_intermediate_step: "Faltan pasos intermedios. Agrega intermediates al routeProfile.",
-      missing_detail_selection_step: "Falta domainTerm para selección. Agrega domainTerms al routeProfile.",
-      unsupported_route_target: "Objetivo de ruta no soportado.",
-      ambiguous_route_target: "Objetivo de ruta ambiguo.",
-    };
-    return translations[code] || "Ruta no respaldada.";
   };
 
   const openTrDropdown = () => {
@@ -397,93 +324,25 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   }, [jiraProjects, jiraSearch]);
 
   const filteredSections = useMemo(() => {
-    const sections = Array.isArray(trSections) ? trSections : [];
-    if (!trSectionSearch) return sections;
+    if (!trSectionSearch) return trSections;
     const s = trSectionSearch.toLowerCase();
-    return sections.filter(sec => sec.name.toLowerCase().includes(s));
+    return trSections.filter(sec => sec.name.toLowerCase().includes(s));
   }, [trSections, trSectionSearch]);
 
   const canAdvance = () => {
     if (step === 1) return config.automationProject;
-    const selectedProject = projects.find(p => p.id === config.automationProject);
-    const isApiProject = selectedProject?.type === 'api';
     if (step === 2) {
-      if (isApiProject) {
-        return !!(config.newmanCollection && config.testRailProject && selectedSection);
-      }
       if (config.source === 'jira') return config.jiraProject && config.sprint;
       if (config.source === 'testrail') return config.testRailProject;
       return config.jiraProject && config.sprint && config.testRailProject;
     }
-    if (step === 3) {
-      return canContinueFromStep3({
-        storiesLoading,
-        storiesError,
-        totalScenarios,
-        trCasesLoading,
-        trCasesError,
-        trCasesCount: trCases.length,
-        selectedScenarioKeys: config.selectedCases,
-        selectedTestRailCaseIds: selectedTrCaseIds,
-        source: config.source,
-      });
-    }
     return true;
-  };
-
-  const handleNewmanLaunch = async () => {
-    const proj = projects.find(p => p.id === config.automationProject);
-    if (!config.newmanCollection) { setLaunchError('Selecciona una colección Newman.'); return; }
-    if (!config.testRailProject) { setLaunchError('Selecciona un proyecto TestRail.'); return; }
-    if (!selectedSection?.id) { setLaunchError('Selecciona una sección TestRail.'); return; }
-    if (!trSuiteId) { setLaunchError('No se pudo obtener el suite de TestRail.'); return; }
-
-    setIsLaunching(true);
-    setLaunchError(null);
-
-    try {
-      const payload: NewmanRunPayload = {
-        collection: config.newmanCollection,
-        testrailProjectId: Number(config.testRailProject),
-        testrailSuiteId: trSuiteId,
-        testrailSectionId: selectedSection.id,
-        testrailRunName: `Regresión API - ${config.newmanCollection}`,
-      };
-      const result = await newmanProxy.run(payload);
-      if (!result.ok) {
-        setLaunchError(result.error || 'Error al lanzar la colección Newman');
-        return;
-      }
-      const collectionTotal = newmanCollections.find(c => c.name === config.newmanCollection)?.requestCount ?? 0;
-      const newRun: ActiveRun = {
-        id: result.jobId,
-        jobId: result.jobId,
-        project: proj?.name || 'Portal Cliente',
-        runType: 'api',
-        collectionName: config.newmanCollection,
-        triggered: 'Manual',
-        startedAt: new Date().toISOString(),
-        progress: 0,
-        total: collectionTotal,
-        completed: 0, passed: 0, failed: 0,
-        currentTest: '',
-        eta: 'ΓÇö',
-        status: 'running',
-      };
-      onLaunch(newRun);
-    } catch (e: any) {
-      setLaunchError(e.message ?? 'Error al lanzar la ejecución Newman');
-    } finally {
-      setIsLaunching(false);
-    }
   };
 
   const handleLaunch = async () => {
     const proj = projects.find(p => p.id === config.automationProject);
-    if (proj?.type === 'api') {
-      return handleNewmanLaunch();
-    }
-    const suiteId = trSuiteId ?? undefined;
+    const trProject = trProjects.find(p => String(p.id) === config.testRailProject);
+    const suiteId = trProject?.suites?.[0]?.id;
     const totalSelected = config.selectedCases.length + selectedTrCaseIds.length;
     const runAll = config.runAll || totalSelected === 0;
 
@@ -493,7 +352,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       : stories
           .map(st => ({
             ...st,
-            scenarios: st.scenarios.filter((_, i) =>
+            scenarios: (st.scenarios ?? []).filter((_, i) =>
               config.selectedCases.includes(`${st.jiraKey}::${i}`)
             ),
           }))
@@ -503,142 +362,32 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       ? trCases.map(c => c.id)
       : selectedTrCaseIds;
 
-    const normalizeSectionSlug = (name: string): string =>
-      name
-        .toLowerCase()
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-|-$/g, "");
-
-    const sectionNameValue = selectedSection?.name;
-    const sectionSlugValue = sectionNameValue ? normalizeSectionSlug(sectionNameValue) : undefined;
-    const projectIdValue = Number(config.testRailProject) || 0;
-
-    // ΓöÇΓöÇ Client-side validation ΓöÇΓöÇ
-    if (!projectIdValue) {
-      setLaunchError('Selecciona un proyecto TestRail antes de lanzar.');
-      return;
-    }
-    if (!selectedSection?.id) {
-      setLaunchError('Selecciona una sección TestRail antes de lanzar.');
-      return;
-    }
-    if (!config.automationProject) {
-      setLaunchError('Selecciona un proyecto de automatización (appSlug) antes de lanzar.');
-      return;
-    }
-    if (selectedStories.length === 0 || selectedStories.every((s: any) => !s.scenarios?.length)) {
-      setLaunchError('No hay escenarios seleccionados para lanzar.');
-      return;
-    }
-
-    console.log(`[launch] selectedSection id=${selectedSection.id} name="${sectionNameValue}" slug=${sectionSlugValue}`);
-    console.log(`[launch] payload projectId=${projectIdValue} sectionId=${selectedSection.id} appSlug=${config.automationProject} scenarios=${selectedStories.length}`);
-    console.log(`[launch] scenarioIds=${selectedStories.map((s: any) => s.jiraKey).join(",")}`);
-    console.log(`[launch] firstScenarioSteps=${selectedStories[0]?.scenarios?.[0]?.custom_steps_separated?.length ?? "?"} expectedResultPresent=${Boolean(selectedStories[0]?.scenarios?.[0]?.custom_expected)}`);
-
-    // Construir escenarios seleccionados desde selectedStories con IDs ║nicos
-    let scenarioIndex = 0;
-    const selectedScenarios = selectedStories.flatMap((st: any) =>
-      (st.scenarios ?? []).map((sc: any) => {
-        scenarioIndex++;
-        const sid = `LAUNCH-${String(scenarioIndex).padStart(3, "0")}`;
-        return {
-          scenarioId: sid,
-          title: sc.title || `${st.jiraKey} Scenario ${scenarioIndex}`,
-          steps: Array.isArray(sc.custom_steps_separated)
-            ? sc.custom_steps_separated.map((s: any) => `${s.content}`)
-            : (Array.isArray(sc.steps) ? sc.steps : []),
-          expectedResult: sc.custom_expected || '',
-          preconditions: sc.custom_preconds ? [sc.custom_preconds] : [],
-          sourceIssueKey: st.jiraKey,
-        };
-      })
-    );
-    console.log(`[launch] scenarioIds=${selectedScenarios.map((s: any) => s.scenarioId).join(",")}`);
-    console.log(`[launch] sourceScenarioIds=${selectedScenarios.map((s: any) => s.sourceIssueKey).join(",")}`);
-
-    const launchPayload = {
-      appSlug: config.automationProject || '',
-      projectId: projectIdValue,
-      suiteId: suiteId ?? undefined,
-      sectionId: selectedSection.id,
-      sectionName: sectionNameValue,
-      sectionSlug: sectionSlugValue,
-      jiraKey: stories[0]?.jiraKey,
-      sprintName: undefined as string | undefined,
-      selectedScenarios,
-      publishStrategy: 'always_create' as const,
+    const payload: RunPayload = {
+      projectId: Number(config.testRailProject) || 0,
+      suiteId: suiteId ?? 0,
+      sectionId: selectedSection?.id,
+      stories: selectedStories,
+      existingCaseIds: existingIds,
     };
 
     setIsLaunching(true);
     setLaunchError(null);
-
-    // Fase 1: Publish + TestRun (launch-execution endpoint)
     try {
-      const launchResult = await runsProxy.launchExecution(launchPayload);
-      if (!launchResult.ok) {
-        setLaunchError(launchResult.message || launchResult.error || 'Error al publicar escenarios en TestRail');
-        setIsLaunching(false);
-        return;
-      }
-      console.log(`[launch] launch successful launchId=${launchResult.launchId} testRunId=${launchResult.testRunId} cases=${launchResult.publishedCases?.length}`);
-
-      // Fase 2: (futura) discovery job ΓÇö por ahora solo creamos el job para mantener compatibilidad
-      try {
-        const runJiraKey = launchPayload.jiraKey || stories[0]?.jiraKey;
-        const runPayload: RunPayload = {
-          projectId: projectIdValue,
-          suiteId: suiteId ?? 0,
-          sectionId: selectedSection.id,
-          sectionName: sectionNameValue,
-          sectionSlug: sectionSlugValue,
-          stories: selectedStories,
-          existingCaseIds: existingIds,
-          launchId: launchResult.launchId,
-          testRunId: launchResult.testRunId,
-          publishedCases: launchResult.publishedCases?.map(pc => ({
-            scenarioId: pc.scenarioId,
-            caseId: pc.caseId,
-            title: pc.title,
-          })),
-          jiraKey: runJiraKey,
-        };
-        console.log(`[launch] create discovery job jiraKey=${runJiraKey} launchId=${launchResult.launchId} testRunId=${launchResult.testRunId}`);
-        const { jobId, status } = await runsProxy.create(runPayload);
-        const newRun: ActiveRun = {
-          id: jobId,
-          jobId,
-          project: proj?.name || 'Proyecto',
-          triggered: 'Carlos M.',
-          startedAt: 'Hace 0m',
-          progress: 0,
-          total: runAll ? (trTotalCaseCount || totalSelected) : totalSelected,
-          completed: 0, passed: 0, failed: 0,
-          currentTest: '',
-          eta: 'ΓÇö',
-          status,
-        };
-        onLaunch(newRun);
-      } catch (jobErr: any) {
-        // Job creation failed but publish succeeded ΓÇö still show success
-        console.log(`[launch] job creation failed but publish succeeded: ${jobErr.message}`);
-        onLaunch({
-          id: `launch-${launchResult.launchId}`,
-          jobId: `launch-${launchResult.launchId}`,
-          project: proj?.name || 'Proyecto',
-          triggered: 'Carlos M.',
-          startedAt: 'Hace 0m',
-          progress: 0,
-          total: launchResult.publishedCases?.length || totalSelected,
-          completed: launchResult.publishedCases?.length || 0,
-          passed: 0, failed: 0,
-          currentTest: '',
-          eta: 'ΓÇö',
-          status: 'test_run_created',
-        });
-      }
+      const { jobId, status } = await runsProxy.create(payload);
+      const newRun: ActiveRun = {
+        id: jobId,
+        jobId,
+        project: proj?.name || 'Proyecto',
+        triggered: 'Carlos M.',
+        startedAt: 'Hace 0m',
+        progress: 0,
+        total: runAll ? (currentTR?.totalCaseCount ?? totalSelected) : totalSelected,
+        completed: 0, passed: 0, failed: 0,
+        currentTest: '',
+        eta: '—',
+        status,
+      };
+      onLaunch(newRun);
     } catch (e: any) {
       setLaunchError(e.message ?? 'Error al crear la ejecución');
     } finally {
@@ -646,70 +395,44 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     }
   };
 
-  // ΓöÇΓöÇ Computed: project type ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  const selectedProject = projects.find(p => p.id === config.automationProject);
-  const isApiProject = selectedProject?.type === 'api';
-
-  // ΓöÇΓöÇ Newman collection dropdown helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  const openNewmanCollDropdown = () => {
-    if (newmanCollLoading) return;
-    if (!newmanCollDropdownOpen && newmanCollTriggerRef.current) {
-      const r = newmanCollTriggerRef.current.getBoundingClientRect();
-      setNewmanCollDropdownPos({ top: r.bottom + 6, left: r.left, width: r.width });
-    }
-    setNewmanCollDropdownOpen(o => !o);
-  };
-
-  const filteredCollections = useMemo(() => {
-    if (!newmanCollSearch) return newmanCollections;
-    const s = newmanCollSearch.toLowerCase();
-    return newmanCollections.filter(c => c.name.toLowerCase().includes(s));
-  }, [newmanCollections, newmanCollSearch]);
-
-  const selectedNewmanCollection = newmanCollections.find(c => c.name === config.newmanCollection) ?? null;
-
-  const steps = isApiProject
-    ? [
-        { n: 1, label: 'Proyecto', icon: Boxes },
-        { n: 2, label: 'Configuración', icon: Package },
-        { n: 4, label: 'Lanzar', icon: Rocket },
-      ]
-    : [
-        { n: 1, label: 'Proyecto', icon: Boxes },
-        { n: 2, label: 'Fuentes', icon: GitBranch },
-        { n: 3, label: 'Casos', icon: ScanLine },
-        { n: 4, label: 'Lanzar', icon: Rocket },
-      ];
+  const steps = [
+    { n: 1, label: 'Proyecto', icon: Boxes },
+    { n: 2, label: 'Fuentes', icon: GitBranch },
+    { n: 3, label: 'Casos', icon: ScanLine },
+    { n: 4, label: 'Lanzar', icon: Rocket },
+  ];
 
   const showTrCasesTab = (config.source === 'testrail' || config.source === 'both') && !!selectedSection;
   const showScenariosTab = config.source === 'jira' || config.source === 'both';
 
   const retryStories = () => {
-    if (!activeSprint) return;
-    const sprintId = activeSprint.id;
     setStoriesLoading(true);
     setStoriesError(null);
     scenariosProxy.post({
       projectKey: config.jiraProject,
       status: config.status,
       maxResults: 50,
-      ...(sprintId ? { sprintId } : { activeSprint: true }),
+      ...(activeSprint?.id ? { sprintId: activeSprint.id } : { activeSprint: true }),
+      ...(selectedIssueForPreview && { selectedIssueKeys: [selectedIssueForPreview] }), // NEW: Include selected issue if any
     })
       .then(data => {
-        const normalized = normalizeScenarioPreviewResponse(data);
-        setStories(normalized.stories);
-        setTotalScenarios(normalized.totalScenarios);
-        setSprintMeta(normalized.sprint);
-        setBlockedScenarios(normalized.blockedScenarios);
-        setExpandedStories(normalized.stories.map(s => s.jiraKey));
+        const rawStories = data.stories ?? [];
+        setStories(rawStories);
+        setTotalScenarios(data.totalScenarios ?? rawStories.reduce((acc, st) => acc + st.scenarioCount, 0));
+        setSprintMeta(data.sprint);
+        setExpandedStories(rawStories.slice(0, 1).map((s, i) => `${s.jiraKey}::${i}`));
+        if (!selectedIssueForPreview) {
+          const uniqueKeys = [...new Set(rawStories.map(s => s.jiraKey))];
+          if (uniqueKeys.length === 1 && uniqueKeys[0]) setSelectedIssueForPreview(uniqueKeys[0]);
+        }
       })
       .catch(e => setStoriesError(e.message))
       .finally(() => setStoriesLoading(false));
-  };
+  }; 
 
   return (
     <div className="p-7" style={{ background: C.canvas, minHeight: '100%' }}>
-      {/* ΓöÇΓöÇ Step indicator ΓöÇΓöÇ */}
+      {/* ── Step indicator ── */}
       <div className="mb-5 flex items-center justify-center">
         <div className="flex items-center gap-2">
           {steps.map((s, i) => {
@@ -741,37 +464,40 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
       <div className="max-w-5xl mx-auto">
 
-        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 1 ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
+        {/* ════════════════ STEP 1 ════════════════ */}
         {step === 1 && (
           <BentoCard className="!p-8">
             <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso uno · Elige tu lanzadera</div>
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿Qué proyecto vamos a correr?</h2>
             <p className="text-[13px] text-[#58646D] mb-7">Selecciona el framework de automatización.</p>
-            <div className="grid grid-cols-2 gap-4 max-w-xl">
+            <div className="grid grid-cols-3 gap-3">
               {projects.map(p => {
                 const selected = config.automationProject === p.id;
                 return (
                   <button
                     key={p.id}
-                    onClick={() => setConfig({ ...config, automationProject: p.id, newmanCollection: '', testRailProject: '' })}
+                    onClick={() => setConfig({ ...config, automationProject: p.id })}
                     className={cn(
-                      'text-left p-6 rounded-2xl border-2 transition-all relative overflow-hidden',
+                      'text-left p-5 rounded-2xl border-2 transition-all relative overflow-hidden',
                       selected ? 'border-[#1a1f2e] bg-[#1a1f2e] text-white' : 'border-[#E8EBEC] hover:border-[#1a1f2e]/40 bg-white'
                     )}
                   >
-                    {selected && <div className="absolute -right-4 -top-4 w-24 h-24 rounded-full opacity-20" style={{ background: C.green }} />}
+                    {selected && <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full opacity-20" style={{ background: C.green }} />}
                     <div className="flex items-start justify-between mb-3 relative">
-                      <div className={cn('text-[10px] uppercase tracking-wider font-semibold', selected ? 'text-white/50' : 'text-[#8B999D]')}>
-                        {p.type === 'api' ? 'API · Newman' : 'Web · Playwright'}
-                      </div>
+                      <div className="text-[10px] uppercase tracking-wider font-semibold opacity-70">{p.team}</div>
                       {selected && (
                         <div className="w-5 h-5 rounded-full bg-[#48A157] flex items-center justify-center">
                           <Check size={12} className="text-white" strokeWidth={3} />
                         </div>
                       )}
                     </div>
-                    <div className={cn('text-[22px] font-medium leading-tight', selected ? 'text-white' : 'text-[#1a1f2e]')} style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{p.name}</div>
-                    <div className={cn('text-[12px] mt-1.5', selected ? 'text-white/60' : 'text-[#8B999D]')}>{p.stack}</div>
+                    <div className={cn('text-[18px] font-medium leading-tight', selected ? 'text-white' : 'text-[#1a1f2e]')} style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{p.name}</div>
+                    <div className={cn('text-[11px] mt-1', selected ? 'text-white/60' : 'text-[#8B999D]')}>{p.stack}</div>
+                    <div className={cn('flex items-center gap-3 mt-4 pt-3 border-t text-[10px]', selected ? 'border-white/15' : 'border-[#E8EBEC]')}>
+                      <span className={selected ? 'text-white/70' : 'text-[#58646D]'}>{p.automated} TCs</span>
+                      <span className={selected ? 'text-white/30' : 'text-[#BABEC3]'}>·</span>
+                      <span className={selected ? 'text-white/70' : 'text-[#58646D]'}>{p.passRate}% pass</span>
+                    </div>
                   </button>
                 );
               })}
@@ -779,233 +505,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           </BentoCard>
         )}
 
-        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 2 · API ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
-        {step === 2 && isApiProject && (
-          <BentoCard className="!p-8">
-            <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso dos · Configura la ejecución</div>
-            <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Colección y reporte</h2>
-            <p className="text-[13px] text-[#58646D] mb-7">Elige la colección Newman y el destino TestRail.</p>
-
-            <div className="grid grid-cols-2 gap-5">
-
-              {/* ΓöÇΓöÇ Panel Newman ΓöÇΓöÇ */}
-              <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-[#E47E2B] flex items-center justify-center"><Package size={15} className="text-white" /></div>
-                  <div className="text-[14px] font-semibold text-[#1a1f2e]">Newman</div>
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Colección</label>
-                  <div className="relative">
-                    <button ref={newmanCollTriggerRef} type="button" onClick={openNewmanCollDropdown} disabled={newmanCollLoading}
-                      className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
-                        newmanCollDropdownOpen ? 'border-[#E47E2B] ring-4 ring-[#E47E2B]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]',
-                        newmanCollLoading && 'opacity-60 cursor-wait')}
-                    >
-                      <span className={cn('text-[13px] truncate', config.newmanCollection ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
-                        {newmanCollLoading ? 'Cargando colecciones...' : (config.newmanCollection || 'Selecciona una colección...')}
-                      </span>
-                      <div className="flex-shrink-0 ml-2">
-                        {newmanCollLoading ? <Loader2 size={14} className="text-[#E47E2B] animate-spin" /> : <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', newmanCollDropdownOpen && 'rotate-180')} />}
-                      </div>
-                    </button>
-                    {newmanCollDropdownOpen && newmanCollDropdownPos && createPortal(
-                      <div ref={newmanCollPanelRef} style={{ position: 'fixed', top: newmanCollDropdownPos.top, left: newmanCollDropdownPos.left, width: newmanCollDropdownPos.width }}
-                        className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(228,126,43,0.22)] z-[9999] overflow-hidden">
-                        <div className="p-2 border-b border-[#F4F1EA]">
-                          <div className="relative">
-                            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
-                            <input autoFocus placeholder="Buscar colección..." value={newmanCollSearch} onChange={e => setNewmanCollSearch(e.target.value)}
-                              className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
-                            {newmanCollSearch && <button onClick={() => setNewmanCollSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
-                          </div>
-                          <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredCollections.length} de {newmanCollections.length} colecciones</div>
-                        </div>
-                        <div className="max-h-[220px] overflow-y-auto">
-                          {filteredCollections.length === 0 ? (
-                            <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">
-                              {newmanCollections.length === 0 ? 'No hay colecciones disponibles' : `Sin resultados para "${newmanCollSearch}"`}
-                            </div>
-                          ) : filteredCollections.map(col => {
-                            const isSel = config.newmanCollection === col.name;
-                            return (
-                              <button key={col.name} type="button"
-                                onClick={() => { setConfig(c => ({ ...c, newmanCollection: col.name })); setNewmanCollDropdownOpen(false); setNewmanCollSearch(''); }}
-                                className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#E47E2B]/5' : 'hover:bg-[#FAFAF7]')}
-                              >
-                                <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#E47E2B] bg-[#E47E2B]' : 'border-[#E8EBEC]')}>
-                                  {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
-                                </div>
-                                <span className={cn('text-[12px] truncate flex-1', isSel ? 'font-semibold text-[#E47E2B]' : 'font-medium text-[#1a1f2e]')}>{col.name}</span>
-                                {col.requestCount > 0 && (
-                                  <span className="text-[10px] font-mono text-[#8B999D] bg-[#F4F1EA] px-1.5 py-0.5 rounded flex-shrink-0 ml-2">{col.requestCount} req</span>
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>, document.body,
-                    )}
-                  </div>
-                  {newmanCollError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudieron cargar las colecciones</div>}
-                </div>
-
-                {selectedNewmanCollection && (
-                  <div className="bg-white rounded-xl p-4 border border-[#E8EBEC]">
-                    <div>
-                      <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Endpoints</div>
-                      <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                        {selectedNewmanCollection.requestCount > 0 ? selectedNewmanCollection.requestCount : 'ΓÇö'}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* ΓöÇΓöÇ Panel TestRail (API mode) ΓöÇΓöÇ */}
-              <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-[#48A157] flex items-center justify-center"><Database size={15} className="text-white" /></div>
-                  <div className="text-[14px] font-semibold text-[#1a1f2e]">TestRail</div>
-                </div>
-
-                <div>
-                  <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Proyecto</label>
-                  <div className="relative">
-                    <button ref={trTriggerRef} type="button" onClick={openTrDropdown} disabled={trLoading}
-                      className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
-                        trDropdownOpen ? 'border-[#48A157] ring-4 ring-[#48A157]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]',
-                        trLoading && 'opacity-60 cursor-wait')}
-                    >
-                      <span className={cn('text-[13px] truncate', currentTR ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
-                        {trLoading ? 'Cargando proyectos...' : (currentTR?.name ?? 'Selecciona un proyecto...')}
-                      </span>
-                      <div className="flex-shrink-0 ml-2">
-                        {trLoading ? <Loader2 size={14} className="text-[#48A157] animate-spin" /> : <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', trDropdownOpen && 'rotate-180')} />}
-                      </div>
-                    </button>
-                    {trDropdownOpen && trDropdownPos && createPortal(
-                      <div ref={trPanelRef} style={{ position: 'fixed', top: trDropdownPos.top, left: trDropdownPos.left, width: trDropdownPos.width }}
-                        className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(72,161,87,0.22)] z-[9999] overflow-hidden">
-                        <div className="p-2 border-b border-[#F4F1EA]">
-                          <div className="relative">
-                            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
-                            <input autoFocus placeholder="Buscar proyecto..." value={trSearch} onChange={e => setTrSearch(e.target.value)}
-                              className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
-                            {trSearch && <button onClick={() => setTrSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
-                          </div>
-                          <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredTrProjects.length} de {trProjects.length} proyectos</div>
-                        </div>
-                        <div className="max-h-[220px] overflow-y-auto">
-                          {filteredTrProjects.length === 0 ? (
-                            <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{trSearch}"</div>
-                          ) : filteredTrProjects.map(t => {
-                            const isSel = String(t.id) === config.testRailProject;
-                            return (
-                              <button key={t.id} type="button"
-                                onClick={() => {
-                                  setConfig(c => ({ ...c, testRailProject: String(t.id) }));
-                                  setTrDropdownOpen(false);
-                                  setTrSearch('');
-                                }}
-                                className={cn('w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
-                              >
-                                <div className="flex items-center gap-2.5 min-w-0">
-                                  <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
-                                    {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
-                                  </div>
-                                  <span className={cn('text-[12px] truncate', isSel ? 'font-semibold text-[#48A157]' : 'font-medium text-[#1a1f2e]')}>{t.name}</span>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>, document.body,
-                    )}
-                  </div>
-                  {trError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo conectar con TestRail</div>}
-                </div>
-
-                {currentTR && (
-                  <div className="bg-white rounded-xl p-4 border border-[#E8EBEC]">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Suite ID</div>
-                        <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trSuiteId ?? 'ΓÇö'}</div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Test Cases</div>
-                        <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trTotalCaseCount}</div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {currentTR && (
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Sección</label>
-                    {trSectionsLoading ? (
-                      <div className="flex items-center gap-2 text-[12px] text-[#8B999D] bg-white rounded-xl px-3 py-3 border border-[#E8EBEC]">
-                        <Loader2 size={13} className="animate-spin text-[#48A157]" /> Cargando secciones...
-                      </div>
-                    ) : trSections.length === 0 && !trSectionsError ? (
-                      <div className="text-[11px] text-[#8B999D] bg-white rounded-xl px-3 py-2.5 border border-[#E8EBEC]">Este proyecto no tiene secciones disponibles</div>
-                    ) : (
-                      <div className="relative">
-                        <button ref={trSectionTriggerRef} type="button" onClick={openTrSectionDropdown}
-                          className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
-                            trSectionDropdownOpen ? 'border-[#48A157] ring-4 ring-[#48A157]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]')}
-                        >
-                          <span className={cn('text-[13px] truncate', selectedSection ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
-                            {selectedSection?.name ?? 'Selecciona una sección...'}
-                          </span>
-                          <ChevronDown size={14} className={cn('text-[#8B999D] flex-shrink-0 ml-2 transition-transform duration-200', trSectionDropdownOpen && 'rotate-180')} />
-                        </button>
-                        {trSectionDropdownOpen && trSectionDropdownPos && createPortal(
-                          <div ref={trSectionPanelRef} style={{ position: 'fixed', top: trSectionDropdownPos.top, left: trSectionDropdownPos.left, width: trSectionDropdownPos.width }}
-                            className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(72,161,87,0.22)] z-[9999] overflow-hidden">
-                            <div className="p-2 border-b border-[#F4F1EA]">
-                              <div className="relative">
-                                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
-                                <input autoFocus placeholder="Buscar sección..." value={trSectionSearch} onChange={e => setTrSectionSearch(e.target.value)}
-                                  className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
-                                {trSectionSearch && <button onClick={() => setTrSectionSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
-                              </div>
-                              <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredSections.length} de {trSections.length} secciones</div>
-                            </div>
-                            <div className="max-h-[220px] overflow-y-auto">
-                              {filteredSections.length === 0 ? (
-                                <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{trSectionSearch}"</div>
-                              ) : filteredSections.map(sec => {
-                                const isSel = selectedSection?.id === sec.id;
-                                return (
-                                  <button key={sec.id} type="button"
-                                    onClick={() => { setSelectedSection(sec); setTrSectionDropdownOpen(false); setTrSectionSearch(''); }}
-                                    className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
-                                  >
-                                    <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
-                                      {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
-                                    </div>
-                                    <span className={cn('text-[12px] truncate flex-1', isSel ? 'font-semibold text-[#48A157]' : 'font-medium text-[#1a1f2e]')}>{sec.name}</span>
-                                    {sec.depth > 0 && <span className="text-[10px] text-[#8B999D] font-mono bg-[#F4F1EA] px-1.5 py-0.5 rounded flex-shrink-0 ml-auto">niv. {sec.depth}</span>}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>, document.body,
-                        )}
-                      </div>
-                    )}
-                    {trSectionsError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudieron cargar las secciones</div>}
-                  </div>
-                )}
-              </div>
-            </div>
-          </BentoCard>
-        )}
-
-        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 2 · WEB ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
-        {step === 2 && !isApiProject && (
+        {/* ════════════════ STEP 2 ════════════════ */}
+        {step === 2 && (
           <BentoCard className="!p-8">
             <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso dos · Conecta las fuentes</div>
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿De dónde vienen los casos?</h2>
@@ -1038,7 +539,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
             <div className="grid grid-cols-2 gap-5">
 
-              {/* ΓöÇΓöÇ Jira panel ΓöÇΓöÇ */}
+              {/* ── Jira panel ── */}
               {(config.source === 'jira' || config.source === 'both') && (
                 <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
                   <div className="flex items-center gap-2">
@@ -1139,7 +640,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                 </div>
               )}
 
-              {/* ΓöÇΓöÇ TestRail panel ΓöÇΓöÇ */}
+              {/* ── TestRail panel ── */}
               {(config.source === 'testrail' || config.source === 'both') && (
                 <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
                   <div className="flex items-center gap-2">
@@ -1181,13 +682,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                               const isSel = String(t.id) === config.testRailProject;
                               return (
                                 <button key={t.id} type="button"
-                                  onClick={() => {
-                                    const appSlug = normalizeAppSlug(t.name);
-                                    console.log(`[testrail-select] projectId=${t.id} name="${t.name}" appSlug="${appSlug}"`);
-                                    setConfig({ ...config, testRailProject: String(t.id), automationProject: appSlug });
-                                    setTrDropdownOpen(false);
-                                    setTrSearch('');
-                                  }}
+                                  onClick={() => { setConfig({ ...config, testRailProject: String(t.id) }); setTrDropdownOpen(false); setTrSearch(''); }}
                                   className={cn('w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
                                 >
                                   <div className="flex items-center gap-2.5 min-w-0">
@@ -1212,11 +707,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Suite ID</div>
-                          <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trSuiteId ?? 'ΓÇö'}</div>
+                          <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{selectedSuiteId ?? '—'}</div>
                         </div>
                         <div>
                           <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Test Cases</div>
-                          <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trTotalCaseCount}</div>
+                          <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{caseCount}</div>
                         </div>
                       </div>
                     </div>
@@ -1286,11 +781,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           </BentoCard>
         )}
 
-        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 3 ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
+        {/* ════════════════ STEP 3 ════════════════ */}
         {step === 3 && (
           <BentoCard className="!p-0 overflow-hidden">
 
-            {/* ΓöÇΓöÇ Loading ΓöÇΓöÇ */}
+            {/* ── Loading ── */}
             {storiesLoading && (
               <div className="bg-gradient-to-br from-[#0a2547] via-[#104B99] to-[#0a2547] p-8 text-white relative overflow-hidden">
                 <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(circle at 70% 30%, ${C.green}50 0%, transparent 50%)` }} />
@@ -1316,7 +811,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
               </div>
             )}
 
-            {/* ΓöÇΓöÇ Error ΓöÇΓöÇ */}
+            {/* ── Error ── */}
             {!storiesLoading && storiesError && (
               <div className="p-8">
                 <div className="flex items-center gap-3 text-[#E63946] mb-2">
@@ -1330,7 +825,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
               </div>
             )}
 
-            {/* ΓöÇΓöÇ Loaded ΓöÇΓöÇ */}
+            {/* ── Loaded ── */}
             {!storiesLoading && !storiesError && (
               <>
                 {/* Header */}
@@ -1360,10 +855,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                         <div>
                           <h2 className="text-[22px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
                             {totalScenarios > 0
-                              ? <><span className="text-[#104B99]">{totalScenarios}</span> escenarios · <span className="text-[#58646D] text-[18px]">{stories.length} historias</span></>
-                              : blockedScenarios.length > 0
-                                ? <><span className="text-[#DC2626]">{blockedScenarios.length}</span> {blockedScenarios.length === 1 ? 'historia bloqueada' : 'historias bloqueadas'}</>
-                                : 'Sin escenarios para este filtro'
+                              ? <><span className="text-[#104B99]">{totalScenarios}</span> escenarios · <span className="text-[#58646D] text-[18px]">{new Set(stories.map(s => s.jiraKey)).size} historias</span></>
+                              : 'Sin escenarios para este filtro'
                             }
                           </h2>
                           {sprintMeta && (
@@ -1421,48 +914,22 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                   </div>
                 </div>
 
-                {/* ΓöÇΓöÇ Tab: Escenarios Jira (historias agrupadas) ΓöÇΓöÇ */}
+                {/* ── Tab: Escenarios Jira (historias agrupadas) ── */}
                 {(step3Tab === 'scenarios' || !showTrCasesTab) && showScenariosTab && (
                   stories.length === 0 ? (
-                    <div className="p-12">
-                      {blockedScenarios.length > 0 ? (
-                        <div>
-                          <div className="text-center mb-6">
-                            <div className="text-[13px] text-[#1a1f2e] font-semibold">Se encontraron historias, pero no se pudieron generar escenarios.</div>
-                            <div className="text-[12px] text-[#8B999D] mt-1">Las siguientes historias fueron bloqueadas por falta de routeProfile o rutas incompletas:</div>
-                          </div>
-                          <div className="max-w-2xl mx-auto space-y-3">
-                            {blockedScenarios.map(blocked => (
-                              <div key={blocked.sourceIssueKey} className="bg-[#FEF2F2] border border-[#FCA5A5]/30 rounded-xl p-4">
-                                <div className="flex items-start gap-3">
-                                  <AlertCircle size={16} className="text-[#DC2626] flex-shrink-0 mt-0.5" />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <span className="text-[10px] font-mono font-bold text-[#DC2626] bg-[#DC2626]/10 px-2 py-0.5 rounded-full">{blocked.sourceIssueKey}</span>
-                                      <span className="text-[12px] font-semibold text-[#1a1f2e] truncate">{blocked.title}</span>
-                                    </div>
-                                    <div className="text-[11px] text-[#7C2D12] leading-relaxed">{translateReasonCode(blocked.reasonCode)}</div>
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-center">
-                          <div className="text-[13px] text-[#8B999D]">No hay escenarios con estado "{config.status}" en el sprint activo.</div>
-                        </div>
-                      )}
+                    <div className="p-12 text-center">
+                      <div className="text-[13px] text-[#8B999D]">No hay escenarios con estado "{config.status}" en el sprint activo.</div>
                     </div>
                   ) : (
                     <div className="max-h-[520px] overflow-y-auto divide-y divide-[#F4F1EA]">
-                      {stories.map(story => {
-                        const isStoryExpanded = expandedStories.includes(story.jiraKey);
+                      {stories.map((story, storyIdx) => {
+                        const storyRowKey = `${story.jiraKey}::${storyIdx}`;
+                        const isStoryExpanded = expandedStories.includes(storyRowKey);
                         const selState = storySelectionState(story);
 
                         return (
-                          <div key={story.jiraKey}>
-                            {/* ΓöÇΓöÇ Story header row ΓöÇΓöÇ */}
+                          <div key={storyRowKey}>
+                            {/* ── Story header row ── */}
                             <div className={cn(
                               'flex items-center gap-3 px-6 py-3 bg-[#FAFAF9] border-b border-[#F4F1EA]',
                               selState !== 'none' && 'bg-[#104B99]/3',
@@ -1482,13 +949,25 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                                 {selState === 'partial' && <div className="w-1.5 h-0.5 bg-[#104B99] rounded-full" />}
                               </button>
 
-                              {/* Jira key badge */}
-                              <span className={cn(
-                                'inline-flex items-center text-[10px] font-mono font-bold px-2 py-0.5 rounded-full flex-shrink-0',
-                                selState !== 'none' ? 'bg-[#104B99] text-white' : 'bg-[#E8EBEC] text-[#58646D]',
-                              )}>
+                              {/* Jira key badge - clickable to select for preview */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  // NEW: Toggle selected issue for preview
+                                  const newSelected = selectedIssueForPreview === story.jiraKey ? null : story.jiraKey;
+                                  setSelectedIssueForPreview(newSelected);
+                                  console.log(`[scenario-preview] UI selectedIssueKey=${newSelected ?? 'none'}`);
+                                }}
+                                className={cn(
+                                  'inline-flex items-center text-[10px] font-mono font-bold px-2 py-0.5 rounded-full flex-shrink-0 cursor-pointer transition-colors',
+                                  selectedIssueForPreview === story.jiraKey ?
+                                    'bg-[#104B99] text-white ring-2 ring-[#104B99]/30' :
+                                    'bg-[#E8EBEC] text-[#58646D] hover:bg-[#D8DFE4]',
+                                )}
+                                title="Click to select this issue for preview"
+                              >
                                 {story.jiraKey}
-                              </span>
+                              </button>
 
                               {/* Story title */}
                               <span className="flex-1 text-[13px] font-semibold text-[#1a1f2e] truncate">{story.title}</span>
@@ -1516,7 +995,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                               <button
                                 type="button"
                                 onClick={() => setExpandedStories(prev =>
-                                  prev.includes(story.jiraKey) ? prev.filter(k => k !== story.jiraKey) : [...prev, story.jiraKey]
+                                  prev.includes(storyRowKey) ? prev.filter(k => k !== storyRowKey) : [...prev, storyRowKey]
                                 )}
                                 className="p-1 rounded-full hover:bg-[#E8EBEC] transition-colors flex-shrink-0"
                               >
@@ -1524,8 +1003,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                               </button>
                             </div>
 
-                            {/* ΓöÇΓöÇ Scenario rows ΓöÇΓöÇ */}
-                            {isStoryExpanded && story.scenarios.map((sc, i) => {
+                            {/* ── Scenario rows ── */}
+                            {isStoryExpanded && getScenarios(story).map((sc, i) => {
                               const key = scenarioKey(story.jiraKey, i);
                               const isSelected = config.selectedCases.includes(key);
                               const isExpanded = expandedScenario === key;
@@ -1575,7 +1054,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                                     </div>
                                   </div>
 
-                                  {/* ΓöÇΓöÇ Expanded panel ΓöÇΓöÇ */}
+                                  {/* ── Expanded panel ── */}
                                   {isExpanded && hasDetail && (
                                     <div className="pl-14 pr-6 pb-4">
                                       <div className="bg-[#0d1119] rounded-xl overflow-hidden border border-[#1a1f2e]/20">
@@ -1603,7 +1082,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                                                 <div className="flex-1 min-w-0">
                                                   <div className="text-[11px] font-mono text-white/75 leading-relaxed">{s.content}</div>
                                                   {s.expected && (
-                                                    <div className="text-[10px] font-mono text-[#5EC470]/60 mt-0.5">ΓåÆ {s.expected}</div>
+                                                    <div className="text-[10px] font-mono text-[#5EC470]/60 mt-0.5">→ {s.expected}</div>
                                                   )}
                                                 </div>
                                               </div>
@@ -1630,7 +1109,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                   )
                 )}
 
-                {/* ΓöÇΓöÇ Tab: Casos TestRail ΓöÇΓöÇ */}
+                {/* ── Tab: Casos TestRail ── */}
                 {step3Tab === 'cases' && showTrCasesTab && (
                   trCasesLoading ? (
                     <div className="p-8 flex items-center gap-3 text-[#8B999D]">
@@ -1707,63 +1186,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           </BentoCard>
         )}
 
-        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 4 · API ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
-        {step === 4 && isApiProject && (
-          <BentoCard className="!p-0 overflow-hidden">
-            <div className="bg-gradient-to-br from-[#2d1a08] via-[#6b3410] to-[#2d1a08] text-white p-8 relative overflow-hidden">
-              <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(circle at 80% 20%, #E47E2B50 0%, transparent 50%)` }} />
-              <div className="absolute right-8 top-8 w-32 h-32 rounded-full border border-white/10" />
-              <div className="absolute right-16 top-16 w-16 h-16 rounded-full border border-white/10" />
-              <div className="relative">
-                <div className="text-[10px] uppercase tracking-[0.2em] text-[#f0a96a] font-semibold mb-2">Listo para ejecutar</div>
-                <h2 className="text-[40px] font-medium leading-none tracking-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                  {selectedProject?.name}
-                </h2>
-                <div className="text-[12px] text-white/60 mt-2">{selectedProject?.stack}</div>
-                <div className="grid grid-cols-3 gap-6 mt-7 pt-6 border-t border-white/15">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider text-white/60">Colección</div>
-                    <div className="text-[20px] font-medium mt-1 truncate" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                      {config.newmanCollection || 'ΓÇö'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider text-white/60">Endpoints</div>
-                    <div className="text-[28px] font-medium mt-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                      {selectedNewmanCollection?.requestCount ?? 'ΓÇö'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider text-white/60">Proyecto TestRail</div>
-                    <div className="text-[18px] font-medium mt-1.5 truncate">{currentTR?.name || 'ΓÇö'}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="p-8 space-y-3">
-              {trSuiteId && (
-                <div className="flex items-center justify-between py-3 border-b border-[#F4F1EA]">
-                  <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Suite ID</span>
-                  <span className="text-[13px] font-semibold text-[#1a1f2e]">{trSuiteId}</span>
-                </div>
-              )}
-              {selectedSection && (
-                <div className="flex items-center justify-between py-3 border-b border-[#F4F1EA]">
-                  <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Sección TestRail</span>
-                  <span className="text-[13px] font-semibold text-[#1a1f2e]">{selectedSection.name}</span>
-                </div>
-              )}
-              <div className="flex items-start gap-2.5 bg-[#FFF7F0] rounded-2xl p-4 mt-4 border border-[#E47E2B]/15">
-                <div className="text-[11px] text-[#58646D] leading-relaxed">
-                  La ejecución correrá la colección <strong className="text-[#1a1f2e]">{config.newmanCollection}</strong> con Newman y reportará los resultados a <strong className="text-[#1a1f2e]">TestRail</strong>.
-                </div>
-              </div>
-            </div>
-          </BentoCard>
-        )}
-
-        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 4 · WEB ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
-        {step === 4 && !isApiProject && (
+        {/* ════════════════ STEP 4 ════════════════ */}
+        {step === 4 && (
           <BentoCard className="!p-0 overflow-hidden">
             <div className="bg-gradient-to-br from-[#0a2547] via-[#104B99] to-[#0a2547] text-white p-8 relative overflow-hidden">
               <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(circle at 80% 20%, ${C.green}50 0%, transparent 50%), radial-gradient(circle at 20% 80%, #ffffff20 0%, transparent 50%)` }} />
@@ -1772,9 +1196,9 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
               <div className="relative">
                 <div className="text-[10px] uppercase tracking-[0.2em] text-[#5EC470] font-semibold mb-2">Listo para despegar</div>
                 <h2 className="text-[40px] font-medium leading-none tracking-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                  {selectedProject?.name}
+                  {projects.find(p => p.id === config.automationProject)?.name}
                 </h2>
-                <div className="text-[12px] text-white/60 mt-2">{selectedProject?.stack}</div>
+                <div className="text-[12px] text-white/60 mt-2">{projects.find(p => p.id === config.automationProject)?.stack}</div>
                 <div className="grid grid-cols-3 gap-6 mt-7 pt-6 border-t border-white/15">
                   <div>
                     <div className="text-[10px] uppercase tracking-wider text-white/60">Casos</div>
@@ -1824,21 +1248,16 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           </BentoCard>
         )}
 
-        {/* ΓöÇΓöÇ Navigation ΓöÇΓöÇ */}
+        {/* ── Navigation ── */}
         <div className="mt-5 flex items-center justify-between">
-          <button
-            onClick={() => {
-              if (step === 4 && isApiProject) { setStep(2); return; }
-              setStep(s => Math.max(1, s - 1));
-            }}
-            disabled={step === 1}
+          <button onClick={() => setStep(s => Math.max(1, s - 1))} disabled={step === 1}
             className="text-[12px] font-medium px-4 py-2.5 rounded-full disabled:opacity-30 disabled:cursor-not-allowed text-[#58646D] hover:bg-white hover:text-[#1a1f2e] transition flex items-center gap-1.5">
             <ChevronLeft size={13} /> Atrás
           </button>
           {step < 4 ? (
-            <button onClick={() => { if (step === 2) { handleStep2Advance(); return; } if (step === 3 && !canAdvance()) return; setStep(s => Math.min(4, s + 1)); }} disabled={!canAdvance()}
+            <button onClick={() => step === 2 ? handleStep2Advance() : setStep(s => Math.min(4, s + 1))} disabled={!canAdvance()}
               className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5">
-              {step === 2 ? (isApiProject ? 'Continuar' : 'Generar escenarios') : 'Continuar'} <ChevronRight size={13} />
+              {step === 2 ? 'Generar escenarios' : 'Continuar'} <ChevronRight size={13} />
             </button>
           ) : (
             <div className="flex flex-col items-end gap-2">

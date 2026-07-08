@@ -157,7 +157,7 @@ export async function requestDiscoveryBatch(caseIds: number[], sectionName?: str
 
   console.log(`[runs] provider request discovery-batch caseIds=${caseIds.length}`);
   const result = await fetchProvider(url, body, config.timeoutMs);
-  console.log(`[runs] provider response ok=${result.ok} jobId=${result.jobId ?? '—'} status=${result.status ?? '—'}`);
+  console.log(`[runs] provider response ok=${result.ok} jobId=${result.jobId ?? 'ΓÇö'} status=${result.status ?? 'ΓÇö'}`);
   return result;
 }
 
@@ -211,8 +211,8 @@ export async function requestScenarioPreviewRun(
 
   const scenarioIds = (publishedCases ?? []).map(pc => pc.scenarioId).join(",");
   const caseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");
-  console.log(`[runs] provider request scenario-preview stories=${stories.length} scenarios=${scenarios.length} launchId=${launchId ?? '—'} testRunId=${testRunId ?? '—'} publishedCases=${publishedCases?.length ?? 0} scenarioIds=${scenarioIds} caseIds=${caseIds} jiraKey=${jiraKey ?? '—'}`);
+  console.log(`[runs] provider request scenario-preview stories=${stories.length} scenarios=${scenarios.length} launchId=${launchId ?? 'ΓÇö'} testRunId=${testRunId ?? 'ΓÇö'} publishedCases=${publishedCases?.length ?? 0} scenarioIds=${scenarioIds} caseIds=${caseIds} jiraKey=${jiraKey ?? 'ΓÇö'}`);
   const result = await fetchProvider(url, body, config.timeoutMs);
-  console.log(`[runs] provider response ok=${result.ok} jobId=${result.jobId ?? '—'} status=${result.status ?? '—'}`);
+  console.log(`[runs] provider response ok=${result.ok} jobId=${result.jobId ?? 'ΓÇö'} status=${result.status ?? 'ΓÇö'}`);
   return result;
 }

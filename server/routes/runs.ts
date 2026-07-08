@@ -45,7 +45,11 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
     // Resolver nombre del proyecto TestRail para migración automática de perfil
     let testRailProjectName = body?.testRailProjectName as string | undefined;
     if (!testRailProjectName && projectId > 0) {
-      const trClient = new TestRailClient();
+      const trClient = new TestRailClient({
+        url: process.env.TESTRAIL_URL || '',
+        email: process.env.TESTRAIL_EMAIL || '',
+        apiKey: process.env.TESTRAIL_API_KEY || '',
+      });
       testRailProjectName = await resolveTestRailProjectName(projectId, null, trClient).catch(() => null) ?? undefined;
     }
 
@@ -88,8 +92,15 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
       return sendJson(res, statusCode, { ok: false, errorCode: result.errorCode, error: result.error, message: result.message });
     }
 
-    console.log(`[runs] provider response jobId=${result.jobId} status=${result.status}`);
-    return sendJson(res, 200, { ok: true, jobId: result.jobId, status: result.status });
+    console.log(`[runs] provider response jobId=${result.jobId} status=${result.status} issueKey=${result.issueKey ?? '—'}`);
+    return sendJson(res, 200, {
+      ok: true,
+      jobId: result.jobId,
+      status: result.status,
+      issueKey: result.issueKey,
+      checklistUrl: result.checklistUrl,
+      defectCount: result.defectCount,
+    });
   } catch (err: any) {
     console.log(`[runs] error code=RUN_PROVIDER_ERROR message=${(err?.message ?? '').slice(0, 200)}`);
     return sendJson(res, 502, { ok: false, errorCode: 'RUN_PROVIDER_ERROR', error: 'Run provider request failed', message: err?.message ?? '' });
@@ -134,6 +145,31 @@ router.post('/launch-execution', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/runs/:jobId/rerun — proxy to MCP runner
+router.post('/:jobId/rerun', async (req: Request, res: Response) => {
+  const config = getRunProviderConfig();
+  if (!config.baseUrl) {
+    return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
+  }
+  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/rerun`;
+  try {
+    const upstreamRes = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body || { mode: 'all' }),
+    });
+    const bodyText = await upstreamRes.text();
+    let parsed: any;
+    try { parsed = JSON.parse(bodyText); } catch { parsed = null; }
+    if (!upstreamRes.ok) {
+      return sendJson(res, upstreamRes.status, parsed ?? { ok: false, error: 'Provider error' });
+    }
+    return sendJson(res, 200, parsed);
+  } catch (err: any) {
+    return sendJson(res, 502, { ok: false, error: 'rerun_proxy_error', message: err?.message ?? '' });
+  }
+});
+
 // GET /api/runs/:jobId/logs — SSE proxy to MCP runner
 router.get('/:jobId/logs', async (req: Request, res: Response) => {
   const config = getRunProviderConfig();
@@ -141,7 +177,7 @@ router.get('/:jobId/logs', async (req: Request, res: Response) => {
     return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
   }
 
-  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(req.params.jobId)}/logs`;
+  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/logs`;
 
   try {
     const upstreamRes = await fetch(upstreamUrl);
@@ -189,7 +225,7 @@ router.get('/:jobId/evidence-docx', async (req: Request, res: Response) => {
     return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
   }
 
-  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(req.params.jobId)}/evidence-docx`;
+  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/evidence-docx`;
 
   try {
     const upstreamRes = await fetch(upstreamUrl);
@@ -240,7 +276,7 @@ router.get('/:jobId', async (req: Request, res: Response) => {
     return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
   }
 
-  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(req.params.jobId)}`;
+  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}`;
 
   try {
     const upstreamRes = await fetch(upstreamUrl);
