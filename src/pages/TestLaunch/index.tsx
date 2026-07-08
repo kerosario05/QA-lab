@@ -39,6 +39,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   });
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
+  const [selectedIssueForPreview, setSelectedIssueForPreview] = useState<string | null>(null); // NEW: Track selected issue for preview
 
   // ── TestRail project state ───────────────────────────────────
   const [trProjects, setTrProjects] = useState<TestRailProject[]>([]);
@@ -167,7 +168,13 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     if (step !== 3 || !config.jiraProject) return;
     setStoriesLoading(true);
     setStoriesError(null);
-    scenariosProxy.post({ projectKey: config.jiraProject, status: config.status, maxResults: 50 })
+    scenariosProxy.post({
+      projectKey: config.jiraProject,
+      status: config.status,
+      maxResults: 50,
+      ...(sprintId ? { sprintId } : { activeSprint: true }),
+      ...(selectedIssueForPreview && { selectedIssueKeys: [selectedIssueForPreview] }), // NEW: Include selected issue if any
+    })
       .then(data => {
         setStories(data.stories);
         setTotalScenarios(data.totalScenarios ?? data.stories.reduce((acc, st) => acc + st.scenarioCount, 0));
@@ -368,11 +375,18 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const retryStories = () => {
     setStoriesLoading(true);
     setStoriesError(null);
-    scenariosProxy.post({ projectKey: config.jiraProject, status: config.status, maxResults: 50 })
+    scenariosProxy.post({
+      projectKey: config.jiraProject,
+      status: config.status,
+      maxResults: 50,
+      ...(sprintId ? { sprintId } : { activeSprint: true }),
+      ...(selectedIssueForPreview && { selectedIssueKeys: [selectedIssueForPreview] }), // NEW: Include selected issue if any
+    })
       .then(data => {
         setStories(data.stories);
         setTotalScenarios(data.totalScenarios ?? data.stories.reduce((acc, st) => acc + st.scenarioCount, 0));
         setSprintMeta(data.sprint);
+        // expand all stories by default
         setExpandedStories(data.stories.map(s => s.jiraKey));
       })
       .catch(e => setStoriesError(e.message))
@@ -897,13 +911,25 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                                 {selState === 'partial' && <div className="w-1.5 h-0.5 bg-[#104B99] rounded-full" />}
                               </button>
 
-                              {/* Jira key badge */}
-                              <span className={cn(
-                                'inline-flex items-center text-[10px] font-mono font-bold px-2 py-0.5 rounded-full flex-shrink-0',
-                                selState !== 'none' ? 'bg-[#104B99] text-white' : 'bg-[#E8EBEC] text-[#58646D]',
-                              )}>
+                              {/* Jira key badge - clickable to select for preview */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  // NEW: Toggle selected issue for preview
+                                  const newSelected = selectedIssueForPreview === story.jiraKey ? null : story.jiraKey;
+                                  setSelectedIssueForPreview(newSelected);
+                                  console.log(`[scenario-preview] UI selectedIssueKey=${newSelected ?? 'none'}`);
+                                }}
+                                className={cn(
+                                  'inline-flex items-center text-[10px] font-mono font-bold px-2 py-0.5 rounded-full flex-shrink-0 cursor-pointer transition-colors',
+                                  selectedIssueForPreview === story.jiraKey ?
+                                    'bg-[#104B99] text-white ring-2 ring-[#104B99]/30' :
+                                    'bg-[#E8EBEC] text-[#58646D] hover:bg-[#D8DFE4]',
+                                )}
+                                title="Click to select this issue for preview"
+                              >
                                 {story.jiraKey}
-                              </span>
+                              </button>
 
                               {/* Story title */}
                               <span className="flex-1 text-[13px] font-semibold text-[#1a1f2e] truncate">{story.title}</span>

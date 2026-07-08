@@ -115,6 +115,16 @@ function streamLogs(jobId: string, cb: StreamCallbacks): () => void {
 }
 
 export const runsProxy = {
+  getJob: (jobId: string): Promise<Record<string, unknown>> =>
+    request(`/api/runs/${jobId}`),
+
+  rerun: (jobId: string, mode: 'all' | 'failed_only' = 'all', issueKey?: string, checklistUrl?: string): Promise<Record<string, unknown>> => {
+    const body: Record<string, unknown> = { mode };
+    if (issueKey) body.issueKey = issueKey;
+    if (checklistUrl) body.checklistUrl = checklistUrl;
+    return request(`/api/runs/${jobId}/rerun`, { method: 'POST', body: JSON.stringify(body) });
+  },
+
   create: (payload: RunPayload): Promise<RunCreateResponse> =>
     request('/api/runs/from-scenarios', { method: 'POST', body: JSON.stringify(payload) }),
 

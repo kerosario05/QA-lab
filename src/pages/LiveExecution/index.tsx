@@ -17,6 +17,7 @@ interface LiveExecutionScreenProps {
   onClose: () => void;
   onComplete?: () => void;
   onCloseExecution?: (execution: any) => void;
+  onOpenChecklist?: (issueKey: string, jobId?: string) => void;
 }
 
 interface DisplayLog { time: string; type: string; msg: string; }
@@ -38,7 +39,7 @@ const mapLevel = (level?: string): DisplayLog['type'] => {
   return 'info';
 };
 
-export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution }: LiveExecutionScreenProps) {
+export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution, onOpenChecklist }: LiveExecutionScreenProps) {
   const [progress,        setProgress]        = useState(run?.progress ?? 0);
   const [completed,       setCompleted]       = useState(run?.completed ?? 0);
   const [passed,          setPassed]          = useState(run?.passed ?? 0);
@@ -48,6 +49,11 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [logs,            setLogs]            = useState<DisplayLog[]>([]);
   const [streamError,     setStreamError]     = useState<string | null>(null);
   const [elapsed,         setElapsed]         = useState(0);
+  const [checklistUrl,    setChecklistUrl]    = useState<string | null>(null);
+  const [issueKey,        setIssueKey]        = useState<string | null>(null);
+  const [defectCount,     setDefectCount]     = useState<number>(0);
+  const [rerunning,       setRerunning]        = useState(false);
+  const [rerunKey,        setRerunKey]          = useState(0);
 
   const logsEndRef   = useRef<HTMLDivElement>(null);
   const onCompleteRef = useRef(onComplete);
@@ -56,6 +62,54 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const isDone   = DONE_STATUSES.has(jobStatus);
   const isFailed = jobStatus === 'failed' || jobStatus === 'error';
   const total    = run?.total || 0;
+
+  const handleRerun = async () => {
+    if (!run?.jobId || rerunning) return;
+    setRerunning(true);
+    try {
+      const result = await runsProxy.rerun(run.jobId, 'all', issueKey || undefined, checklistUrl || undefined);
+      if (result?.jobId) {
+        // Preserve issueKey/checklistUrl from rerun response or current state
+        const newIssueKey = (result as any).issueKey || issueKey;
+        const newChecklistUrl = (result as any).checklistUrl || checklistUrl;
+        // Reset state for new run
+        setProgress(0);
+        setCompleted(0);
+        setPassed(0);
+        setFailed(0);
+        setCurrentTestName('');
+        setLogs([]);
+        setJobStatus('queued');
+        setChecklistUrl(newChecklistUrl);
+        setIssueKey(newIssueKey);
+        setDefectCount(0);
+        // Update run with new jobId so SSE reconnects
+        const updatedRun = { ...run, jobId: result.jobId, status: 'queued', progress: 0, completed: 0, passed: 0, failed: 0, currentTest: '' };
+        Object.assign(run, updatedRun);
+        // Force re-mount SSE by toggling key
+        setRerunKey(prev => prev + 1);
+      } else {
+        console.error('[rerun] failed: no jobId in response');
+      }
+    } catch (err) {
+      console.error('[rerun] error:', err);
+    } finally {
+      setRerunning(false);
+    }
+  };
+
+  const syncElapsed = (data?: LiveExecutionStatusLike | null, now?: number) => {
+    const elapsedSeconds = getLiveExecutionElapsedSeconds(run, data ?? lastStatusRef.current ?? undefined, now);
+    setElapsed(elapsedSeconds);
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+      console.debug(`[live-execution] timer stopped jobId=${run?.jobId || run?.id}`);
+    }
+  };
 
   // Wall-clock timer
   useEffect(() => {
@@ -72,6 +126,13 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   useEffect(() => {
     if (!run?.jobId) return;
 
+    // Fetch job data to get issueKey and checklistUrl
+    runsProxy.getJob(run.jobId).then(data => {
+      if ((data as any).issueKey) setIssueKey((data as any).issueKey);
+      if ((data as any).checklistUrl) setChecklistUrl((data as any).checklistUrl);
+      if (typeof (data as any).defectCount === 'number') setDefectCount((data as any).defectCount);
+    }).catch(() => {});
+
     const applyStatus = (data: any) => {
       if (data.progress    != null) setProgress(data.progress);
       if (data.completed   != null) setCompleted(data.completed);
@@ -79,6 +140,14 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       if (data.failed      != null) setFailed(data.failed);
       if (data.currentTest)         setCurrentTestName(data.currentTest);
       if (data.status)              setJobStatus(data.status);
+      if (data.checklistUrl)        setChecklistUrl(data.checklistUrl);
+      if (data.issueKey)            setIssueKey(data.issueKey);
+      if (typeof data.defectCount === 'number') setDefectCount(data.defectCount);
+      if (isTerminalRunStatus(data.status)) {
+        syncElapsed(data);
+        console.debug(`[live-execution] terminal status received status=${data.status} durationMs=${computeLiveExecutionElapsedMs(run, data)}`);
+        stopTimer();
+      }
     };
 
     const cleanup = runsProxy.streamLogs(run.jobId, {
@@ -268,13 +337,33 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                   : 'Ejecutándose ahora'}
               </div>
             </div>
-            {currentTestName ? (
+
+            {/* During execution: show current test name */}
+            {!isDone && currentTestName && (
               <div className="text-[18px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
                 {currentTestName}
               </div>
-            ) : (
+            )}
+            {!isDone && !currentTestName && (
               <div className="text-[13px] text-[#8B999D]">
-                {isDone ? '—' : 'Esperando primer caso...'}
+                Esperando primer caso...
+              </div>
+            )}
+
+            {/* When done: show title + optional checklist button */}
+            {isDone && (
+              <div>
+                <div className="text-[18px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
+                  Ejecución finalizada
+                </div>
+                {issueKey && checklistUrl && defectCount > 0 && (
+                  <button
+                    onClick={() => onOpenChecklist?.(issueKey, run?.jobId)}
+                    className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black px-4 py-2 rounded-full transition"
+                  >
+                    <FileText size={13} /> Ver checklist de defectos
+                  </button>
+                )}
               </div>
             )}
             {streamError && (
@@ -317,6 +406,29 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
               </div>
             </div>
           </BentoCard>
+
+          {/* ── Rerun button (only when execution is done) ── */}
+          {isDone && (
+            <BentoCard className="col-span-12 !p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="text-[13px] text-[#1a1f2e] font-medium">
+                    ¿Deseas reejecutar los escenarios?
+                  </div>
+                  <div className="text-[11px] text-[#8B999D] mt-0.5">
+                    Se usarán los mismos escenarios ya generados, sin volver a publicar casos en TestRail.
+                  </div>
+                </div>
+                <button
+                  onClick={handleRerun}
+                  disabled={rerunning}
+                  className="shrink-0 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black disabled:opacity-50 px-4 py-2 rounded-full transition"
+                >
+                  {rerunning ? 'Reejecutando...' : 'Reejecutar escenarios'}
+                </button>
+              </div>
+            </BentoCard>
+          )}
         </div>
 
         {/* ── Terminal de logs ── */}
