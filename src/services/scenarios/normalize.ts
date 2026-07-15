@@ -12,14 +12,23 @@ function extractKeyFromText(text: string | undefined | null): string | undefined
 export function normalizeScenarioPreviewResponse(parsed: any): {
   stories: any[];
   totalScenarios: number;
+  blockedScenarios: any[];
+  adaptiveScenarios: any[];
+  rejected: any[];
   rawShape: string;
 } {
   const raw = parsed?.stories ?? parsed?.scenarios ?? [];
   const flatItems: any[] = Array.isArray(raw) ? raw : [];
+  const blockedScenarios = Array.isArray(parsed?.blockedScenarios) ? parsed.blockedScenarios : [];
+  const adaptiveScenarios = Array.isArray(parsed?.adaptiveScenarios) ? parsed.adaptiveScenarios : [];
+  const rejected = Array.isArray(parsed?.rejected) ? parsed.rejected : [];
 
   console.log('[scenario-normalize] input', {
     source: Object.keys(parsed ?? {}).slice(0, 5).join(','),
     flatCount: flatItems.length,
+    blockedScenarios: blockedScenarios.length,
+    adaptiveScenarios: adaptiveScenarios.length,
+    rejected: rejected.length,
     firstKeys: flatItems[0] ? Object.keys(flatItems[0]).slice(0, 8) : [],
     firstSteps: flatItems[0]?.steps?.[0],
     firstCustomSteps: flatItems[0]?.custom_steps_separated?.[0],
@@ -35,7 +44,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
 
   // If items already have populated scenarios[], return as-is
   if (flatItems.some((item: any) => Array.isArray(item.scenarios) && item.scenarios.length > 0)) {
-    return { stories: flatItems, totalScenarios, rawShape };
+    return { stories: flatItems, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
   }
 
   // Group flat scenario items by jiraKey
@@ -91,7 +100,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
   }
 
   const stories = Array.from(grouped.values());
-  console.log('[scenario-normalize] output', { stories: stories.length, firstScenarios: stories[0]?.scenarios?.length });
+  console.log('[scenario-normalize] output', { stories: stories.length, blockedScenarios: blockedScenarios.length, firstScenarios: stories[0]?.scenarios?.length });
 
-  return { stories, totalScenarios, rawShape };
+  return { stories, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
 }

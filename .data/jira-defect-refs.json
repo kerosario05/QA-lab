@@ -1,0 +1,73 @@
+{
+  "AA-92:1783618160142-bqmehj2": {
+    "jiraIssueKey": "GDD-1237",
+    "jiraIssueUrl": "https://bmsc.atlassian.net/browse/GDD-1237",
+    "jiraUploadedAt": "2026-07-09T18:50:53.143Z",
+    "jiraUploadStatus": "uploaded",
+    "issueKey": "AA-92",
+    "jobId": "d21fed41-0830-4403-8040-3bd7b17dfb2a",
+    "scenarioId": "1783618160142-bqmehj2"
+  },
+  "AA-92:1783793082267-j2tcweq": {
+    "jiraIssueKey": "GDD-1243",
+    "jiraIssueUrl": "https://bmsc.atlassian.net/browse/GDD-1243",
+    "jiraUploadedAt": "2026-07-11T18:05:23.172Z",
+    "jiraUploadStatus": "uploaded",
+    "issueKey": "AA-92",
+    "jobId": "bc87aba8-80ee-4b5d-8850-c24a7c6390f7",
+    "scenarioId": "1783793082267-j2tcweq"
+  },
+  "AA-92:1783793082268-1gixwgq": {
+    "jiraIssueKey": "GDD-1244",
+    "jiraIssueUrl": "https://bmsc.atlassian.net/browse/GDD-1244",
+    "jiraUploadedAt": "2026-07-11T18:06:01.361Z",
+    "jiraUploadStatus": "uploaded",
+    "issueKey": "AA-92",
+    "jobId": "bc87aba8-80ee-4b5d-8850-c24a7c6390f7",
+    "scenarioId": "1783793082268-1gixwgq"
+  },
+  "AA-91:1783025279150-e9cwn7u": {
+    "jiraIssueKey": "GDD-1246",
+    "jiraIssueUrl": "https://bmsc.atlassian.net/browse/GDD-1246",
+    "jiraUploadedAt": "2026-07-13T18:07:01.128Z",
+    "jiraUploadStatus": "uploaded",
+    "issueKey": "AA-91",
+    "scenarioId": "1783025279150-e9cwn7u"
+  },
+  "AA-91:1783965940924-qokf3zw": {
+    "jiraIssueKey": "GDD-1247",
+    "jiraIssueUrl": "https://bmsc.atlassian.net/browse/GDD-1247",
+    "jiraUploadedAt": "2026-07-13T18:46:00.980Z",
+    "jiraUploadStatus": "uploaded",
+    "issueKey": "AA-91",
+    "jobId": "7dc5be29-c744-4d9e-8069-877ac2f7efee",
+    "scenarioId": "1783965940924-qokf3zw"
+  },
+  "AA-91:1783965940926-tqe0rrl": {
+    "jiraIssueKey": "GDD-1248",
+    "jiraIssueUrl": "https://bmsc.atlassian.net/browse/GDD-1248",
+    "jiraUploadedAt": "2026-07-13T18:46:01.000Z",
+    "jiraUploadStatus": "uploaded",
+    "issueKey": "AA-91",
+    "jobId": "7dc5be29-c744-4d9e-8069-877ac2f7efee",
+    "scenarioId": "1783965940926-tqe0rrl"
+  },
+  "AA-91:1783965940929-ibe4u5p": {
+    "jiraIssueKey": "GDD-1249",
+    "jiraIssueUrl": "https://bmsc.atlassian.net/browse/GDD-1249",
+    "jiraUploadedAt": "2026-07-13T18:46:01.014Z",
+    "jiraUploadStatus": "uploaded",
+    "issueKey": "AA-91",
+    "jobId": "7dc5be29-c744-4d9e-8069-877ac2f7efee",
+    "scenarioId": "1783965940929-ibe4u5p"
+  },
+  "AA-91:1783973507607-xwygxmv": {
+    "jiraIssueKey": "GDD-1250",
+    "jiraIssueUrl": "https://bmsc.atlassian.net/browse/GDD-1250",
+    "jiraUploadedAt": "2026-07-13T20:14:45.755Z",
+    "jiraUploadStatus": "uploaded",
+    "issueKey": "AA-91",
+    "jobId": "e3717bd7-56dc-46c3-b8b1-124210f73b05",
+    "scenarioId": "1783973507607-xwygxmv"
+  }
+}

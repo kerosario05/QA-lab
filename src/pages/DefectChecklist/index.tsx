@@ -29,6 +29,58 @@ function getDefectSelectionId(d: Defect): string {
   return d.id || d.scenarioId || `${d.scenarioTitle}-${d.createdAt || d.updatedAt || ''}`;
 }
 
+function getDefectSummary(d: Defect): string {
+  const desc = d.description ?? "";
+  const techCtx = (d as any).technicalContext as Record<string, unknown> | undefined;
+
+  // 1. Extract "Resultado actual" section from structured description
+  const actualMatch = desc.match(/Resultado actual:\n([\s\S]*?)(?:\n\n|$)/);
+  if (actualMatch) {
+    const text = actualMatch[1].trim();
+    if (text && text.length > 0) {
+      console.log(`[defect-summary] scenarioId=${d.scenarioId ?? 'none'} source=actual_result length=${text.length}`);
+      return text.length > 160 ? text.slice(0, 157) + "..." : text;
+    }
+  }
+
+  // 2. Use reasonCode-based human message from technicalContext
+  if (techCtx?.reasonCode && typeof techCtx.reasonCode === "string") {
+    const code = techCtx.reasonCode.toLowerCase();
+    if (code.includes("assertion_not_found")) {
+      const msg = "La validación esperada no fue encontrada en la pantalla.";
+      console.log(`[defect-summary] scenarioId=${d.scenarioId ?? 'none'} source=reason_code length=${msg.length}`);
+      return msg;
+    }
+    if (code.includes("target_not_found") || code.includes("locator_resolution_failed")) {
+      const msg = "No se encontró el elemento necesario para continuar la ejecución.";
+      console.log(`[defect-summary] scenarioId=${d.scenarioId ?? 'none'} source=reason_code length=${msg.length}`);
+      return msg;
+    }
+    if (code.includes("timeout")) {
+      const msg = "La acción esperada no completó dentro del tiempo límite.";
+      console.log(`[defect-summary] scenarioId=${d.scenarioId ?? 'none'} source=reason_code length=${msg.length}`);
+      return msg;
+    }
+  }
+
+  // 3. First line of legacy description (skip "Escenario:" header)
+  const lines = desc.split("\n").filter(l => l.trim());
+  const nonHeader = lines.filter(l => !l.startsWith("Escenario:") && !l.startsWith("Resultado:") && !l.startsWith("Ejecución:") && !l.startsWith("TestRail:") && !l.startsWith("Evidencia:") && !l.startsWith("Código") && !l.startsWith("Paso ") && !l.startsWith("Último"));
+  if (nonHeader.length > 0) {
+    const msg = nonHeader[0].trim();
+    if (msg.length > 0) {
+      const truncated = msg.length > 160 ? msg.slice(0, 157) + "..." : msg;
+      console.log(`[defect-summary] scenarioId=${d.scenarioId ?? 'none'} source=legacy length=${truncated.length}`);
+      return truncated;
+    }
+  }
+
+  // 4. Fallback
+  const fallback = "La ejecución automatizada no pudo completarse correctamente.";
+  console.log(`[defect-summary] scenarioId=${d.scenarioId ?? 'none'} source=fallback length=${fallback.length}`);
+  return fallback;
+}
+
 interface Props { issueKey: string; jobId?: string; scenarioIds?: string[]; onBack: () => void; }
 
 export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }: Props) {
@@ -36,13 +88,14 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [localJiraKeys, setLocalJiraKeys] = useState<Record<string, { key: string; url: string }>>({});
+  const [expandedDefects, setExpandedDefects] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setLoading(true);
     getChecklist(issueKey, jobId, scenarioIds)
       .then(data => {
         setData(data);
-        console.log(`[defects:jira] checklist loaded issueKey=${issueKey} defects=${data?.defects?.length ?? 0}`);
+        console.log(`[checklist-load] issueKey=${issueKey} jobId=${jobId ?? 'none'} received=${data?.defects?.length ?? 0}`);
       })
       .catch(err => {
         console.log(`[defects:jira] checklist API failed issueKey=${issueKey} reason=${err.message}, falling back to localStorage`);
@@ -93,6 +146,14 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
+  }, []);
+
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedDefects(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   }, []);
 
   const allSelected = defects.length > 0 && selectedIds.size === defects.length;
@@ -215,18 +276,28 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
       appSlug: '',
       sourceIssueKey,
       jiraProjectKey: targetProjectKey,
-      defects: toUpload.map(d => ({
-        id: d.id || getDefectSelectionId(d),
-        scenarioId: d.scenarioId,
-        scenarioTitle: d.scenarioTitle,
-        title: d.scenarioTitle || d.scenarioId || 'Defecto QA Lab',
-        severity: d.severity,
-        status: d.status,
-        description: d.description,
-        failureReason: (d as any).severityReason || '',
-        evidenceUrl: d.evidenceUrl,
-        updatedAt: d.updatedAt,
-      })),
+      defects: toUpload.map(d => {
+        const tc = (d as any).technicalContext;
+        const hasTc = Boolean(tc && typeof tc === "object" && Object.keys(tc).length > 0);
+        const hasStructuredDesc = hasTc && Boolean(d.description?.trim());
+        const failureReasonIncluded = !hasStructuredDesc;
+        console.log(`[jira-defect-description] scenarioId=${d.scenarioId ?? 'none'} source=${hasStructuredDesc ? 'structured' : 'legacy'} failureReasonIncluded=${failureReasonIncluded} duplicatesRemoved=${hasStructuredDesc ? 1 : 0}`);
+        return {
+          id: d.id || getDefectSelectionId(d),
+          scenarioId: d.scenarioId,
+          scenarioTitle: d.scenarioTitle,
+          title: d.scenarioTitle || d.scenarioId || 'Defecto QA Lab',
+          severity: d.severity,
+          status: d.status,
+          description: d.description,
+          descriptionFormat: hasStructuredDesc ? "structured" : "legacy",
+          ...(hasStructuredDesc
+            ? {}
+            : { failureReason: (d as any).severityReason || undefined }),
+          evidenceUrl: d.evidenceUrl,
+          updatedAt: d.updatedAt,
+        };
+      }),
       assigneeAccountId: selectedAssignee?.accountId,
     };
 
@@ -495,7 +566,27 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
                           <span className={`text-[11px] font-bold px-2.5 py-[5px] rounded-full border shrink-0 ${stBadge[d.status] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>{stLabel[d.status] || d.status}</span>
                         </div>
                         {d.scenarioId && d.scenarioTitle && (<div className="text-[11px] font-semibold tracking-[0.03em] text-[#94A3B8] ml-[72px] mb-2">{d.scenarioId}</div>)}
-                        <div className="text-[13px] text-[#475569] leading-relaxed ml-[72px] mb-4 max-w-[680px]">{clean(d.description)}</div>
+                        {(() => {
+                          const isExpanded = expandedDefects.has(selId);
+                          const fullDesc = d.description;
+                          const summary = getDefectSummary(d);
+                          const hasDetail = fullDesc.split("\n").filter(l => l.trim()).length > 2;
+                          return (
+                            <>
+                              <div className="text-[13px] text-[#475569] leading-relaxed ml-[72px] mb-2 max-w-[680px]" style={{ whiteSpace: "pre-line" }}>
+                                {isExpanded ? fullDesc : summary}
+                              </div>
+                              {hasDetail && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); toggleExpand(selId); }}
+                                  className="text-[11px] font-semibold text-[#0F4C81] hover:underline ml-[72px] mb-4"
+                                >
+                                  {isExpanded ? "Ocultar detalle" : "Ver detalle"}
+                                </button>
+                              )}
+                            </>
+                          );
+                        })()}
                         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 pt-[14px] border-t border-[#F1F5F9] text-[12px] text-[#64748B] font-semibold">
                           {d.severityReason && <span>{d.severityReason}</span>}
                           <span>Evidencia: {d.evidenceUrl ? <a href={d.evidenceUrl} target="_blank" rel="noopener noreferrer" className="text-[#0F4C81] hover:underline inline-flex items-center gap-0.5"><ExternalLink size={10} /> Ver evidencia</a> : <span className="text-[#94A3B8]">No adjunta</span>}</span>

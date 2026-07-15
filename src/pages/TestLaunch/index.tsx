@@ -157,6 +157,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [storiesError, setStoriesError] = useState<string | null>(null);
   const [sprintMeta, setSprintMeta] = useState<{ id: number; name: string } | null>(null);
   const [blockedScenarios, setBlockedScenarios] = useState<BlockedScenario[]>([]);
+  const [adaptiveScenarios, setAdaptiveScenarios] = useState<any[]>([]);
   // expanded story jiraKeys (story-level accordion)
   const [expandedStories, setExpandedStories] = useState<string[]>([]);
   // expanded scenario step panel: "jiraKey::scenarioIndex"
@@ -268,7 +269,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         setStories(normalized.stories);
         setTotalScenarios(normalized.totalScenarios);
         setSprintMeta(normalized.sprint);
-        setBlockedScenarios(normalized.blockedScenarios);
+        setBlockedScenarios(normalized.blockedScenarios ?? []);
+        setAdaptiveScenarios(normalized.adaptiveScenarios ?? []);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
       })
       .catch(e => setStoriesError(e.message))
@@ -529,8 +531,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       return;
     }
     if (selectedStories.length === 0 || selectedStories.every((s: any) => !s.scenarios?.length)) {
-      setLaunchError('No hay escenarios seleccionados para lanzar.');
-      return;
+      if (adaptiveScenarios.length === 0) {
+        setLaunchError('No hay escenarios seleccionados para lanzar.');
+        return;
+      }
+      // Allow adaptive-only launch
     }
 
     console.log(`[launch] selectedSection id=${selectedSection.id} name="${sectionNameValue}" slug=${sectionSlugValue}`);
@@ -569,6 +574,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       jiraKey: stories[0]?.jiraKey,
       sprintName: undefined as string | undefined,
       selectedScenarios,
+      adaptiveScenarios: adaptiveScenarios.length > 0 ? adaptiveScenarios : undefined,
       publishStrategy: 'always_create' as const,
     };
 
@@ -700,7 +706,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         setStories(normalized.stories);
         setTotalScenarios(normalized.totalScenarios);
         setSprintMeta(normalized.sprint);
-        setBlockedScenarios(normalized.blockedScenarios);
+        setBlockedScenarios(normalized.blockedScenarios ?? []);
+        setAdaptiveScenarios(normalized.adaptiveScenarios ?? []);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
       })
       .catch(e => setStoriesError(e.message))

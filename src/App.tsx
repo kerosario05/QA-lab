@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus, Settings2 } from 'lucide-react';
 import { C } from './constants/theme';
 import { Sidebar } from './components/layout/Sidebar';
@@ -19,6 +19,20 @@ export default function App() {
   const [checklistJobId, setChecklistJobId] = useState<string | undefined>(undefined);
   const [checklistScenarioIds, setChecklistScenarioIds] = useState<string[] | undefined>(undefined);
   const [prevView, setPrevView] = useState<View | null>(null);
+
+  // URL-based routing: /checklist/:issueKey
+  useEffect(() => {
+    const match = location.pathname.match(/^\/checklist\/([A-Za-z0-9_-]+)$/);
+    if (match) {
+      const issueKey = match[1];
+      const params = new URLSearchParams(location.search);
+      const jobId = params.get('jobId') || undefined;
+      setChecklistIssueKey(issueKey);
+      setChecklistJobId(jobId);
+      setView('checklist');
+      console.log(`[checklist-route] pathname=${location.pathname} issueKey=${issueKey} jobId=${jobId ?? 'none'} matched=true`);
+    }
+  }, []);
 
   const handleLaunch = (run: ActiveRun) => {
     setLiveRun(run);

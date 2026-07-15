@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   ChevronLeft, FileText, Lock, Pause, Square, CheckCircle2,
-  Loader2, Check, Terminal, Maximize2, AlertCircle,
+  Loader2, Check, Terminal, Maximize2, AlertCircle, Download,
 } from 'lucide-react';
 import {
   RadialBarChart, RadialBar,
@@ -61,6 +61,8 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [issueKey,        setIssueKey]        = useState<string | null>(null);
   const [defectCount,     setDefectCount]     = useState<number>(0);
   const [rerunning,       setRerunning]        = useState(false);
+  const [downloadingDocx,  setDownloadingDocx]  = useState(false);
+  const [docxError,      setDocxError]      = useState<string | null>(null);
   const [rerunKey,        setRerunKey]          = useState(0);
 
   const logsEndRef   = useRef<HTMLDivElement>(null);
@@ -179,7 +181,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
           time: formatNow(),
           type: DONE_STATUSES.has(finalStatus) && finalStatus !== 'completed' ? 'error' : 'success',
           msg:  finalStatus === 'completed'
-            ? `Γ£ô Ejecución completada · ${data.passed ?? passed} pasaron · ${data.failed ?? failed} fallaron`
+            ? `✔ Ejecución completada · ${data.passed ?? passed} pasaron · ${data.failed ?? failed} fallaron`
             : `Γ£ù Ejecución terminada con estado: ${finalStatus}`,
         }]);
         setTimeout(() => onCompleteRef.current?.(), 1500);
@@ -209,6 +211,23 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                 <button className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]">
                   <FileText size={11} /> Ver reporte
                 </button>
+                <button
+                  onClick={async () => {
+                    setDownloadingDocx(true);
+                    setDocxError(null);
+                    try { await runsProxy.downloadEvidence(currentJobId); }
+                    catch { setDocxError("El documento de evidencia aun no esta disponible."); }
+                    finally { setDownloadingDocx(false); }
+                  }}
+                  disabled={downloadingDocx}
+                  className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D] disabled:opacity-50"
+                >
+                  {downloadingDocx ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                  Descargar documento
+                </button>
+                {docxError && (
+                  <span className="text-[10px] text-[#E63946] bg-[#E63946]/5 px-2 py-1 rounded-full">{docxError}</span>
+                )}
                 <button
                   onClick={() => onCloseExecution?.({ id: run?.jobId || run?.id, project: run?.project, total, passed, failed, duration: formatTime(elapsed) })}
                   className="text-[11px] bg-gradient-to-r from-[#48A157] to-[#357a42] text-white px-4 py-1.5 rounded-full flex items-center gap-1.5 font-semibold shadow-lg shadow-[#48A157]/20 hover:from-[#5EC470] hover:to-[#48A157]"
@@ -362,31 +381,34 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
             )}
 
             {/* When done: show title + optional checklist button */}
-            {isDone && (
+            {isDone && (() => {
+              const hasFailedCases = failed > 0 || defectCount > 0;
+              const hasChecklist = Boolean(checklistUrl || issueKey);
+              const visible = hasFailedCases && hasChecklist;
+              console.log(`[live-checklist-visibility] status=${jobStatus} failed=${failed} checklistUrl=${Boolean(checklistUrl)} issueKey=${Boolean(issueKey)} finished=${true} visible=${visible}`);
+              if (!visible) return null;
+               const params = new URLSearchParams();
+               if (currentJobId) params.set('jobId', currentJobId);
+               const qs = params.toString();
+               const targetUrl = checklistUrl && !checklistUrl.includes('?jobId=')
+                 ? `${checklistUrl}${checklistUrl.includes('?') ? '&' : '?'}${qs}`
+                 : checklistUrl || `/checklist/${encodeURIComponent(issueKey!)}${qs ? `?${qs}` : ''}`;
+              return (
               <div>
                 <div className="text-[18px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
                   Ejecución finalizada
                 </div>
-                {issueKey && checklistUrl && defectCount > 0 && (
-                  <button
-                    onClick={() => {
-                      const scenarioIds = logs
-                        .filter(l => l.msg.includes('Fallido') || l.msg.includes('failed'))
-                        .map(l => {
-                          const m = l.msg.match(/(PREVIEW-\d+)/);
-                          return m?.[1];
-                        })
-                        .filter((id): id is string => !!id && /^PREVIEW-\d+$/.test(id))
-                        .filter((v, i, a) => a.indexOf(v) === i);
-                      onOpenChecklist?.(issueKey, currentJobId, scenarioIds.length > 0 ? scenarioIds : undefined);
-                    }}
-                    className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black px-4 py-2 rounded-full transition"
-                  >
-                    <FileText size={13} /> Ver checklist de defectos
-                  </button>
-                )}
+                <button
+                  onClick={() => {
+                    window.open(targetUrl, "_blank");
+                  }}
+                  className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black px-4 py-2 rounded-full transition"
+                >
+                  <FileText size={13} /> Ver checklist de defectos
+                </button>
               </div>
-            )}
+              );
+            })()}
             {streamError && (
               <div className="flex items-center gap-1.5 mt-3 text-[11px] text-[#E63946]">
                 <AlertCircle size={12} /> Error de conexión: {streamError}
