@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { ClipboardList, ArrowLeft, ExternalLink, Check, Upload, User, Loader2 } from 'lucide-react';
-import { getChecklist, updateDefectJira, type ChecklistResponse, type Defect } from '../../services/checklist';
+import { getChecklist, type ChecklistResponse, type Defect } from '../../services/checklist';
 import { uploadDefectsToJira, searchJiraUsers, type JiraUser } from '../../services/jira';
 
 /* ── Helpers ── */
@@ -31,7 +31,7 @@ function getDefectSelectionId(d: Defect): string {
 
 function getDefectSummary(d: Defect): string {
   const desc = d.description ?? "";
-  const techCtx = (d as any).technicalContext as Record<string, unknown> | undefined;
+  const techCtx = d.technicalContext as Record<string, unknown> | undefined;
 
   // 1. Extract "Resultado actual" section from structured description
   const actualMatch = desc.match(/Resultado actual:\n([\s\S]*?)(?:\n\n|$)/);
@@ -160,7 +160,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
 
   // ── Jira upload state ──
   const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<{ created: number; failed: number; skipped: number; persistFailed: number } | null>(null);
+  const [uploadResult, setUploadResult] = useState<{ created: number; failed: number; skipped: number; evidenceAttached: number; evidenceNotAvailable: number; evidenceFailed: number } | null>(null);
 
   // ── localStorage helpers for cross-refresh protection ──
   const lsKey = `qa-lab:jira-defect-keys:${issueKey}`;
@@ -267,7 +267,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
     console.log(`[defects:jira] selected=${selected.length} toUpload=${toUpload.length} alreadyUploaded=${alreadyUploaded.length} sourceIssueKey=${sourceIssueKey} targetProjectKey=${targetProjectKey}`);
 
     if (toUpload.length === 0) {
-      setUploadResult({ created: 0, failed: 0, skipped: alreadyUploaded.length, persistFailed: 0 });
+      setUploadResult({ created: 0, failed: 0, skipped: alreadyUploaded.length, evidenceAttached: 0, evidenceNotAvailable: 0, evidenceFailed: 0 });
       setUploading(false);
       return;
     }
@@ -277,7 +277,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
       sourceIssueKey,
       jiraProjectKey: targetProjectKey,
       defects: toUpload.map(d => {
-        const tc = (d as any).technicalContext;
+        const tc = d.technicalContext;
         const hasTc = Boolean(tc && typeof tc === "object" && Object.keys(tc).length > 0);
         const hasStructuredDesc = hasTc && Boolean(d.description?.trim());
         const failureReasonIncluded = !hasStructuredDesc;
@@ -293,7 +293,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
           descriptionFormat: hasStructuredDesc ? "structured" : "legacy",
           ...(hasStructuredDesc
             ? {}
-            : { failureReason: (d as any).severityReason || undefined }),
+            : { failureReason: d.severityReason || undefined }),
           evidenceUrl: d.evidenceUrl,
           updatedAt: d.updatedAt,
         };
@@ -301,46 +301,32 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
       assigneeAccountId: selectedAssignee?.accountId,
     };
 
-    let persistFailed = 0;
-
     try {
       const result = await uploadDefectsToJira(payload);
 
-      // Persist jiraIssueKey for each created defect
+      // Backend already persists jiraIssueKey and jiraIssueUrl natively.
+      // Clear localStorage fallback for each created defect since metadata is persisted server-side.
       for (const c of result.created) {
         const selId = c.defectId;
-        try {
-          await updateDefectJira(sourceIssueKey, c.defectId, {
-            jiraIssueKey: c.jiraIssueKey,
-            jiraIssueUrl: c.jiraIssueUrl,
-            jiraUploadStatus: 'uploaded',
-            jobId,
-            scenarioId: c.defectId,
-          });
-          console.log(`[defects:jira] persisted defectId=${c.defectId} issueKey=${c.jiraIssueKey}`);
-          // Clean localStorage fallback since metadata is now persisted server-side
-          clearLocalKey(selId);
-        } catch (patchErr: any) {
-          persistFailed++;
-          // Store locally as fallback to prevent duplicate re-creation
-          setLocalJiraKeys(prev => ({ ...prev, [selId]: { key: c.jiraIssueKey, url: c.jiraIssueUrl } }));
-          // Persist to localStorage so it survives page refresh
-          persistLocalKey(selId, c.jiraIssueKey, c.jiraIssueUrl);
-          console.log(`[defects:jira] persist failed defectId=${c.defectId} issueKey=${c.jiraIssueKey} reason=${patchErr.message}`);
-          console.log(`[defects:jira] local protection stored defectId=${c.defectId} reason=persist_failed_existing_issue issueKey=${c.jiraIssueKey}`);
-        }
+        clearLocalKey(selId);
       }
 
+      const createdEntries = (result.created as Array<{ defectId: string; scenarioId?: string; jiraIssueKey: string; jiraIssueUrl?: string; evidenceAttached?: boolean; attachmentStatus?: string; attachmentName?: string; attachmentReasonCode?: string }>);
+      const evidenceAttached = createdEntries.filter(c => c.evidenceAttached).length;
+      const evidenceNotAvailable = createdEntries.filter(c => c.attachmentStatus === "not_available").length;
+      const evidenceFailed = createdEntries.filter(c => c.attachmentStatus === "generation_failed" || c.attachmentStatus === "upload_failed").length;
       setUploadResult({
         created: result.created.length,
         failed: result.failed.length,
         skipped: result.skipped.length + alreadyUploaded.length,
-        persistFailed,
+        evidenceAttached,
+        evidenceNotAvailable,
+        evidenceFailed,
       });
 
-      console.log(`[defects:jira] uploaded created=${result.created.length} failed=${result.failed.length} skipped=${result.skipped.length + alreadyUploaded.length} persistFailed=${persistFailed}`);
+      console.log(`[defects:jira] uploaded created=${result.created.length} failed=${result.failed.length} skipped=${result.skipped.length + alreadyUploaded.length}`);
     } catch (err: any) {
-      setUploadResult({ created: 0, failed: toUpload.length, skipped: alreadyUploaded.length, persistFailed: 0 });
+      setUploadResult({ created: 0, failed: toUpload.length, skipped: alreadyUploaded.length, evidenceAttached: 0, evidenceNotAvailable: 0, evidenceFailed: 0 });
       console.log(`[defects:jira] failed error=${err.message}`);
     } finally {
       setUploading(false);
@@ -507,23 +493,24 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
             )}
 
             {/* ── Upload result toast ── */}
-            {uploadResult && (
+            {uploadResult && (() => {
+              const successParts: string[] = [];
+              if (uploadResult.created > 0) successParts.push(`${uploadResult.created} defecto(s) subidos a Jira`);
+              if (uploadResult.evidenceAttached > 0) successParts.push(`${uploadResult.evidenceAttached} evidencia(s) adjuntas`);
+              if (uploadResult.evidenceNotAvailable > 0) successParts.push(`${uploadResult.evidenceNotAvailable} sin evidencia`);
+              if (uploadResult.evidenceFailed > 0) successParts.push(`${uploadResult.evidenceFailed} adjuntos fallidos`);
+              if (uploadResult.skipped > 0) successParts.push(`${uploadResult.skipped} ya existían`);
+              const successText = successParts.join(" · ");
+              const failText = `${uploadResult.created} creado(s), ${uploadResult.failed} fallido(s)${uploadResult.skipped > 0 ? `, ${uploadResult.skipped} omitido(s)` : ""}`;
+              return (
               <>
-                <div className={`rounded-[16px] px-5 py-3 mb-2 text-[13px] font-semibold shadow-sm flex items-center gap-3 ${(uploadResult.failed > 0 || uploadResult.persistFailed > 0) ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'}`}>
-                  {uploadResult.failed === 0 && uploadResult.persistFailed === 0 ? (
-                    <span>{uploadResult.created} defecto(s) subidos a Jira{uploadResult.skipped > 0 ? ` (${uploadResult.skipped} ya existían)` : ''}</span>
-                  ) : (
-                    <span>{uploadResult.created} creado(s), {uploadResult.failed} fallido(s){uploadResult.persistFailed > 0 ? `, ${uploadResult.persistFailed} con error de guardado local` : ''}{uploadResult.skipped > 0 ? `, ${uploadResult.skipped} omitido(s)` : ''}</span>
-                  )}
+                <div className={`rounded-[16px] px-5 py-3 mb-2 text-[13px] font-semibold shadow-sm flex items-center gap-3 ${uploadResult.failed > 0 ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'}`}>
+                  <span>{uploadResult.failed === 0 ? successText : failText}</span>
                   <button onClick={handleClearUploadResult} className="ml-auto text-[11px] underline opacity-70 hover:opacity-100">Cerrar</button>
                 </div>
-                {uploadResult.persistFailed > 0 && (
-                  <div className="rounded-[14px] px-4 py-2.5 mb-4 text-[12px] bg-red-50 text-red-700 border border-red-200 shadow-sm">
-                    Issue creado en Jira correctamente, pero no se pudo guardar la referencia local ({uploadResult.persistFailed} defecto(s)). La clave Jira se conserva en esta sesión. No reintente sin revisar.
-                  </div>
-                )}
               </>
-            )}
+              );
+            })()}
 
             {/* ── Defect cards ── */}
             <div className="space-y-[14px]">

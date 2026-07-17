@@ -6,6 +6,7 @@ export interface Defect {
   scenarioTitle?: string;
   description: string;
   severity: 'low' | 'medium' | 'high' | 'critical';
+  severityReason?: string;
   evidenceUrl?: string;
   status: 'pending_review' | 'accepted' | 'rejected' | 'fixed';
   createdAt: string;
@@ -15,6 +16,12 @@ export interface Defect {
   jiraUploadedAt?: string;
   jiraUploadStatus?: 'uploaded' | 'failed';
   jiraUploadError?: string;
+  technicalContext?: Record<string, unknown>;
+  evidenceAttachment?: {
+    status: 'attached' | 'not_available' | 'generation_failed' | 'upload_failed';
+    attachmentName?: string;
+    reasonCode?: string;
+  };
 }
 
 export interface ChecklistResponse {
