@@ -286,7 +286,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
           id: d.id || getDefectSelectionId(d),
           scenarioId: d.scenarioId,
           scenarioTitle: d.scenarioTitle,
-          title: d.scenarioTitle || d.scenarioId || 'Defecto QA Lab',
+          title: d.title || d.scenarioTitle || d.scenarioId || 'Defecto QA Lab',
           severity: d.severity,
           status: d.status,
           description: d.description,
@@ -548,7 +548,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
                         <div className="flex items-start justify-between gap-3 mb-0.5">
                           <div className="flex items-center gap-2.5 min-w-0">
                             <span className={`text-[11px] font-bold px-2.5 py-[5px] rounded-full border ${sevBadge[d.severity] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>{sevLabel[d.severity] || d.severity}</span>
-                            <span className="text-[16px] font-bold text-[#0F172A] leading-tight truncate">{d.scenarioTitle || d.scenarioId || 'Sin escenario'}</span>
+                            <span className="text-[16px] font-bold text-[#0F172A] leading-tight truncate">{(d.title || d.scenarioTitle || d.scenarioId || 'Sin escenario').replace(/^\[[^\]]+\]\s*/, '')}</span>
                           </div>
                           <span className={`text-[11px] font-bold px-2.5 py-[5px] rounded-full border shrink-0 ${stBadge[d.status] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>{stLabel[d.status] || d.status}</span>
                         </div>

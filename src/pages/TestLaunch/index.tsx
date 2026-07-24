@@ -6,7 +6,6 @@ import {
 } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
-import { projects } from '../../data/mockData';
 import { trProjectsProxy, trSectionsProxy, fetchProjectSuites, fetchProjectCaseCount } from '../../services/testrail';
 import type { TRSection, TRCase } from '../../services/testrail';
 import { jiraProjectsProxy } from '../../services/jira';
@@ -16,6 +15,8 @@ import { runsProxy } from '../../services/runs';
 import type { RunPayload } from '../../services/runs';
 import { newmanProxy } from '../../services/newman';
 import type { NewmanRunPayload, NewmanCollection } from '../../services/newman';
+import { mobileProxy } from '../../services/mobile';
+import type { EmulatorStatus, AppiumStatus, MobileScenario, MobileRejectedScenario, MobileLaunchExecutionResponse } from '../../services/mobile';
 import type { ActiveRun, TestRailProject, JiraProject, JiraSprint } from '../../types';
 import { canContinueFromStep3 } from './step3-launch-gate';
 
@@ -34,6 +35,18 @@ interface LaunchConfig {
   runAll: boolean;
   newmanCollection: string;
 }
+
+interface LaunchProjectOption {
+  id: string;
+  name: string;
+  stack: string;
+  type: 'web' | 'api' | 'mobile';
+}
+
+const LAUNCH_PROJECTS: LaunchProjectOption[] = [
+  { id: 'kiosko', name: 'Kiosko', stack: 'Web · Playwright', type: 'web' },
+  { id: 'app-conversacional-bsc', name: 'App Conversacional', stack: 'Android · Appium', type: 'mobile' },
+];
 
 export function TestLaunch({ onLaunch }: TestLaunchProps) {
   // Normalize TestRail project name to appSlug for automation framework
@@ -55,6 +68,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   });
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
+  const currentProjectType = LAUNCH_PROJECTS.find(p => p.id === config.automationProject)?.type;
 
   // ΓöÇΓöÇ TestRail project state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const [trProjects, setTrProjects] = useState<TestRailProject[]>([]);
@@ -163,6 +177,28 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   // expanded scenario step panel: "jiraKey::scenarioIndex"
   const [expandedScenario, setExpandedScenario] = useState<string | null>(null);
 
+  // ── Mobile state (Android nativo) ──────────────────────────────────────
+  const [emulatorStatus, setEmulatorStatus] = useState<EmulatorStatus | null>(null);
+  const [emulatorActionLoading, setEmulatorActionLoading] = useState(false);
+  const [emulatorError, setEmulatorError] = useState<string | null>(null);
+  const [emulatorBootLogs, setEmulatorBootLogs] = useState<{ time: string; msg: string }[]>([]);
+  const [appiumStatus, setAppiumStatus] = useState<AppiumStatus | null>(null);
+
+  const [mobileScenarios, setMobileScenarios] = useState<MobileScenario[]>([]);
+  const [mobileRejected, setMobileRejected] = useState<MobileRejectedScenario[]>([]);
+  const [mobileScenariosLoading, setMobileScenariosLoading] = useState(false);
+  const [mobileScenariosError, setMobileScenariosError] = useState<string | null>(null);
+  const [selectedMobileScenarioIds, setSelectedMobileScenarioIds] = useState<string[]>([]);
+  const [expandedMobileIssueKeys, setExpandedMobileIssueKeys] = useState<string[]>([]);
+  // User-edited data values, keyed by scenarioId -> { stepIndex: value }.
+  const [mobileDataValues, setMobileDataValues] = useState<Record<string, Record<number, string>>>({});
+
+  const [mobilePublishResult, setMobilePublishResult] = useState<MobileLaunchExecutionResponse | null>(null);
+  const [mobilePublishing, setMobilePublishing] = useState(false);
+  const [mobilePublishError, setMobilePublishError] = useState<string | null>(null);
+  const [mobileExecuting, setMobileExecuting] = useState(false);
+  const [mobileExecuteError, setMobileExecuteError] = useState<string | null>(null);
+
   // ΓöÇΓöÇ Fetch TestRail projects on mount ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     setTrLoading(true);
@@ -183,7 +219,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   // ΓöÇΓöÇ Fetch Newman collections when API project is selected ΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
-    const proj = projects.find(p => p.id === config.automationProject);
+    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
     if (proj?.type !== 'api') return;
     setNewmanCollLoading(true);
     setNewmanCollError(null);
@@ -252,7 +288,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   // ΓöÇΓöÇ Fetch stories when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
-    if (step !== 3 || !config.jiraProject || !activeSprint) return;
+    if (step !== 3 || !config.jiraProject || !activeSprint || currentProjectType === 'mobile') return;
     setConfig(c => ({ ...c, selectedCases: [] }));
     const sprintId = activeSprint.id;
     console.log('[scenario-preview] request', { projectKey: config.jiraProject, sprintId, activeSprint: !sprintId });
@@ -279,7 +315,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   // ΓöÇΓöÇ Fetch TR cases when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
-    if (step !== 3 || !config.testRailProject || !selectedSection || !trSuiteId) return;
+    if (step !== 3 || !config.testRailProject || !selectedSection || !trSuiteId || currentProjectType === 'mobile') return;
     setSelectedTrCaseIds([]);
     setTrCasesLoading(true);
     setTrCasesError(null);
@@ -306,8 +342,180 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // ── Poll emulator + Appium status while on the mobile Emulador step ─────
+  useEffect(() => {
+    if (step !== 2 || currentProjectType !== 'mobile') return;
+
+    const refresh = () => {
+      mobileProxy.getEmulatorStatus().then(setEmulatorStatus).catch(() => {});
+      mobileProxy.getAppiumStatus().then(setAppiumStatus).catch(() => {});
+    };
+    refresh();
+    const interval = setInterval(refresh, 4_000);
+    return () => clearInterval(interval);
+  }, [step, currentProjectType]);
+
+  const handleStartEmulator = () => {
+    setEmulatorActionLoading(true);
+    setEmulatorError(null);
+    setEmulatorBootLogs([]);
+    mobileProxy.startEmulator()
+      .then(result => {
+        if (result.jobId) {
+          runsProxy.streamLogs(result.jobId, {
+            onLog: entry => setEmulatorBootLogs(prev => [...prev, { time: entry.timestamp ?? '', msg: entry.message }]),
+            onStatus: () => {
+              mobileProxy.getEmulatorStatus().then(setEmulatorStatus).catch(() => {});
+            },
+            onDone: () => {
+              mobileProxy.getEmulatorStatus().then(setEmulatorStatus).catch(() => {});
+            },
+            onError: err => setEmulatorError(err.message),
+          });
+        }
+      })
+      .catch(e => setEmulatorError(e.message))
+      .finally(() => setEmulatorActionLoading(false));
+  };
+
+  const handleStopEmulator = () => {
+    setEmulatorActionLoading(true);
+    setEmulatorError(null);
+    mobileProxy.stopEmulator()
+      .then(status => setEmulatorStatus(status))
+      .catch(e => setEmulatorError(e.message))
+      .finally(() => setEmulatorActionLoading(false));
+  };
+
+  const handleGenerateMobileScenarios = () => {
+    if (!config.jiraProject || !activeSprint) return;
+    const sprintId = activeSprint.id;
+    setMobileScenariosLoading(true);
+    setMobileScenariosError(null);
+    setSelectedMobileScenarioIds([]);
+    mobileProxy.previewScenarios({
+      projectKey: config.jiraProject,
+      status: config.status,
+      maxResults: 50,
+      appSlug: config.automationProject,
+      ...(sprintId ? { sprintId } : { activeSprint: true }),
+    })
+      .then(data => {
+        const scenarios = data.scenarios ?? [];
+        setMobileScenarios(scenarios);
+        setMobileRejected(data.rejected ?? []);
+        setExpandedMobileIssueKeys(Array.from(new Set(scenarios.map(s => s.sourceIssueKey))));
+        // Pre-fill editable data values with each field's example/default value.
+        const initial: Record<string, Record<number, string>> = {};
+        for (const sc of scenarios) {
+          for (const f of sc.requiredData ?? []) {
+            if (!initial[sc.scenarioId]) initial[sc.scenarioId] = {};
+            initial[sc.scenarioId][f.stepIndex] = f.kind === 'select'
+              ? (f.defaultValue ?? f.options?.[0] ?? f.exampleValue ?? '')
+              : (f.exampleValue ?? '');
+          }
+        }
+        setMobileDataValues(initial);
+      })
+      .catch(e => setMobileScenariosError(e.message))
+      .finally(() => setMobileScenariosLoading(false));
+  };
+
+  const setMobileFieldValue = (scenarioId: string, stepIndex: number, value: string) => {
+    setMobileDataValues(prev => ({
+      ...prev,
+      [scenarioId]: { ...(prev[scenarioId] ?? {}), [stepIndex]: value },
+    }));
+  };
+
+  // ── Auto-generar escenarios mobile al entrar al step "Escenarios" ────────
+  useEffect(() => {
+    if (step !== 4 || currentProjectType !== 'mobile' || !config.jiraProject || !activeSprint) return;
+    handleGenerateMobileScenarios();
+  }, [step, config.jiraProject, config.status, activeSprint, currentProjectType]);
+
+  const toggleMobileScenario = (scenarioId: string) => {
+    setSelectedMobileScenarioIds(prev =>
+      prev.includes(scenarioId) ? prev.filter(id => id !== scenarioId) : [...prev, scenarioId]
+    );
+  };
+
+  const handlePublishMobileToTestRail = () => {
+    const selected = mobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
+    if (selected.length === 0 || !selectedSection || !config.testRailProject) return;
+
+    setMobilePublishing(true);
+    setMobilePublishError(null);
+    mobileProxy.publishToTestRail({
+      appSlug: config.automationProject,
+      projectId: Number(config.testRailProject),
+      testrailSectionId: selectedSection.id,
+      suiteId: trSuiteId ?? undefined,
+      jiraKey: selected[0]?.sourceIssueKey,
+      publishStrategy: 'always_create',
+      scenarios: selected,
+    })
+      .then(result => setMobilePublishResult(result))
+      .catch(e => setMobilePublishError(e.message))
+      .finally(() => setMobilePublishing(false));
+  };
+
+  const handleExecuteMobileRun = () => {
+    if (!mobilePublishResult) return;
+    const selected = mobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
+
+    // Only send overrides that differ from the field's original example/default.
+    const dataOverrides: Record<string, Record<number, string>> = {};
+    for (const s of selected) {
+      const edited = mobileDataValues[s.scenarioId];
+      if (!edited) continue;
+      for (const f of s.requiredData ?? []) {
+        const val = edited[f.stepIndex];
+        if (typeof val === 'string' && val.length > 0) {
+          if (!dataOverrides[s.scenarioId]) dataOverrides[s.scenarioId] = {};
+          dataOverrides[s.scenarioId][f.stepIndex] = val;
+        }
+      }
+    }
+
+    setMobileExecuting(true);
+    setMobileExecuteError(null);
+    mobileProxy.executeRun({
+      launchId: mobilePublishResult.launchId,
+      testRunId: mobilePublishResult.testRunId,
+      publishedCases: mobilePublishResult.publishedCases,
+      appSlug: config.automationProject,
+      scenarios: selected.map(s => ({ scenarioId: s.scenarioId, title: s.title, steps: s.steps, requiredData: s.requiredData })),
+      ...(Object.keys(dataOverrides).length > 0 ? { dataOverrides } : {}),
+    })
+      .then(result => {
+        // El job mobile no devuelve issueKey/checklistUrl, así que lo tomamos del
+        // sourceIssueKey del escenario (mismo que el backend usa como key del checklist).
+        const mobileIssueKey = selected[0]?.sourceIssueKey;
+        const newRun: ActiveRun = {
+          id: result.jobId,
+          jobId: result.jobId,
+          project: 'App Conversacional',
+          triggered: 'Carlos M.',
+          startedAt: 'Hace 0m',
+          progress: 0,
+          total: selected.length,
+          completed: 0, passed: 0, failed: 0,
+          currentTest: '',
+          eta: '—',
+          status: result.status,
+          runType: 'mobile',
+          issueKey: mobileIssueKey,
+          checklistByIssueOnly: true,
+        };
+        onLaunch(newRun);
+      })
+      .catch(e => setMobileExecuteError(e.message))
+      .finally(() => setMobileExecuting(false));
+  };
+
   const handleStep2Advance = () => {
-    const proj = projects.find(p => p.id === config.automationProject);
+    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
     if (proj?.type === 'api') {
       setStep(4);
       return;
@@ -405,19 +613,267 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     return sections.filter(sec => sec.name.toLowerCase().includes(s));
   }, [trSections, trSectionSearch]);
 
+  // ── Panel Jira (mismo diseño para Kiosko y App Conversacional) ──────────
+  const renderJiraPanel = () => (
+    <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <div className="w-8 h-8 rounded-lg bg-[#0052CC] flex items-center justify-center"><GitBranch size={15} className="text-white" /></div>
+        <div className="text-[14px] font-semibold text-[#1a1f2e]">Jira</div>
+      </div>
+      <div>
+        <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Proyecto</label>
+        <div className="relative">
+          <button ref={jiraTriggerRef} type="button" onClick={openJiraDropdown} disabled={jiraLoading}
+            className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
+              jiraDropdownOpen ? 'border-[#104B99] ring-4 ring-[#104B99]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]',
+              jiraLoading && 'opacity-60 cursor-wait')}
+          >
+            <span className={cn('text-[13px] truncate', currentJira ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
+              {jiraLoading ? 'Cargando proyectos...' : (currentJira ? `${currentJira.key} · ${currentJira.name}` : 'Selecciona un proyecto...')}
+            </span>
+            <div className="flex-shrink-0 ml-2">
+              {jiraLoading ? <Loader2 size={14} className="text-[#104B99] animate-spin" /> : <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', jiraDropdownOpen && 'rotate-180')} />}
+            </div>
+          </button>
+          {jiraDropdownOpen && jiraDropdownPos && createPortal(
+            <div ref={jiraPanelRef} style={{ position: 'fixed', top: jiraDropdownPos.top, left: jiraDropdownPos.left, width: jiraDropdownPos.width }}
+              className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(16,75,153,0.22)] z-[9999] overflow-hidden">
+              <div className="p-2 border-b border-[#F4F1EA]">
+                <div className="relative">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
+                  <input autoFocus placeholder="Buscar proyecto o clave..." value={jiraSearch} onChange={e => setJiraSearch(e.target.value)}
+                    className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
+                  {jiraSearch && <button onClick={() => setJiraSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
+                </div>
+                <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredJiraProjects.length} de {jiraProjects.length} proyectos</div>
+              </div>
+              <div className="max-h-[220px] overflow-y-auto">
+                {filteredJiraProjects.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{jiraSearch}"</div>
+                ) : filteredJiraProjects.map(j => {
+                  const isSel = j.key === config.jiraProject;
+                  return (
+                    <button key={j.key} type="button"
+                      onClick={() => { setConfig(c => ({ ...c, jiraProject: j.key, sprint: '' })); setJiraDropdownOpen(false); setJiraSearch(''); }}
+                      className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#104B99]/5' : 'hover:bg-[#FAFAF7]')}
+                    >
+                      <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#104B99] bg-[#104B99]' : 'border-[#E8EBEC]')}>
+                        {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
+                      </div>
+                      <span className="text-[10px] font-mono font-bold text-[#8B999D] w-10 flex-shrink-0">{j.key}</span>
+                      <span className={cn('text-[12px] truncate flex-1', isSel ? 'font-semibold text-[#104B99]' : 'font-medium text-[#1a1f2e]')}>{j.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>, document.body,
+          )}
+        </div>
+        {jiraError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo conectar con Jira</div>}
+      </div>
+
+      {config.jiraProject && (
+        <div>
+          <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Sprint activo</label>
+          {sprintLoading && (
+            <div className="flex items-center gap-2 text-[12px] text-[#8B999D] bg-white rounded-xl px-3 py-3 border border-[#E8EBEC]">
+              <Loader2 size={13} className="animate-spin text-[#104B99]" /> Cargando sprint...
+            </div>
+          )}
+          {!sprintLoading && activeSprint && (
+            <div className="bg-white rounded-xl border border-[#104B99]/20 p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse flex-shrink-0" />
+                <span className="text-[13px] font-semibold text-[#1a1f2e] truncate">{activeSprint.name}</span>
+              </div>
+              {(activeSprint.startDate || activeSprint.endDate) && (
+                <div className="flex items-center gap-3 text-[10px] text-[#8B999D] font-mono">
+                  {activeSprint.startDate && <span>Inicio: {activeSprint.startDate.slice(0, 10)}</span>}
+                  {activeSprint.endDate && <span>Fin: {activeSprint.endDate.slice(0, 10)}</span>}
+                </div>
+              )}
+              {activeSprint.goal && <div className="text-[11px] text-[#58646D] leading-snug italic">"{activeSprint.goal}"</div>}
+            </div>
+          )}
+          {!sprintLoading && !activeSprint && !sprintError && (
+            <div className="text-[11px] text-[#8B999D] bg-white rounded-xl px-3 py-2.5 border border-[#E8EBEC]">Este proyecto no tiene un sprint activo</div>
+          )}
+          {sprintError && <div className="flex items-center gap-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo obtener el sprint</div>}
+        </div>
+      )}
+
+      {config.jiraProject && (
+        <div>
+          <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Filtro de estado</label>
+          <select value={config.status} onChange={e => setConfig(c => ({ ...c, status: e.target.value }))}
+            className="w-full bg-white border border-[#E8EBEC] rounded-xl px-3 py-2.5 text-[13px] outline-none focus:border-[#104B99] focus:ring-4 focus:ring-[#104B99]/10">
+            {['Desestimado', 'To Do', 'In Progress', 'Done', 'QA', 'En revisión'].map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+      )}
+    </div>
+  );
+
+  // ── Panel TestRail (mismo diseño para Kiosko y App Conversacional) ──────
+  // onSelectProject: qué pasa al elegir un proyecto TestRail. Kiosko además
+  // deriva el appSlug del nombre; App Conversacional lo deja fijo.
+  const renderTestRailPanel = (onSelectProject: (project: TestRailProject) => void) => (
+    <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        <div className="w-8 h-8 rounded-lg bg-[#48A157] flex items-center justify-center"><Database size={15} className="text-white" /></div>
+        <div className="text-[14px] font-semibold text-[#1a1f2e]">TestRail</div>
+      </div>
+
+      <div>
+        <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Proyecto</label>
+        <div className="relative">
+          <button ref={trTriggerRef} type="button" onClick={openTrDropdown} disabled={trLoading}
+            className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
+              trDropdownOpen ? 'border-[#48A157] ring-4 ring-[#48A157]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]',
+              trLoading && 'opacity-60 cursor-wait')}
+          >
+            <span className={cn('text-[13px] truncate', currentTR ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
+              {trLoading ? 'Cargando proyectos...' : (currentTR?.name ?? 'Selecciona un proyecto...')}
+            </span>
+            <div className="flex-shrink-0 ml-2">
+              {trLoading ? <Loader2 size={14} className="text-[#48A157] animate-spin" /> : <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', trDropdownOpen && 'rotate-180')} />}
+            </div>
+          </button>
+          {trDropdownOpen && trDropdownPos && createPortal(
+            <div ref={trPanelRef} style={{ position: 'fixed', top: trDropdownPos.top, left: trDropdownPos.left, width: trDropdownPos.width }}
+              className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(16,75,153,0.22)] z-[9999] overflow-hidden">
+              <div className="p-2 border-b border-[#F4F1EA]">
+                <div className="relative">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
+                  <input autoFocus placeholder="Buscar proyecto..." value={trSearch} onChange={e => setTrSearch(e.target.value)}
+                    className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
+                  {trSearch && <button onClick={() => setTrSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
+                </div>
+                <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredTrProjects.length} de {trProjects.length} proyectos</div>
+              </div>
+              <div className="max-h-[220px] overflow-y-auto">
+                {filteredTrProjects.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{trSearch}"</div>
+                ) : filteredTrProjects.map(t => {
+                  const isSel = String(t.id) === config.testRailProject;
+                  return (
+                    <button key={t.id} type="button"
+                      onClick={() => { onSelectProject(t); setTrDropdownOpen(false); setTrSearch(''); }}
+                      className={cn('w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
+                          {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
+                        </div>
+                        <span className={cn('text-[12px] truncate', isSel ? 'font-semibold text-[#48A157]' : 'font-medium text-[#1a1f2e]')}>{t.name}</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-[#8B999D] bg-[#F4F1EA] px-1.5 py-0.5 rounded flex-shrink-0 ml-2">{t.totalCaseCount} TCs</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>, document.body,
+          )}
+        </div>
+        {trError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo conectar con TestRail</div>}
+      </div>
+
+      {currentTR && (
+        <div className="bg-white rounded-xl p-4 border border-[#E8EBEC]">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Suite ID</div>
+              <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trSuiteId ?? '—'}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Test Cases</div>
+              <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trTotalCaseCount}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {currentTR && (
+        <div>
+          <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Sección</label>
+          {trSectionsLoading ? (
+            <div className="flex items-center gap-2 text-[12px] text-[#8B999D] bg-white rounded-xl px-3 py-3 border border-[#E8EBEC]">
+              <Loader2 size={13} className="animate-spin text-[#48A157]" /> Cargando secciones...
+            </div>
+          ) : trSections.length === 0 && !trSectionsError ? (
+            <div className="text-[11px] text-[#8B999D] bg-white rounded-xl px-3 py-2.5 border border-[#E8EBEC]">Este proyecto no tiene secciones disponibles</div>
+          ) : (
+            <div className="relative">
+              <button ref={trSectionTriggerRef} type="button" onClick={openTrSectionDropdown}
+                className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
+                  trSectionDropdownOpen ? 'border-[#48A157] ring-4 ring-[#48A157]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]')}
+              >
+                <span className={cn('text-[13px] truncate', selectedSection ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
+                  {selectedSection?.name ?? 'Selecciona una sección...'}
+                </span>
+                <ChevronDown size={14} className={cn('text-[#8B999D] flex-shrink-0 ml-2 transition-transform duration-200', trSectionDropdownOpen && 'rotate-180')} />
+              </button>
+              {trSectionDropdownOpen && trSectionDropdownPos && createPortal(
+                <div ref={trSectionPanelRef} style={{ position: 'fixed', top: trSectionDropdownPos.top, left: trSectionDropdownPos.left, width: trSectionDropdownPos.width }}
+                  className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(72,161,87,0.22)] z-[9999] overflow-hidden">
+                  <div className="p-2 border-b border-[#F4F1EA]">
+                    <div className="relative">
+                      <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
+                      <input autoFocus placeholder="Buscar sección..." value={trSectionSearch} onChange={e => setTrSectionSearch(e.target.value)}
+                        className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
+                      {trSectionSearch && <button onClick={() => setTrSectionSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
+                    </div>
+                    <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredSections.length} de {trSections.length} secciones</div>
+                  </div>
+                  <div className="max-h-[220px] overflow-y-auto">
+                    {filteredSections.length === 0 ? (
+                      <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{trSectionSearch}"</div>
+                    ) : filteredSections.map(sec => {
+                      const isSel = selectedSection?.id === sec.id;
+                      return (
+                        <button key={sec.id} type="button"
+                          onClick={() => { setSelectedSection(sec); setTrSectionDropdownOpen(false); setTrSectionSearch(''); }}
+                          className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
+                        >
+                          <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
+                            {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
+                          </div>
+                          <span className={cn('text-[12px] truncate flex-1', isSel ? 'font-semibold text-[#48A157]' : 'font-medium text-[#1a1f2e]')}>{sec.name}</span>
+                          {sec.depth > 0 && <span className="text-[10px] text-[#8B999D] font-mono bg-[#F4F1EA] px-1.5 py-0.5 rounded flex-shrink-0 ml-auto">niv. {sec.depth}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>, document.body,
+              )}
+            </div>
+          )}
+          {trSectionsError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudieron cargar las secciones</div>}
+        </div>
+      )}
+    </div>
+  );
+
   const canAdvance = () => {
     if (step === 1) return config.automationProject;
-    const selectedProject = projects.find(p => p.id === config.automationProject);
+    const selectedProject = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
     const isApiProject = selectedProject?.type === 'api';
+    const isMobileProject = selectedProject?.type === 'mobile';
     if (step === 2) {
       if (isApiProject) {
         return !!(config.newmanCollection && config.testRailProject && selectedSection);
+      }
+      if (isMobileProject) {
+        return !!emulatorStatus?.running;
       }
       if (config.source === 'jira') return config.jiraProject && config.sprint;
       if (config.source === 'testrail') return config.testRailProject;
       return config.jiraProject && config.sprint && config.testRailProject;
     }
     if (step === 3) {
+      if (isMobileProject) {
+        return !!(config.jiraProject && activeSprint && config.testRailProject && selectedSection);
+      }
       return canContinueFromStep3({
         storiesLoading,
         storiesError,
@@ -430,11 +886,14 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         source: config.source,
       });
     }
+    if (step === 4 && isMobileProject) {
+      return selectedMobileScenarioIds.length > 0;
+    }
     return true;
   };
 
   const handleNewmanLaunch = async () => {
-    const proj = projects.find(p => p.id === config.automationProject);
+    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
     if (!config.newmanCollection) { setLaunchError('Selecciona una colección Newman.'); return; }
     if (!config.testRailProject) { setLaunchError('Selecciona un proyecto TestRail.'); return; }
     if (!selectedSection?.id) { setLaunchError('Selecciona una sección TestRail.'); return; }
@@ -481,9 +940,13 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   };
 
   const handleLaunch = async () => {
-    const proj = projects.find(p => p.id === config.automationProject);
+    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
     if (proj?.type === 'api') {
       return handleNewmanLaunch();
+    }
+    if (proj?.type === 'mobile') {
+      // El flujo mobile se lanza desde los botones "Publicar en TestRail" / "Ejecutar en emulador" del Step 4.
+      return;
     }
     const suiteId = trSuiteId ?? undefined;
     const totalSelected = config.selectedCases.length + selectedTrCaseIds.length;
@@ -653,8 +1116,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   };
 
   // ΓöÇΓöÇ Computed: project type ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  const selectedProject = projects.find(p => p.id === config.automationProject);
+  const selectedProject = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
   const isApiProject = selectedProject?.type === 'api';
+  const isMobileProject = selectedProject?.type === 'mobile';
+  const maxStep = isMobileProject ? 5 : 4;
 
   // ΓöÇΓöÇ Newman collection dropdown helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const openNewmanCollDropdown = () => {
@@ -679,6 +1144,14 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         { n: 1, label: 'Proyecto', icon: Boxes },
         { n: 2, label: 'Configuración', icon: Package },
         { n: 4, label: 'Lanzar', icon: Rocket },
+      ]
+    : isMobileProject
+    ? [
+        { n: 1, label: 'Proyecto', icon: Boxes },
+        { n: 2, label: 'Emulador', icon: Layers },
+        { n: 3, label: 'Fuentes', icon: GitBranch },
+        { n: 4, label: 'Escenarios', icon: ScanLine },
+        { n: 5, label: 'Publicar y ejecutar', icon: Rocket },
       ]
     : [
         { n: 1, label: 'Proyecto', icon: Boxes },
@@ -755,7 +1228,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿Qué proyecto vamos a correr?</h2>
             <p className="text-[13px] text-[#58646D] mb-7">Selecciona el framework de automatización.</p>
             <div className="grid grid-cols-2 gap-4 max-w-xl">
-              {projects.map(p => {
+              {LAUNCH_PROJECTS.map(p => {
                 const selected = config.automationProject === p.id;
                 return (
                   <button
@@ -769,7 +1242,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                     {selected && <div className="absolute -right-4 -top-4 w-24 h-24 rounded-full opacity-20" style={{ background: C.green }} />}
                     <div className="flex items-start justify-between mb-3 relative">
                       <div className={cn('text-[10px] uppercase tracking-wider font-semibold', selected ? 'text-white/50' : 'text-[#8B999D]')}>
-                        {p.type === 'api' ? 'API · Newman' : 'Web · Playwright'}
+                        {p.type === 'api' ? 'API · Newman' : p.type === 'mobile' ? 'Mobile · Android' : 'Web · Playwright'}
                       </div>
                       {selected && (
                         <div className="w-5 h-5 rounded-full bg-[#48A157] flex items-center justify-center">
@@ -1012,7 +1485,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         )}
 
         {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 2 · WEB ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
-        {step === 2 && !isApiProject && (
+        {step === 2 && !isApiProject && !isMobileProject && (
           <BentoCard className="!p-8">
             <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso dos · Conecta las fuentes</div>
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿De dónde vienen los casos?</h2>
@@ -1044,257 +1517,83 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             </div>
 
             <div className="grid grid-cols-2 gap-5">
-
-              {/* ΓöÇΓöÇ Jira panel ΓöÇΓöÇ */}
-              {(config.source === 'jira' || config.source === 'both') && (
-                <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-[#0052CC] flex items-center justify-center"><GitBranch size={15} className="text-white" /></div>
-                    <div className="text-[14px] font-semibold text-[#1a1f2e]">Jira</div>
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Proyecto</label>
-                    <div className="relative">
-                      <button ref={jiraTriggerRef} type="button" onClick={openJiraDropdown} disabled={jiraLoading}
-                        className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
-                          jiraDropdownOpen ? 'border-[#104B99] ring-4 ring-[#104B99]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]',
-                          jiraLoading && 'opacity-60 cursor-wait')}
-                      >
-                        <span className={cn('text-[13px] truncate', currentJira ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
-                          {jiraLoading ? 'Cargando proyectos...' : (currentJira ? `${currentJira.key} · ${currentJira.name}` : 'Selecciona un proyecto...')}
-                        </span>
-                        <div className="flex-shrink-0 ml-2">
-                          {jiraLoading ? <Loader2 size={14} className="text-[#104B99] animate-spin" /> : <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', jiraDropdownOpen && 'rotate-180')} />}
-                        </div>
-                      </button>
-                      {jiraDropdownOpen && jiraDropdownPos && createPortal(
-                        <div ref={jiraPanelRef} style={{ position: 'fixed', top: jiraDropdownPos.top, left: jiraDropdownPos.left, width: jiraDropdownPos.width }}
-                          className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(16,75,153,0.22)] z-[9999] overflow-hidden">
-                          <div className="p-2 border-b border-[#F4F1EA]">
-                            <div className="relative">
-                              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
-                              <input autoFocus placeholder="Buscar proyecto o clave..." value={jiraSearch} onChange={e => setJiraSearch(e.target.value)}
-                                className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
-                              {jiraSearch && <button onClick={() => setJiraSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
-                            </div>
-                            <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredJiraProjects.length} de {jiraProjects.length} proyectos</div>
-                          </div>
-                          <div className="max-h-[220px] overflow-y-auto">
-                            {filteredJiraProjects.length === 0 ? (
-                              <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{jiraSearch}"</div>
-                            ) : filteredJiraProjects.map(j => {
-                              const isSel = j.key === config.jiraProject;
-                              return (
-                                <button key={j.key} type="button"
-                                  onClick={() => { setConfig(c => ({ ...c, jiraProject: j.key, sprint: '' })); setJiraDropdownOpen(false); setJiraSearch(''); }}
-                                  className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#104B99]/5' : 'hover:bg-[#FAFAF7]')}
-                                >
-                                  <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#104B99] bg-[#104B99]' : 'border-[#E8EBEC]')}>
-                                    {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
-                                  </div>
-                                  <span className="text-[10px] font-mono font-bold text-[#8B999D] w-10 flex-shrink-0">{j.key}</span>
-                                  <span className={cn('text-[12px] truncate flex-1', isSel ? 'font-semibold text-[#104B99]' : 'font-medium text-[#1a1f2e]')}>{j.name}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>, document.body,
-                      )}
-                    </div>
-                    {jiraError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo conectar con Jira</div>}
-                  </div>
-
-                  {config.jiraProject && (
-                    <div>
-                      <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Sprint activo</label>
-                      {sprintLoading && (
-                        <div className="flex items-center gap-2 text-[12px] text-[#8B999D] bg-white rounded-xl px-3 py-3 border border-[#E8EBEC]">
-                          <Loader2 size={13} className="animate-spin text-[#104B99]" /> Cargando sprint...
-                        </div>
-                      )}
-                      {!sprintLoading && activeSprint && (
-                        <div className="bg-white rounded-xl border border-[#104B99]/20 p-3 space-y-2">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse flex-shrink-0" />
-                            <span className="text-[13px] font-semibold text-[#1a1f2e] truncate">{activeSprint.name}</span>
-                          </div>
-                          {(activeSprint.startDate || activeSprint.endDate) && (
-                            <div className="flex items-center gap-3 text-[10px] text-[#8B999D] font-mono">
-                              {activeSprint.startDate && <span>Inicio: {activeSprint.startDate.slice(0, 10)}</span>}
-                              {activeSprint.endDate && <span>Fin: {activeSprint.endDate.slice(0, 10)}</span>}
-                            </div>
-                          )}
-                          {activeSprint.goal && <div className="text-[11px] text-[#58646D] leading-snug italic">"{activeSprint.goal}"</div>}
-                        </div>
-                      )}
-                      {!sprintLoading && !activeSprint && !sprintError && (
-                        <div className="text-[11px] text-[#8B999D] bg-white rounded-xl px-3 py-2.5 border border-[#E8EBEC]">Este proyecto no tiene un sprint activo</div>
-                      )}
-                      {sprintError && <div className="flex items-center gap-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo obtener el sprint</div>}
-                    </div>
-                  )}
-
-                  {config.jiraProject && (
-                    <div>
-                      <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Filtro de estado</label>
-                      <select value={config.status} onChange={e => setConfig(c => ({ ...c, status: e.target.value }))}
-                        className="w-full bg-white border border-[#E8EBEC] rounded-xl px-3 py-2.5 text-[13px] outline-none focus:border-[#104B99] focus:ring-4 focus:ring-[#104B99]/10">
-                        {['Desestimado', 'To Do', 'In Progress', 'Done', 'QA', 'En revisión'].map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ΓöÇΓöÇ TestRail panel ΓöÇΓöÇ */}
-              {(config.source === 'testrail' || config.source === 'both') && (
-                <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-[#48A157] flex items-center justify-center"><Database size={15} className="text-white" /></div>
-                    <div className="text-[14px] font-semibold text-[#1a1f2e]">TestRail</div>
-                  </div>
-
-                  <div>
-                    <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Proyecto</label>
-                    <div className="relative">
-                      <button ref={trTriggerRef} type="button" onClick={openTrDropdown} disabled={trLoading}
-                        className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
-                          trDropdownOpen ? 'border-[#48A157] ring-4 ring-[#48A157]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]',
-                          trLoading && 'opacity-60 cursor-wait')}
-                      >
-                        <span className={cn('text-[13px] truncate', currentTR ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
-                          {trLoading ? 'Cargando proyectos...' : (currentTR?.name ?? 'Selecciona un proyecto...')}
-                        </span>
-                        <div className="flex-shrink-0 ml-2">
-                          {trLoading ? <Loader2 size={14} className="text-[#48A157] animate-spin" /> : <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', trDropdownOpen && 'rotate-180')} />}
-                        </div>
-                      </button>
-                      {trDropdownOpen && trDropdownPos && createPortal(
-                        <div ref={trPanelRef} style={{ position: 'fixed', top: trDropdownPos.top, left: trDropdownPos.left, width: trDropdownPos.width }}
-                          className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(16,75,153,0.22)] z-[9999] overflow-hidden">
-                          <div className="p-2 border-b border-[#F4F1EA]">
-                            <div className="relative">
-                              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
-                              <input autoFocus placeholder="Buscar proyecto..." value={trSearch} onChange={e => setTrSearch(e.target.value)}
-                                className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
-                              {trSearch && <button onClick={() => setTrSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
-                            </div>
-                            <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredTrProjects.length} de {trProjects.length} proyectos</div>
-                          </div>
-                          <div className="max-h-[220px] overflow-y-auto">
-                            {filteredTrProjects.length === 0 ? (
-                              <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{trSearch}"</div>
-                            ) : filteredTrProjects.map(t => {
-                              const isSel = String(t.id) === config.testRailProject;
-                              return (
-                                <button key={t.id} type="button"
-                                  onClick={() => {
-                                    const appSlug = normalizeAppSlug(t.name);
-                                    console.log(`[testrail-select] projectId=${t.id} name="${t.name}" appSlug="${appSlug}"`);
-                                    setConfig({ ...config, testRailProject: String(t.id), automationProject: appSlug });
-                                    setTrDropdownOpen(false);
-                                    setTrSearch('');
-                                  }}
-                                  className={cn('w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
-                                >
-                                  <div className="flex items-center gap-2.5 min-w-0">
-                                    <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
-                                      {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
-                                    </div>
-                                    <span className={cn('text-[12px] truncate', isSel ? 'font-semibold text-[#48A157]' : 'font-medium text-[#1a1f2e]')}>{t.name}</span>
-                                  </div>
-                                  <span className="text-[10px] font-mono text-[#8B999D] bg-[#F4F1EA] px-1.5 py-0.5 rounded flex-shrink-0 ml-2">{t.totalCaseCount} TCs</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>, document.body,
-                      )}
-                    </div>
-                    {trError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo conectar con TestRail</div>}
-                  </div>
-
-                  {currentTR && (
-                    <div className="bg-white rounded-xl p-4 border border-[#E8EBEC]">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Suite ID</div>
-                          <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trSuiteId ?? 'ΓÇö'}</div>
-                        </div>
-                        <div>
-                          <div className="text-[10px] uppercase tracking-wider text-[#8B999D]">Test Cases</div>
-                          <div className="text-[24px] font-medium text-[#1a1f2e] mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{trTotalCaseCount}</div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {currentTR && (
-                    <div>
-                      <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Sección</label>
-                      {trSectionsLoading ? (
-                        <div className="flex items-center gap-2 text-[12px] text-[#8B999D] bg-white rounded-xl px-3 py-3 border border-[#E8EBEC]">
-                          <Loader2 size={13} className="animate-spin text-[#48A157]" /> Cargando secciones...
-                        </div>
-                      ) : trSections.length === 0 && !trSectionsError ? (
-                        <div className="text-[11px] text-[#8B999D] bg-white rounded-xl px-3 py-2.5 border border-[#E8EBEC]">Este proyecto no tiene secciones disponibles</div>
-                      ) : (
-                        <div className="relative">
-                          <button ref={trSectionTriggerRef} type="button" onClick={openTrSectionDropdown}
-                            className={cn('w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left transition-all',
-                              trSectionDropdownOpen ? 'border-[#48A157] ring-4 ring-[#48A157]/10' : 'border-[#E8EBEC] hover:border-[#BABEC3]')}
-                          >
-                            <span className={cn('text-[13px] truncate', selectedSection ? 'font-medium text-[#1a1f2e]' : 'text-[#8B999D]')}>
-                              {selectedSection?.name ?? 'Selecciona una sección...'}
-                            </span>
-                            <ChevronDown size={14} className={cn('text-[#8B999D] flex-shrink-0 ml-2 transition-transform duration-200', trSectionDropdownOpen && 'rotate-180')} />
-                          </button>
-                          {trSectionDropdownOpen && trSectionDropdownPos && createPortal(
-                            <div ref={trSectionPanelRef} style={{ position: 'fixed', top: trSectionDropdownPos.top, left: trSectionDropdownPos.left, width: trSectionDropdownPos.width }}
-                              className="bg-white border border-[#E8EBEC] rounded-2xl shadow-[0_12px_40px_-8px_rgba(72,161,87,0.22)] z-[9999] overflow-hidden">
-                              <div className="p-2 border-b border-[#F4F1EA]">
-                                <div className="relative">
-                                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8B999D]" />
-                                  <input autoFocus placeholder="Buscar sección..." value={trSectionSearch} onChange={e => setTrSectionSearch(e.target.value)}
-                                    className="w-full bg-[#FAFAF7] rounded-lg pl-8 pr-8 py-2 text-[12px] outline-none placeholder:text-[#BABEC3]" />
-                                  {trSectionSearch && <button onClick={() => setTrSectionSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B999D] hover:text-[#1a1f2e]"><X size={12} /></button>}
-                                </div>
-                                <div className="text-[10px] text-[#8B999D] mt-1.5 px-0.5">{filteredSections.length} de {trSections.length} secciones</div>
-                              </div>
-                              <div className="max-h-[220px] overflow-y-auto">
-                                {filteredSections.length === 0 ? (
-                                  <div className="px-4 py-6 text-center text-[12px] text-[#8B999D]">Sin resultados para "{trSectionSearch}"</div>
-                                ) : filteredSections.map(sec => {
-                                  const isSel = selectedSection?.id === sec.id;
-                                  return (
-                                    <button key={sec.id} type="button"
-                                      onClick={() => { setSelectedSection(sec); setTrSectionDropdownOpen(false); setTrSectionSearch(''); }}
-                                      className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
-                                    >
-                                      <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
-                                        {isSel && <Check size={9} className="text-white" strokeWidth={3} />}
-                                      </div>
-                                      <span className={cn('text-[12px] truncate flex-1', isSel ? 'font-semibold text-[#48A157]' : 'font-medium text-[#1a1f2e]')}>{sec.name}</span>
-                                      {sec.depth > 0 && <span className="text-[10px] text-[#8B999D] font-mono bg-[#F4F1EA] px-1.5 py-0.5 rounded flex-shrink-0 ml-auto">niv. {sec.depth}</span>}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>, document.body,
-                          )}
-                        </div>
-                      )}
-                      {trSectionsError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudieron cargar las secciones</div>}
-                    </div>
-                  )}
-                </div>
-              )}
+              {(config.source === 'jira' || config.source === 'both') && renderJiraPanel()}
+              {(config.source === 'testrail' || config.source === 'both') && renderTestRailPanel(t => {
+                const appSlug = normalizeAppSlug(t.name);
+                console.log(`[testrail-select] projectId=${t.id} name="${t.name}" appSlug="${appSlug}"`);
+                setConfig({ ...config, testRailProject: String(t.id), automationProject: appSlug });
+              })}
             </div>
           </BentoCard>
         )}
 
+        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 2 · MOBILE (Emulador) ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
+        {step === 2 && isMobileProject && (
+          <BentoCard className="!p-8">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso dos · Infraestructura</div>
+            <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Emulador Android</h2>
+            <p className="text-[13px] text-[#58646D] mb-7">Arranca el emulador y verifica Appium antes de generar escenarios.</p>
+
+            <div className="grid grid-cols-2 gap-5 mb-6">
+              <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-[#1a1f2e] flex items-center justify-center"><Layers size={15} className="text-white" /></div>
+                    <div className="text-[14px] font-semibold text-[#1a1f2e]">Emulador</div>
+                  </div>
+                  <div className={cn('flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full',
+                    emulatorStatus?.running ? 'bg-[#48A157]/10 text-[#357a42]' : 'bg-[#E8EBEC] text-[#8B999D]')}>
+                    <span className={cn('w-1.5 h-1.5 rounded-full', emulatorStatus?.running ? 'bg-[#48A157]' : 'bg-[#BABEC3]')} />
+                    {emulatorStatus?.running ? (emulatorStatus.bootCompleted ? 'Corriendo' : 'Arrancando...') : 'Apagado'}
+                  </div>
+                </div>
+                {emulatorStatus?.avdName && (
+                  <div className="text-[11px] text-[#8B999D]">AVD: <span className="font-medium text-[#1a1f2e]">{emulatorStatus.avdName}</span></div>
+                )}
+                <div className="flex gap-2 pt-1">
+                  <button onClick={handleStartEmulator} disabled={emulatorActionLoading || !!emulatorStatus?.running}
+                    className="flex-1 bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-4 py-2 rounded-full transition flex items-center justify-center gap-1.5">
+                    {emulatorActionLoading ? <Loader2 size={13} className="animate-spin" /> : null} Iniciar
+                  </button>
+                  <button onClick={handleStopEmulator} disabled={emulatorActionLoading || !emulatorStatus?.running}
+                    className="flex-1 bg-white border border-[#E8EBEC] hover:border-[#1a1f2e]/40 disabled:opacity-40 disabled:cursor-not-allowed text-[#1a1f2e] text-[12px] font-semibold px-4 py-2 rounded-full transition">
+                    Detener
+                  </button>
+                </div>
+                {emulatorError && <div className="flex items-center gap-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {emulatorError}</div>}
+              </div>
+
+              <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-[#58646D] flex items-center justify-center"><Database size={15} className="text-white" /></div>
+                    <div className="text-[14px] font-semibold text-[#1a1f2e]">Appium</div>
+                  </div>
+                  <div className={cn('flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full',
+                    appiumStatus?.ready ? 'bg-[#48A157]/10 text-[#357a42]' : 'bg-[#E8EBEC] text-[#8B999D]')}>
+                    <span className={cn('w-1.5 h-1.5 rounded-full', appiumStatus?.ready ? 'bg-[#48A157]' : 'bg-[#BABEC3]')} />
+                    {appiumStatus?.ready ? 'Listo' : appiumStatus?.running ? 'Iniciando...' : 'Apagado'}
+                  </div>
+                </div>
+                {appiumStatus?.port && (
+                  <div className="text-[11px] text-[#8B999D]">Puerto: <span className="font-medium text-[#1a1f2e]">{appiumStatus.port}</span></div>
+                )}
+                <div className="text-[11px] text-[#8B999D]">Solo lectura — se administra junto con el emulador.</div>
+              </div>
+            </div>
+
+            {emulatorBootLogs.length > 0 && (
+              <div className="bg-[#1a1f2e] rounded-2xl p-4 max-h-[220px] overflow-y-auto font-mono text-[11px] text-white/80 space-y-1">
+                {emulatorBootLogs.map((l, i) => (
+                  <div key={i}><span className="text-white/40">{l.time}</span> {l.msg}</div>
+                ))}
+              </div>
+            )}
+          </BentoCard>
+        )}
+
         {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 3 ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
-        {step === 3 && (
+        {step === 3 && !isMobileProject && (
           <BentoCard className="!p-0 overflow-hidden">
 
             {/* ΓöÇΓöÇ Loading ΓöÇΓöÇ */}
@@ -1714,6 +2013,173 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           </BentoCard>
         )}
 
+        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 3 · MOBILE (Fuentes) ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
+        {step === 3 && isMobileProject && (
+          <BentoCard className="!p-8">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso tres · Conecta las fuentes</div>
+            <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿De dónde vienen los casos?</h2>
+            <p className="text-[13px] text-[#58646D] mb-7">Jira genera los escenarios con IA; TestRail es donde se publicarán los casos y el Test Run.</p>
+
+            <div className="grid grid-cols-2 gap-5">
+              {renderJiraPanel()}
+              {renderTestRailPanel(t => setConfig(c => ({ ...c, testRailProject: String(t.id) })))}
+            </div>
+          </BentoCard>
+        )}
+
+        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 4 · MOBILE (Escenarios) ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
+        {step === 4 && isMobileProject && (
+          <BentoCard className="!p-0 overflow-hidden">
+
+            {/* ΓöÇΓöÇ Loading ΓöÇΓöÇ */}
+            {mobileScenariosLoading && (
+              <div className="bg-gradient-to-br from-[#0a2547] via-[#104B99] to-[#0a2547] p-8 text-white relative overflow-hidden">
+                <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(circle at 70% 30%, ${C.green}50 0%, transparent 50%)` }} />
+                <div className="absolute right-8 top-8 w-32 h-32 rounded-full border border-white/10" />
+                <div className="relative">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-white/60 font-semibold mb-1">Paso cuatro · Generando escenarios</div>
+                  <h2 className="text-[28px] font-medium leading-tight mb-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{config.jiraProject}</h2>
+                  <div className="text-[12px] text-white/60 font-mono mb-6">{activeSprint?.name ?? 'Sprint activo'} · estado: {config.status}</div>
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden mb-6">
+                    <div className="h-full rounded-full relative overflow-hidden" style={{ width: '65%', background: `linear-gradient(90deg, ${C.green}, #5EC470)` }}>
+                      <div className="absolute inset-0 opacity-60" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)', animation: 'shimmer 1.6s linear infinite' }} />
+                    </div>
+                  </div>
+                  <div className="space-y-2.5">
+                    {['Consultando historias del sprint activo...', `Aplicando filtro de estado: ${config.status}`, 'Generando pasos mobile con IA...'].map((msg, i) => (
+                      <div key={i} className="flex items-center gap-2.5 text-[12px]">
+                        <Loader2 size={13} className="text-[#5EC470] animate-spin flex-shrink-0" style={{ animationDelay: `${i * 200}ms` }} />
+                        <span className="text-white/80">{msg}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ΓöÇΓöÇ Error ΓöÇΓöÇ */}
+            {!mobileScenariosLoading && mobileScenariosError && (
+              <div className="p-8">
+                <div className="flex items-center gap-3 text-[#E63946] mb-2">
+                  <AlertCircle size={18} />
+                  <span className="text-[14px] font-semibold">No se pudieron generar los escenarios</span>
+                </div>
+                <p className="text-[12px] text-[#8B999D] mb-4">{mobileScenariosError}</p>
+                <button onClick={handleGenerateMobileScenarios} className="text-[12px] font-semibold text-[#104B99] hover:underline flex items-center gap-1.5">
+                  <Loader2 size={12} /> Reintentar
+                </button>
+              </div>
+            )}
+
+            {/* ΓöÇΓöÇ Loaded ΓöÇΓöÇ */}
+            {!mobileScenariosLoading && !mobileScenariosError && (
+              <div className="p-6">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-1">Paso cuatro · Selecciona los escenarios</div>
+                <div className="flex items-center justify-between mb-5">
+                  <div>
+                    <h2 className="text-[22px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
+                      {mobileScenarios.length > 0
+                        ? <><span className="text-[#104B99]">{mobileScenarios.length}</span> escenarios mobile</>
+                        : 'Sin escenarios para este filtro'}
+                    </h2>
+                    {activeSprint && (
+                      <div className="flex items-center gap-2 mt-1 text-[11px] text-[#8B999D]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#48A157] animate-pulse" />
+                        {activeSprint.name} · {config.jiraProject} · estado: {config.status}
+                      </div>
+                    )}
+                  </div>
+                  {mobileScenarios.length > 0 && (
+                    <span className="text-[11px] text-[#8B999D]">
+                      <span className="font-semibold text-[#104B99]">{selectedMobileScenarioIds.length}</span> de {mobileScenarios.length} seleccionados
+                    </span>
+                  )}
+                </div>
+
+                {mobileRejected.length > 0 && (
+                  <div className="mb-4 text-[11px] text-[#8B999D]">{mobileRejected.length} historia(s) rechazada(s): {mobileRejected.map(r => r.sourceIssueKey).join(', ')}</div>
+                )}
+
+                {mobileScenarios.length > 0 && (
+                  <div className="space-y-3">
+                    {Array.from(new Set(mobileScenarios.map(s => s.sourceIssueKey))).map(issueKey => {
+                      const group = mobileScenarios.filter(s => s.sourceIssueKey === issueKey);
+                      const isExpanded = expandedMobileIssueKeys.includes(issueKey);
+                      return (
+                        <div key={issueKey} className="border border-[#E8EBEC] rounded-2xl overflow-hidden">
+                          <button
+                            onClick={() => setExpandedMobileIssueKeys(prev => isExpanded ? prev.filter(k => k !== issueKey) : [...prev, issueKey])}
+                            className="w-full flex items-center justify-between px-5 py-3.5 bg-[#FAFAF7] hover:bg-[#F4F1EA] transition text-left">
+                            <div className="flex items-center gap-2.5">
+                              <span className="text-[11px] font-mono font-semibold text-[#58646D] bg-white px-2 py-0.5 rounded border border-[#E8EBEC]">{issueKey}</span>
+                              <span className="text-[13px] font-medium text-[#1a1f2e]">{group.length} escenario(s)</span>
+                            </div>
+                            <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform', isExpanded && 'rotate-180')} />
+                          </button>
+                          {isExpanded && (
+                            <div className="divide-y divide-[#F4F1EA]">
+                              {group.map(sc => {
+                                const checked = selectedMobileScenarioIds.includes(sc.scenarioId);
+                                return (
+                                  <div key={sc.scenarioId} className="px-5 py-4">
+                                    <label className="flex items-start gap-3 cursor-pointer">
+                                      <button type="button" onClick={() => toggleMobileScenario(sc.scenarioId)}
+                                        className={cn('w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border-2 mt-0.5', checked ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
+                                        {checked && <Check size={10} className="text-white" strokeWidth={3} />}
+                                      </button>
+                                      <div className="flex-1">
+                                        <div className="text-[13px] font-medium text-[#1a1f2e]">{sc.title}</div>
+                                        <div className="text-[11px] text-[#8B999D] mt-0.5 font-mono">{sc.scenarioId}</div>
+                                        {sc.expectedResult && <div className="text-[12px] text-[#58646D] mt-1.5">Esperado: {sc.expectedResult}</div>}
+                                        {sc.requiredData && sc.requiredData.length > 0 && (
+                                          <div className="mt-3 p-3 rounded-xl bg-[#FAFAF7] border border-[#E8EBEC]" onClick={e => e.preventDefault()}>
+                                            <div className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-2">Datos de la prueba</div>
+                                            <div className="space-y-2">
+                                              {sc.requiredData.map(f => (
+                                                <div key={f.stepIndex} className="flex flex-col gap-1">
+                                                  <label className="text-[11px] font-medium text-[#58646D]">{f.label}</label>
+                                                  {f.kind === 'select' ? (
+                                                    <select
+                                                      value={mobileDataValues[sc.scenarioId]?.[f.stepIndex] ?? f.defaultValue ?? ''}
+                                                      onChange={e => setMobileFieldValue(sc.scenarioId, f.stepIndex, e.target.value)}
+                                                      className="text-[12px] px-2.5 py-1.5 rounded-lg border border-[#E8EBEC] bg-white text-[#1a1f2e] focus:outline-none focus:border-[#48A157]">
+                                                      {(f.options ?? []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                                    </select>
+                                                  ) : (
+                                                    <input
+                                                      type="text"
+                                                      value={mobileDataValues[sc.scenarioId]?.[f.stepIndex] ?? f.exampleValue ?? ''}
+                                                      onChange={e => setMobileFieldValue(sc.scenarioId, f.stepIndex, e.target.value)}
+                                                      placeholder={f.exampleValue}
+                                                      className="text-[12px] px-2.5 py-1.5 rounded-lg border border-[#E8EBEC] bg-white text-[#1a1f2e] focus:outline-none focus:border-[#48A157]" />
+                                                  )}
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                        <div className="mt-2 space-y-1">
+                                          {sc.steps.map((st, i) => (
+                                            <div key={i} className="text-[11px] text-[#58646D]"><span className="font-mono text-[#8B999D]">{i + 1}.</span> {st.action}{st.description ? ` — ${st.description}` : ''}</div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    </label>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </BentoCard>
+        )}
+
         {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 4 · API ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
         {step === 4 && isApiProject && (
           <BentoCard className="!p-0 overflow-hidden">
@@ -1770,7 +2236,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         )}
 
         {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 4 · WEB ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
-        {step === 4 && !isApiProject && (
+        {step === 4 && !isApiProject && !isMobileProject && (
           <BentoCard className="!p-0 overflow-hidden">
             <div className="bg-gradient-to-br from-[#0a2547] via-[#104B99] to-[#0a2547] text-white p-8 relative overflow-hidden">
               <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(circle at 80% 20%, ${C.green}50 0%, transparent 50%), radial-gradient(circle at 20% 80%, #ffffff20 0%, transparent 50%)` }} />
@@ -1831,6 +2297,62 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           </BentoCard>
         )}
 
+        {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 5 · MOBILE (Publicar y ejecutar) ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
+        {step === 5 && isMobileProject && (
+          <BentoCard className="!p-8">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso cinco · Publicar y ejecutar</div>
+            <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Confirma antes de ejecutar en el dispositivo</h2>
+            <p className="text-[13px] text-[#58646D] mb-7">Primero publica los {selectedMobileScenarioIds.length} escenario(s) seleccionados en TestRail, revisa el Test Run, y luego ejecútalos en el emulador.</p>
+
+            <div className="bg-[#FAFAF7] rounded-2xl p-5 mb-6 space-y-2 max-w-md">
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Proyecto TestRail</span>
+                <span className="text-[13px] font-semibold text-[#1a1f2e]">{currentTR?.name ?? '—'}</span>
+              </div>
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Sección TestRail</span>
+                <span className="text-[13px] font-semibold text-[#1a1f2e]">{selectedSection?.name ?? '—'}</span>
+              </div>
+            </div>
+
+            <button onClick={handlePublishMobileToTestRail}
+              disabled={mobilePublishing || !selectedSection || !config.testRailProject || selectedMobileScenarioIds.length === 0}
+              className="mb-7 bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-5 py-2.5 rounded-full transition flex items-center gap-1.5">
+              {mobilePublishing ? <Loader2 size={13} className="animate-spin" /> : null} Publicar en TestRail
+            </button>
+
+            {mobilePublishError && (
+              <div className="flex items-center gap-1.5 mb-5 text-[12px] text-[#E63946]"><AlertCircle size={13} /> {mobilePublishError}</div>
+            )}
+
+            {mobilePublishResult && (
+              <div className="bg-[#FAFAF7] rounded-2xl p-5 mb-7 space-y-3">
+                <div className="flex items-center justify-between py-2 border-b border-[#F4F1EA]">
+                  <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Test Run creado</span>
+                  <span className="text-[13px] font-semibold text-[#1a1f2e]">#{mobilePublishResult.testRunId}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {mobilePublishResult.publishedCases.map(pc => (
+                    <div key={pc.launchScenarioId} className="flex items-center justify-between text-[12px]">
+                      <span className="text-[#58646D]">{pc.title}</span>
+                      <span className="font-mono text-[#8B999D]">C{pc.caseId}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {mobileExecuteError && (
+                  <div className="flex items-center gap-1.5 text-[12px] text-[#E63946]"><AlertCircle size={13} /> {mobileExecuteError}</div>
+                )}
+
+                <button onClick={handleExecuteMobileRun} disabled={mobileExecuting}
+                  className="w-full bg-gradient-to-r from-[#48A157] to-[#357a42] hover:from-[#5EC470] hover:to-[#48A157] disabled:from-[#BABEC3] disabled:to-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center justify-center gap-1.5 shadow-lg shadow-[#48A157]/30 group">
+                  {mobileExecuting ? <><Loader2 size={13} className="animate-spin" /> Enviando a ejecución...</> : <><Rocket size={13} className="group-hover:rotate-12 transition" /> Ejecutar en emulador</>}
+                </button>
+              </div>
+            )}
+          </BentoCard>
+        )}
+
         {/* ΓöÇΓöÇ Navigation ΓöÇΓöÇ */}
         <div className="mt-5 flex items-center justify-between">
           <button
@@ -1842,12 +2364,12 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             className="text-[12px] font-medium px-4 py-2.5 rounded-full disabled:opacity-30 disabled:cursor-not-allowed text-[#58646D] hover:bg-white hover:text-[#1a1f2e] transition flex items-center gap-1.5">
             <ChevronLeft size={13} /> Atrás
           </button>
-          {step < 4 ? (
-            <button onClick={() => { if (step === 2) { handleStep2Advance(); return; } if (step === 3 && !canAdvance()) return; setStep(s => Math.min(4, s + 1)); }} disabled={!canAdvance()}
+          {step < maxStep ? (
+            <button onClick={() => { if (step === 2) { handleStep2Advance(); return; } if ((step === 3 || step === 4) && !canAdvance()) return; setStep(s => Math.min(maxStep, s + 1)); }} disabled={!canAdvance()}
               className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5">
-              {step === 2 ? (isApiProject ? 'Continuar' : 'Generar escenarios') : 'Continuar'} <ChevronRight size={13} />
+              {step === 2 ? ((isApiProject || isMobileProject) ? 'Continuar' : 'Generar escenarios') : 'Continuar'} <ChevronRight size={13} />
             </button>
-          ) : (
+          ) : isMobileProject ? null : (
             <div className="flex flex-col items-end gap-2">
               {launchError && (
                 <div className="flex items-center gap-1.5 text-[11px] text-[#E63946]">

@@ -4,6 +4,7 @@ export interface Defect {
   id: string;
   scenarioId?: string;
   scenarioTitle?: string;
+  title?: string;
   description: string;
   severity: 'low' | 'medium' | 'high' | 'critical';
   severityReason?: string;

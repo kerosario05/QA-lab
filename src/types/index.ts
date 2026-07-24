@@ -38,6 +38,14 @@ export interface ActiveRun {
   currentTest: string;
   eta: string;
   status: string;
+  runType?: string;
+  collectionName?: string;
+  /** Jira issue key used to open the defect checklist (mobile: sourceIssueKey). */
+  issueKey?: string;
+  /** When true, open the checklist by issueKey only (no jobId filter). Mobile jobs
+   *  don't echo issueKey/checklistUrl and tag defects with an internal execution id,
+   *  so filtering by the launch jobId returns nothing. */
+  checklistByIssueOnly?: boolean;
 }
 
 export interface TestCase {

@@ -17,6 +17,11 @@ import {
   isTerminalRunStatus,
   type LiveExecutionStatusLike,
 } from './state';
+import {
+  createMobileProgressState,
+  reduceMobileProgress,
+  computeMobileCounters,
+} from './mobile-progress';
 
 interface LiveExecutionScreenProps {
   run: ActiveRun | null;
@@ -58,7 +63,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [elapsed,         setElapsed]         = useState(0);
   const [currentJobId,    setCurrentJobId]    = useState(run?.jobId || run?.id || '');
   const [checklistUrl,    setChecklistUrl]    = useState<string | null>(null);
-  const [issueKey,        setIssueKey]        = useState<string | null>(null);
+  const [issueKey,        setIssueKey]        = useState<string | null>(run?.issueKey ?? null);
   const [defectCount,     setDefectCount]     = useState<number>(0);
   const [rerunning,       setRerunning]        = useState(false);
   const [downloadingDocx,  setDownloadingDocx]  = useState(false);
@@ -138,6 +143,14 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   useEffect(() => {
     if (!run?.jobId) return;
 
+    // Mobile: el backend reporta passed/failed a nivel PASO en su summary, así que
+    // ignoramos esos contadores y los derivamos a nivel ESCENARIO parseando los logs
+    // (ver ./mobile-progress). El total lo aporta run.total (conteo de escenarios).
+    const isMobile = run?.runType === 'mobile';
+    const mobileTotal = run?.total ?? 0;
+    const mobileState = createMobileProgressState();
+    if (isMobile && mobileTotal > 0) setTotal(mobileTotal);
+
     // Fetch job data to get issueKey and checklistUrl
     runsProxy.getJob(run.jobId).then(data => {
       if ((data as any).issueKey) setIssueKey((data as any).issueKey);
@@ -146,12 +159,16 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     }).catch(() => {});
 
     const applyStatus = (data: any) => {
-      if (data.progress    != null) setProgress(data.progress);
-      if (data.total       != null) setTotal(data.total);
-      if (data.completed   != null) setCompleted(data.completed);
-      if (data.passed      != null) setPassed(data.passed);
-      if (data.failed      != null) setFailed(data.failed);
-      if (data.currentTest)         setCurrentTestName(data.currentTest);
+      // Para mobile, no dejar que los contadores de PASO (progress/total/completed/
+      // passed/failed del summary) pisen los derivados a nivel escenario.
+      if (!isMobile) {
+        if (data.progress    != null) setProgress(data.progress);
+        if (data.total       != null) setTotal(data.total);
+        if (data.completed   != null) setCompleted(data.completed);
+        if (data.passed      != null) setPassed(data.passed);
+        if (data.failed      != null) setFailed(data.failed);
+        if (data.currentTest)         setCurrentTestName(data.currentTest);
+      }
       if (data.status)              setJobStatus(data.status);
       if (data.checklistUrl)        setChecklistUrl(data.checklistUrl);
       if (data.issueKey)            setIssueKey(data.issueKey);
@@ -170,18 +187,36 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
           type: mapLevel(entry.level),
           msg:  entry.message,
         }]);
+        if (isMobile) {
+          const counters = reduceMobileProgress(mobileState, entry.message, mobileTotal);
+          if (counters) {
+            setPassed(counters.passed);
+            setFailed(counters.failed);
+            setCompleted(counters.completed);
+            setProgress(counters.progress);
+            setCurrentTestName(counters.currentTest);
+          }
+        }
       },
       onStatus: applyStatus,
       onDone: data => {
         applyStatus(data);
         const finalStatus = data.status || 'completed';
         setJobStatus(finalStatus);
-        if (data.progress == null) setProgress(100);
+        if (isMobile) {
+          // contadores a nivel escenario ya reflejados vía onLog; completar barra
+          setProgress(p => (mobileTotal > 0 ? p : 100));
+        } else if (data.progress == null) {
+          setProgress(100);
+        }
+        const mobileFinal = computeMobileCounters(mobileState, mobileTotal);
+        const finalPassed = isMobile ? mobileFinal.passed : (data.passed ?? passed);
+        const finalFailed = isMobile ? mobileFinal.failed : (data.failed ?? failed);
         setLogs(prev => [...prev, {
           time: formatNow(),
           type: DONE_STATUSES.has(finalStatus) && finalStatus !== 'completed' ? 'error' : 'success',
           msg:  finalStatus === 'completed'
-            ? `✔ Ejecución completada · ${data.passed ?? passed} pasaron · ${data.failed ?? failed} fallaron`
+            ? `✔ Ejecución completada · ${finalPassed} pasaron · ${finalFailed} fallaron`
             : `Γ£ù Ejecución terminada con estado: ${finalStatus}`,
         }]);
         setTimeout(() => onCompleteRef.current?.(), 1500);
@@ -388,9 +423,13 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
               console.log(`[live-checklist-visibility] status=${jobStatus} failed=${failed} checklistUrl=${Boolean(checklistUrl)} issueKey=${Boolean(issueKey)} finished=${true} visible=${visible}`);
               if (!visible) return null;
                const params = new URLSearchParams();
-               if (currentJobId) params.set('jobId', currentJobId);
+               // Mobile: los defectos se taggean con un jobId interno distinto al del launch,
+               // así que abrimos el checklist por issueKey sin filtrar por jobId.
+               if (currentJobId && !run?.checklistByIssueOnly) params.set('jobId', currentJobId);
                const qs = params.toString();
-               const targetUrl = checklistUrl && !checklistUrl.includes('?jobId=')
+               const targetUrl = run?.checklistByIssueOnly
+                 ? `/checklist/${encodeURIComponent(issueKey!)}`
+                 : checklistUrl && !checklistUrl.includes('?jobId=')
                  ? `${checklistUrl}${checklistUrl.includes('?') ? '&' : '?'}${qs}`
                  : checklistUrl || `/checklist/${encodeURIComponent(issueKey!)}${qs ? `?${qs}` : ''}`;
               return (
