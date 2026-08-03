@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
-import { Plus, Settings2 } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { C } from './constants/theme';
 import { Sidebar } from './components/layout/Sidebar';
 import { Topbar } from './components/layout/Topbar';
-import { BentoCard } from './components/ui/BentoCard';
 import { DashboardView } from './pages/Dashboard';
 import { TestLaunch } from './pages/TestLaunch';
 import { LiveExecutionScreen } from './pages/LiveExecution';
 import { ExecutionClosure } from './pages/ExecutionClosure';
 import DefectChecklist from './pages/DefectChecklist';
+import { Ejecuciones } from './pages/Ejecuciones';
 import type { ActiveRun, View } from './types';
 
 export default function App() {
@@ -84,7 +84,8 @@ export default function App() {
     close: 'Cierre de ejecución',
     dashboard: 'Buenos días, Carlos',
     execute: 'Lanzar pruebas',
-    settings: 'Ajustes',
+    ejecuciones: 'Ejecuciones',
+    checklist: 'Checklist de defectos',
   };
 
   const subtitles: Record<View, string> = {
@@ -92,7 +93,8 @@ export default function App() {
     close: 'Revisa fallos, reporta bugs y firma el cierre',
     dashboard: 'Aquí está el pulso de tus pruebas automatizadas hoy',
     execute: 'Configura una nueva ejecución en 4 pasos',
-    settings: 'Preferencias e integraciones',
+    ejecuciones: 'Resumen de corridas y resultados',
+    checklist: 'Defectos detectados en la ejecución',
   };
 
   return (
@@ -166,14 +168,8 @@ export default function App() {
               onConfirm={handleConfirmClose}
             />
           )}
-          {view === 'settings' && (
-            <div className="p-8" style={{ background: C.canvas, minHeight: '100%' }}>
-              <BentoCard className="text-center !p-12 max-w-md mx-auto">
-                <Settings2 size={28} className="text-[#BABEC3] mx-auto mb-3" />
-                <div className="text-[18px] font-medium text-[#1a1f2e] mb-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Módulo de ajustes</div>
-                <div className="text-[11px] text-[#8B999D]">Próximamente · integraciones y permisos</div>
-              </BentoCard>
-            </div>
+          {view === 'ejecuciones' && (
+            <Ejecuciones />
           )}
         </div>
       </main>

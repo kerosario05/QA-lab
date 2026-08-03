@@ -33,8 +33,8 @@ function getDefectSummary(d: Defect): string {
   const desc = d.description ?? "";
   const techCtx = d.technicalContext as Record<string, unknown> | undefined;
 
-  // 1. Extract "Resultado actual" section from structured description
-  const actualMatch = desc.match(/Resultado actual:\n([\s\S]*?)(?:\n\n|$)/);
+  // 1. Extract the "Qué pasó" (or legacy "Resultado actual") section from the structured description
+  const actualMatch = desc.match(/(?:Qué pasó|Resultado actual):\n([\s\S]*?)(?:\n\n|$)/);
   if (actualMatch) {
     const text = actualMatch[1].trim();
     if (text && text.length > 0) {
