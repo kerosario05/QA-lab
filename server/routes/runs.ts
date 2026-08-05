@@ -269,6 +269,94 @@ router.get('/:jobId/evidence-docx', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/runs/:jobId/evidence-docx/status — lightweight availability probe
+router.get('/:jobId/evidence-docx/status', async (req: Request, res: Response) => {
+  const config = getRunProviderConfig();
+  if (!config.baseUrl) {
+    return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
+  }
+
+  const jobId = encodeURIComponent(String(req.params.jobId));
+  const baseUrl = config.baseUrl.replace(/\/+$/, '');
+  const upstreamStatusUrl = `${baseUrl}/api/runs/${jobId}/evidence-docx/status`;
+  const upstreamDocxUrl = `${baseUrl}/api/runs/${jobId}/evidence-docx`;
+
+  try {
+    const statusProbe = await fetch(upstreamStatusUrl, { headers: { Accept: 'application/json' } });
+    const rawBody = await statusProbe.text();
+    let parsed: any = null;
+    try { parsed = rawBody ? JSON.parse(rawBody) : null; } catch { parsed = null; }
+
+    const normalizedStatus = (parsed?.status as string | undefined)?.trim().toLowerCase();
+    const isStructuredStatus = typeof normalizedStatus === 'string' && normalizedStatus.length > 0;
+    const isStructuredJobNotFound = statusProbe.status === 404 && parsed?.reasonCode === 'job_not_found';
+
+    if (isStructuredStatus || isStructuredJobNotFound) {
+      const documentReady = parsed?.documentReady === true || normalizedStatus === 'ready';
+      const status = normalizedStatus ?? (isStructuredJobNotFound ? 'not_found' : 'failed');
+      return sendJson(res, statusProbe.status, {
+        ok: statusProbe.status < 500,
+        jobId: parsed?.jobId ?? req.params.jobId,
+        status,
+        documentReady,
+        reasonCode: parsed?.reasonCode,
+        jobStatus: parsed?.jobStatus,
+        appSlug: parsed?.appSlug,
+        sectionSlug: parsed?.sectionSlug,
+      });
+    }
+
+    // Backward-compatible fallback for providers that still don't expose /status.
+    const headProbe = await fetch(upstreamDocxUrl, { method: 'HEAD' });
+    const statusCode = headProbe.status;
+    if (statusCode === 200) {
+      return sendJson(res, 200, {
+        ok: true,
+        jobId: req.params.jobId,
+        status: 'ready',
+        documentReady: true,
+        reasonCode: 'ready',
+      });
+    }
+    if (statusCode === 404) {
+      return sendJson(res, 200, {
+        ok: true,
+        jobId: req.params.jobId,
+        status: 'preparing',
+        documentReady: false,
+        reasonCode: 'document_preparing',
+      });
+    }
+    if (statusCode >= 500) {
+      return sendJson(res, 200, {
+        ok: true,
+        jobId: req.params.jobId,
+        status: 'failed',
+        documentReady: false,
+        reasonCode: 'provider_status_error',
+      });
+    }
+    return sendJson(res, 200, {
+      ok: true,
+      jobId: req.params.jobId,
+      status: 'unavailable',
+      documentReady: false,
+      reasonCode: 'document_status_unavailable',
+    });
+  } catch (err: any) {
+    return sendJson(res, 502, {
+      ok: false,
+      jobId: req.params.jobId,
+      status: 'failed',
+      documentReady: false,
+      reasonCode: 'provider_proxy_error',
+      error: 'Provider proxy error',
+      errorCode: 'RUN_PROVIDER_ERROR',
+      message: err?.message ?? '',
+    });
+  }
+});
+
 // GET /api/runs/:jobId — status proxy
 router.get('/:jobId', async (req: Request, res: Response) => {
   const config = getRunProviderConfig();

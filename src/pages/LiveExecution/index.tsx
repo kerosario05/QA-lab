@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   ChevronLeft, FileText, Lock, Pause, Square, CheckCircle2,
-  Loader2, Check, Terminal, Maximize2, AlertCircle, Download,
+  Loader2, Terminal, Maximize2, AlertCircle, Download,
 } from 'lucide-react';
 import {
   RadialBarChart, RadialBar,
@@ -14,7 +14,18 @@ import type { ActiveRun } from '../../types';
 import {
   computeLiveExecutionElapsedMs,
   getLiveExecutionElapsedSeconds,
-  isTerminalRunStatus,
+  isActiveRunStatus,
+  isCancelledStatus,
+  isErrorTerminalStatus,
+  isSuccessTerminalStatus,
+  isTerminalStatus,
+  canEnableDocumentDownload,
+  resolveProgressPercent,
+  resolveDocumentAvailabilityState,
+  getTerminalUserMessage,
+  shouldResetDocumentStateForJob,
+  withStableTerminalTimestamp,
+  type EvidenceDocumentAvailability,
   type LiveExecutionStatusLike,
 } from './state';
 import {
@@ -33,7 +44,8 @@ interface LiveExecutionScreenProps {
 
 interface DisplayLog { time: string; type: string; msg: string; }
 
-const DONE_STATUSES = new Set(['completed', 'failed', 'error', 'done']);
+const DOC_STATUS_POLL_INTERVAL_MS = 2000;
+const DOC_STATUS_MAX_ATTEMPTS = 30;
 
 const formatTime = (s: number) => {
   const m   = Math.floor(s / 60);
@@ -68,6 +80,8 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [rerunning,       setRerunning]        = useState(false);
   const [downloadingDocx,  setDownloadingDocx]  = useState(false);
   const [docxError,      setDocxError]      = useState<string | null>(null);
+  const [documentReady,  setDocumentReady]  = useState(false);
+  const [documentState,  setDocumentState]  = useState<EvidenceDocumentAvailability>('idle');
   const [rerunKey,        setRerunKey]          = useState(0);
 
   const logsEndRef   = useRef<HTMLDivElement>(null);
@@ -75,9 +89,23 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   onCompleteRef.current = onComplete;
   const lastStatusRef = useRef<LiveExecutionStatusLike | null>(null);
   const timerRef = useRef<number | null>(null);
+  const documentPollTimerRef = useRef<number | null>(null);
+  const documentPollingJobIdRef = useRef<string | null>(null);
+  const documentPollAttemptsRef = useRef(0);
+  const terminalReceivedAtRef = useRef<string | null>(null);
+  const activeJobIdRef = useRef(currentJobId);
+  const totalRef = useRef(total);
+  const completedRef = useRef(completed);
+  const passedRef = useRef(passed);
+  const failedRef = useRef(failed);
+  const progressRef = useRef(progress);
 
-  const isDone   = DONE_STATUSES.has(jobStatus) || isTerminalRunStatus(jobStatus) || (total > 0 && completed >= total);
-  const isFailed = jobStatus === 'failed' || jobStatus === 'error';
+  const isDone = isTerminalStatus(jobStatus);
+  const isFailed = isErrorTerminalStatus(jobStatus);
+  const isSuccessDone = isSuccessTerminalStatus(jobStatus);
+  const isCancelled = isCancelledStatus(jobStatus);
+  const finalUserMessage = getTerminalUserMessage(jobStatus);
+  const canDownloadDocument = isTerminalStatus(jobStatus) && documentReady && Boolean(currentJobId);
 
   const handleRerun = async () => {
     if (!run?.jobId || rerunning) return;
@@ -99,6 +127,14 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         setChecklistUrl(newChecklistUrl);
         setIssueKey(newIssueKey);
         setDefectCount(0);
+        setDocumentReady(false);
+        setDocumentState('idle');
+        setDocxError(null);
+        setDownloadingDocx(false);
+        terminalReceivedAtRef.current = null;
+        lastStatusRef.current = null;
+        documentPollAttemptsRef.current = 0;
+        setElapsed(0);
         // Update run with new jobId so SSE reconnects
         setCurrentJobId(result.jobId as string);
         const updatedRun = { ...run, jobId: result.jobId, status: 'queued', progress: 0, completed: 0, passed: 0, failed: 0, currentTest: '' };
@@ -120,18 +156,186 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     setElapsed(elapsedSeconds);
   };
 
+  const startTimer = () => {
+    if (timerRef.current !== null) return;
+    timerRef.current = window.setInterval(() => {
+      syncElapsed();
+    }, 1000);
+  };
+
   const stopTimer = () => {
     if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
-      console.debug(`[live-execution] timer stopped jobId=${run?.jobId || run?.id}`);
+      console.debug(`[live-execution] timer stopped jobId=${currentJobId || run?.jobId || run?.id}`);
     }
   };
 
-  // Wall-clock timer
+  const stopDocumentPolling = () => {
+    if (documentPollTimerRef.current !== null) {
+      window.clearTimeout(documentPollTimerRef.current);
+      documentPollTimerRef.current = null;
+    }
+    documentPollingJobIdRef.current = null;
+  };
+
+  const startDocumentPolling = (jobId: string) => {
+    if (!jobId || activeJobIdRef.current !== jobId) return;
+    if (documentPollingJobIdRef.current === jobId) return;
+    stopDocumentPolling();
+    documentPollingJobIdRef.current = jobId;
+    documentPollAttemptsRef.current = 0;
+    void pollEvidenceDocumentStatus(jobId);
+  };
+
+  const setProgressSnapshot = (snapshot: LiveExecutionStatusLike) => {
+    const incomingTotal = typeof snapshot.total === 'number' ? Math.max(0, snapshot.total) : undefined;
+    const nextTotal = incomingTotal != null
+      ? Math.max(totalRef.current, incomingTotal)
+      : totalRef.current;
+    const nextCompletedRaw = typeof snapshot.completed === 'number' ? Math.max(0, snapshot.completed) : completedRef.current;
+    const nextCompleted = nextTotal > 0
+      ? Math.min(nextTotal, Math.max(completedRef.current, nextCompletedRaw))
+      : Math.max(completedRef.current, nextCompletedRaw);
+    const nextPassed = typeof snapshot.passed === 'number'
+      ? Math.max(passedRef.current, Math.max(0, snapshot.passed))
+      : passedRef.current;
+    const nextFailed = typeof snapshot.failed === 'number'
+      ? Math.max(failedRef.current, Math.max(0, snapshot.failed))
+      : failedRef.current;
+    const nextProgress = resolveProgressPercent({
+      previousProgress: progressRef.current,
+      completed: nextCompleted,
+      total: nextTotal,
+      backendProgress: typeof snapshot.progress === 'number' ? snapshot.progress : undefined,
+    });
+
+    totalRef.current = nextTotal;
+    completedRef.current = nextCompleted;
+    passedRef.current = nextPassed;
+    failedRef.current = nextFailed;
+    progressRef.current = nextProgress;
+
+    setTotal(nextTotal);
+    setCompleted(nextCompleted);
+    setPassed(nextPassed);
+    setFailed(nextFailed);
+    setProgress(nextProgress);
+  };
+
+  const pollEvidenceDocumentStatus = async (jobId: string) => {
+    if (!jobId || activeJobIdRef.current !== jobId) return;
+    documentPollAttemptsRef.current += 1;
+    try {
+      const probe = await runsProxy.getEvidenceDocumentStatus(jobId);
+      if (activeJobIdRef.current !== jobId) return;
+      const probeStatus = probe.status?.trim().toLowerCase();
+      const probeReady = probe.documentReady === true || probe.ready === true || probeStatus === 'ready';
+      const isMissingJob = probe.reasonCode === 'job_not_found' || probeStatus === 'not_found';
+      if (isMissingJob || probe.statusCode === 404) {
+        setDocumentReady(false);
+        setDocumentState('failed');
+        setDocxError('No se encontró la ejecución para generar el documento.');
+        stopDocumentPolling();
+        return;
+      }
+      const resolution = resolveDocumentAvailabilityState({
+        ready: probeReady,
+        state: probeStatus ?? probe.state,
+        statusCode: probe.statusCode,
+        attempt: documentPollAttemptsRef.current,
+        maxAttempts: DOC_STATUS_MAX_ATTEMPTS,
+      });
+
+      setDocumentState(resolution.state);
+      if (resolution.state === 'ready') {
+        setDocumentReady(true);
+        setDocxError(null);
+        stopDocumentPolling();
+        return;
+      }
+      if (resolution.state === 'failed') {
+        setDocumentReady(false);
+        setDocxError('No se pudo preparar el documento.');
+        stopDocumentPolling();
+        return;
+      }
+      if (resolution.state === 'unavailable') {
+        setDocumentReady(false);
+        setDocxError('Documento no disponible para esta ejecución.');
+        stopDocumentPolling();
+        return;
+      }
+      if (resolution.continuePolling) {
+        documentPollTimerRef.current = window.setTimeout(() => {
+          void pollEvidenceDocumentStatus(jobId);
+        }, DOC_STATUS_POLL_INTERVAL_MS);
+      }
+    } catch (err) {
+      if (activeJobIdRef.current !== jobId) return;
+      setDocumentReady(false);
+      setDocumentState('failed');
+      setDocxError('No se pudo verificar el estado del documento.');
+      stopDocumentPolling();
+    }
+  };
+
+  // Keep active job id ref in sync to ignore stale async callbacks
   useEffect(() => {
-    const t = setInterval(() => setElapsed(e => e + 1), 1000);
-    return () => clearInterval(t);
+    activeJobIdRef.current = currentJobId;
+  }, [currentJobId]);
+
+  useEffect(() => {
+    totalRef.current = total;
+    completedRef.current = completed;
+    passedRef.current = passed;
+    failedRef.current = failed;
+    progressRef.current = progress;
+  }, [total, completed, passed, failed, progress]);
+
+  // Reset job-scoped states when job changes
+  useEffect(() => {
+    const nextJobId = run?.jobId || run?.id || '';
+    if (!shouldResetDocumentStateForJob(currentJobId, nextJobId)) return;
+    stopDocumentPolling();
+    setCurrentJobId(nextJobId);
+    setDocumentReady(false);
+    setDocumentState('idle');
+    setDocxError(null);
+    setDownloadingDocx(false);
+    setLogs([]);
+    terminalReceivedAtRef.current = null;
+    lastStatusRef.current = null;
+    documentPollAttemptsRef.current = 0;
+    progressRef.current = 0;
+    totalRef.current = 0;
+    completedRef.current = 0;
+    passedRef.current = 0;
+    failedRef.current = 0;
+    setProgress(0);
+    setTotal(0);
+    setCompleted(0);
+    setPassed(0);
+    setFailed(0);
+    stopTimer();
+    syncElapsed(undefined, Date.now());
+  }, [run?.jobId, run?.id, currentJobId]);
+
+  // Timer orchestration based on status
+  useEffect(() => {
+    if (!currentJobId) return;
+    syncElapsed(undefined, Date.now());
+    if (isDone || !isActiveRunStatus(jobStatus)) {
+      stopTimer();
+      return () => stopTimer();
+    }
+    startTimer();
+    return () => stopTimer();
+  }, [currentJobId, jobStatus, run?.startedAt, isDone]);
+
+  useEffect(() => () => {
+    stopTimer();
+    stopDocumentPolling();
   }, []);
 
   // Auto-scroll logs to bottom
@@ -141,7 +345,8 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
 
   // Consumir stream SSE
   useEffect(() => {
-    if (!run?.jobId) return;
+    const streamJobId = currentJobId || run?.jobId;
+    if (!streamJobId) return;
 
     // Mobile: el backend reporta passed/failed a nivel PASO en su summary, así que
     // ignoramos esos contadores y los derivamos a nivel ESCENARIO parseando los logs
@@ -152,36 +357,73 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     if (isMobile && mobileTotal > 0) setTotal(mobileTotal);
 
     // Fetch job data to get issueKey and checklistUrl
-    runsProxy.getJob(run.jobId).then(data => {
+    runsProxy.getJob(streamJobId).then(data => {
+      if (activeJobIdRef.current !== streamJobId) return;
       if ((data as any).issueKey) setIssueKey((data as any).issueKey);
       if ((data as any).checklistUrl) setChecklistUrl((data as any).checklistUrl);
       if (typeof (data as any).defectCount === 'number') setDefectCount((data as any).defectCount);
+      const stableData = withStableTerminalTimestamp(data as LiveExecutionStatusLike, terminalReceivedAtRef.current ?? undefined) ?? (data as LiveExecutionStatusLike);
+      lastStatusRef.current = stableData;
+      if (stableData.status) setJobStatus(stableData.status);
+      if (stableData.currentTest) setCurrentTestName(stableData.currentTest);
+      setProgressSnapshot(stableData);
+      if (canEnableDocumentDownload(stableData.status, stableData)) {
+        setDocumentReady(true);
+        setDocumentState('ready');
+        setDocxError(null);
+        stopDocumentPolling();
+      } else if (isTerminalStatus(stableData.status) && (isSuccessTerminalStatus(stableData.status) || isCancelledStatus(stableData.status))) {
+        setDocumentReady(false);
+        setDocumentState('preparing');
+        setDocxError(null);
+        startDocumentPolling(streamJobId);
+      }
     }).catch(() => {});
 
     const applyStatus = (data: any) => {
-      // Para mobile, no dejar que los contadores de PASO (progress/total/completed/
-      // passed/failed del summary) pisen los derivados a nivel escenario.
-      if (!isMobile) {
-        if (data.progress    != null) setProgress(data.progress);
-        if (data.total       != null) setTotal(data.total);
-        if (data.completed   != null) setCompleted(data.completed);
-        if (data.passed      != null) setPassed(data.passed);
-        if (data.failed      != null) setFailed(data.failed);
-        if (data.currentTest)         setCurrentTestName(data.currentTest);
+      if (activeJobIdRef.current !== streamJobId) return;
+      let stableStatus = data as LiveExecutionStatusLike;
+      if (isTerminalStatus(stableStatus.status)) {
+        if (!terminalReceivedAtRef.current) {
+          terminalReceivedAtRef.current = new Date().toISOString();
+        }
+        stableStatus = withStableTerminalTimestamp(stableStatus, terminalReceivedAtRef.current) ?? stableStatus;
       }
-      if (data.status)              setJobStatus(data.status);
+      const previousStatus = lastStatusRef.current?.status;
+      if (isTerminalStatus(previousStatus) && !isTerminalStatus(stableStatus.status)) {
+        return;
+      }
+      lastStatusRef.current = stableStatus;
+      // Mobile reporta passed/failed por paso; mantenemos contadores derivados de logs.
+      if (!isMobile) {
+        setProgressSnapshot(stableStatus);
+      }
+      if (stableStatus.currentTest) setCurrentTestName(stableStatus.currentTest);
+      if (stableStatus.status)      setJobStatus(stableStatus.status);
       if (data.checklistUrl)        setChecklistUrl(data.checklistUrl);
       if (data.issueKey)            setIssueKey(data.issueKey);
       if (typeof data.defectCount === 'number') setDefectCount(data.defectCount);
-      if (isTerminalRunStatus(data.status)) {
-        syncElapsed(data);
-        console.debug(`[live-execution] terminal status received status=${data.status} durationMs=${computeLiveExecutionElapsedMs(run, data)}`);
+      if (canEnableDocumentDownload(stableStatus.status, stableStatus)) {
+        setDocumentReady(true);
+        setDocumentState('ready');
+        setDocxError(null);
+        stopDocumentPolling();
+      } else if (isTerminalStatus(stableStatus.status) && (isSuccessTerminalStatus(stableStatus.status) || isCancelledStatus(stableStatus.status))) {
+        setDocumentReady(false);
+        setDocumentState('preparing');
+        setDocxError(null);
+        startDocumentPolling(streamJobId);
+      }
+      if (isTerminalStatus(stableStatus.status)) {
+        syncElapsed(stableStatus);
+        console.debug(`[live-execution] terminal status received status=${stableStatus.status} durationMs=${computeLiveExecutionElapsedMs(run, stableStatus)}`);
         stopTimer();
       }
     };
 
-    const cleanup = runsProxy.streamLogs(run.jobId, {
+    const cleanup = runsProxy.streamLogs(streamJobId, {
       onLog: entry => {
+        if (activeJobIdRef.current !== streamJobId) return;
         setLogs(prev => [...prev, {
           time: entry.timestamp ?? formatNow(),
           type: mapLevel(entry.level),
@@ -200,32 +442,45 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       },
       onStatus: applyStatus,
       onDone: data => {
+        if (activeJobIdRef.current !== streamJobId) return;
         applyStatus(data);
         const finalStatus = data.status || 'completed';
         setJobStatus(finalStatus);
         if (isMobile) {
-          // contadores a nivel escenario ya reflejados vía onLog; completar barra
-          setProgress(p => (mobileTotal > 0 ? p : 100));
+          const mobileFinal = computeMobileCounters(mobileState, mobileTotal);
+          setPassed(mobileFinal.passed);
+          setFailed(mobileFinal.failed);
+          setCompleted(mobileFinal.completed);
+          setProgress(mobileFinal.progress);
+          if (mobileTotal > 0) setTotal(mobileTotal);
         } else if (data.progress == null) {
           setProgress(100);
         }
         const mobileFinal = computeMobileCounters(mobileState, mobileTotal);
-        const finalPassed = isMobile ? mobileFinal.passed : (data.passed ?? passed);
-        const finalFailed = isMobile ? mobileFinal.failed : (data.failed ?? failed);
+        const finalPassed = isMobile ? mobileFinal.passed : (data.passed ?? passedRef.current);
+        const finalFailed = isMobile ? mobileFinal.failed : (data.failed ?? failedRef.current);
+        const finalMessage = isSuccessTerminalStatus(finalStatus)
+          ? `✔ Ejecución completada · ${finalPassed} pasaron · ${finalFailed} fallaron`
+          : getTerminalUserMessage(finalStatus).text;
         setLogs(prev => [...prev, {
           time: formatNow(),
-          type: DONE_STATUSES.has(finalStatus) && finalStatus !== 'completed' ? 'error' : 'success',
-          msg:  finalStatus === 'completed'
-            ? `✔ Ejecución completada · ${finalPassed} pasaron · ${finalFailed} fallaron`
-            : `Γ£ù Ejecución terminada con estado: ${finalStatus}`,
+          type: isSuccessTerminalStatus(finalStatus)
+            ? 'success'
+            : isErrorTerminalStatus(finalStatus)
+              ? 'error'
+              : 'info',
+          msg: finalMessage,
         }]);
         setTimeout(() => onCompleteRef.current?.(), 1500);
       },
       onError: err => setStreamError(err.message),
     });
 
-    return cleanup;
-  }, [run?.jobId]);
+    return () => {
+      cleanup();
+      stopDocumentPolling();
+    };
+  }, [currentJobId, rerunKey]);
 
   const eta = total > 0 && progress > 0
     ? Math.max(0, Math.round(((100 - progress) / progress) * elapsed))
@@ -254,12 +509,15 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                     catch { setDocxError("El documento de evidencia aun no esta disponible."); }
                     finally { setDownloadingDocx(false); }
                   }}
-                  disabled={downloadingDocx}
+                  disabled={downloadingDocx || !canDownloadDocument}
                   className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D] disabled:opacity-50"
                 >
                   {downloadingDocx ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
                   Descargar documento
                 </button>
+                {isSuccessDone && documentState === 'preparing' && !documentReady && (
+                  <span className="text-[10px] text-[#58646D] bg-[#FAFAF7] px-2 py-1 rounded-full">Preparando documento...</span>
+                )}
                 {docxError && (
                   <span className="text-[10px] text-[#E63946] bg-[#E63946]/5 px-2 py-1 rounded-full">{docxError}</span>
                 )}
@@ -306,7 +564,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                       ? <AlertCircle size={14} className="text-[#FFB4B4]" />
                       : <CheckCircle2 size={14} className="text-white" />}
                     <span className="text-[10px] uppercase tracking-[0.2em] text-white/80 font-semibold">
-                      {isFailed ? 'Ejecución fallida' : 'Ejecución completada'}
+                      {isFailed ? 'EJECUCIÓN FALLIDA' : isCancelled ? 'EJECUCIÓN CANCELADA' : 'EJECUCIÓN COMPLETADA'}
                     </span>
                   </>
                 ) : (
@@ -396,9 +654,15 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                   ? <CheckCircle2 size={13} className={isFailed ? 'text-[#E63946]' : 'text-[#48A157]'} />
                   : <Loader2 size={13} className="text-[#104B99] animate-spin" />}
               </div>
-              <div className="text-[10px] uppercase tracking-[0.15em] text-[#8B999D] font-semibold">
+              <div className={cn(
+                "text-[10px] uppercase tracking-[0.15em] font-semibold",
+                !isDone && "text-[#8B999D]",
+                isDone && finalUserMessage.tone === 'success' && "text-[#48A157]",
+                isDone && finalUserMessage.tone === 'error' && "text-[#E63946]",
+                isDone && finalUserMessage.tone === 'neutral' && "text-[#58646D]",
+              )}>
                 {isDone
-                  ? isFailed ? 'Terminado con errores' : 'Ejecución completada'
+                  ? finalUserMessage.text
                   : 'Ejecutándose ahora'}
               </div>
             </div>

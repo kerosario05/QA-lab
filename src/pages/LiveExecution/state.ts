@@ -35,6 +35,12 @@ export type LiveExecutionStatusLike = {
   lastEventAt?: string;
   receivedFinalEventAt?: string;
   durationMs?: number;
+  documentReady?: boolean;
+  documentUrl?: string;
+  documentPath?: string;
+  evidenceDocument?: string;
+  evidenceDocxPath?: string;
+  summaryDocumentReady?: boolean;
   summary?: LiveExecutionSummaryLike;
 };
 
@@ -60,19 +66,36 @@ export type LiveExecutionOutcome = {
   usesObservationsCopy: boolean;
 };
 
+export type EvidenceDocumentAvailability = 'idle' | 'preparing' | 'ready' | 'failed' | 'unavailable';
+
 const TERMINAL_STATUSES = new Set([
   'completed',
   'completed_with_failures',
   'failed',
   'cancelled',
+  'canceled',
   'stopped',
   'timeout',
   'error',
   'done',
 ]);
 
+const ACTIVE_STATUSES = new Set([
+  'queued',
+  'pending',
+  'starting',
+  'running',
+  'in_progress',
+]);
+
 function getNumeric(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function getProgressNumeric(value: unknown): number | undefined {
+  const numeric = getNumeric(value);
+  if (numeric == null) return undefined;
+  return clampProgressPercent(numeric);
 }
 
 function parseDateMs(value?: string | null): number | null {
@@ -84,6 +107,163 @@ function parseDateMs(value?: string | null): number | null {
 export function isTerminalRunStatus(status?: string | null): boolean {
   if (!status?.trim()) return false;
   return TERMINAL_STATUSES.has(status.trim().toLowerCase());
+}
+
+export function clampProgressPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.floor(value)));
+}
+
+export function computeProgressFromCompleted(
+  completed?: number,
+  total?: number,
+): number | undefined {
+  if (completed == null || total == null) return undefined;
+  if (!Number.isFinite(completed) || !Number.isFinite(total) || total <= 0) return undefined;
+  return clampProgressPercent((completed / total) * 100);
+}
+
+export function resolveProgressPercent(input: {
+  previousProgress?: number;
+  completed?: number;
+  total?: number;
+  backendProgress?: number;
+}): number {
+  const previousProgress = getProgressNumeric(input.previousProgress) ?? 0;
+  const completedProgress = computeProgressFromCompleted(input.completed, input.total);
+  const backendProgress = getProgressNumeric(input.backendProgress);
+
+  let nextProgress: number;
+  if (completedProgress != null) {
+    nextProgress = backendProgress != null
+      ? Math.max(completedProgress, backendProgress)
+      : completedProgress;
+  } else {
+    nextProgress = backendProgress ?? previousProgress;
+  }
+  return Math.max(previousProgress, clampProgressPercent(nextProgress));
+}
+
+export function computePassRatePercent(passed?: number, completed?: number): number {
+  if (!Number.isFinite(passed) || !Number.isFinite(completed) || (completed ?? 0) <= 0) {
+    return 0;
+  }
+  return clampProgressPercent(Math.round((Number(passed) / Number(completed)) * 100));
+}
+
+export function isTerminalStatus(status?: string | null): boolean {
+  return isTerminalRunStatus(status);
+}
+
+export function isActiveRunStatus(status?: string | null): boolean {
+  if (!status?.trim()) return false;
+  return ACTIVE_STATUSES.has(status.trim().toLowerCase());
+}
+
+export function isSuccessTerminalStatus(status?: string | null): boolean {
+  const normalized = status?.trim().toLowerCase();
+  return normalized === 'done' || normalized === 'completed';
+}
+
+export function isErrorTerminalStatus(status?: string | null): boolean {
+  const normalized = status?.trim().toLowerCase();
+  return normalized === 'failed' || normalized === 'error';
+}
+
+export function isCancelledStatus(status?: string | null): boolean {
+  const normalized = status?.trim().toLowerCase();
+  return normalized === 'cancelled' || normalized === 'canceled';
+}
+
+export function withStableTerminalTimestamp(
+  data: LiveExecutionStatusLike | null | undefined,
+  receivedAtIso?: string,
+): LiveExecutionStatusLike | undefined {
+  if (!data) return undefined;
+  if (!isTerminalStatus(data.status)) return data;
+  if (getRunEndTimeMs(data) != null) return data;
+  if (!receivedAtIso) return data;
+  return {
+    ...data,
+    receivedFinalEventAt: data.receivedFinalEventAt ?? receivedAtIso,
+  };
+}
+
+export function hasReadyEvidenceDocument(data?: LiveExecutionStatusLike | null): boolean {
+  if (!data) return false;
+  if (data.documentReady === true) return true;
+  if (data.summaryDocumentReady === true) return true;
+
+  const stringFields = [
+    data.documentUrl,
+    data.documentPath,
+    data.evidenceDocument,
+    data.evidenceDocxPath,
+    (data.summary as Record<string, unknown> | undefined)?.documentUrl as string | undefined,
+    (data.summary as Record<string, unknown> | undefined)?.documentPath as string | undefined,
+    (data.summary as Record<string, unknown> | undefined)?.evidenceDocument as string | undefined,
+    (data.summary as Record<string, unknown> | undefined)?.evidenceDocxPath as string | undefined,
+    (data.summary as Record<string, unknown> | undefined)?.evidenceDocumentPath as string | undefined,
+  ];
+  return stringFields.some((value) => typeof value === 'string' && value.trim().length > 0);
+}
+
+export function canEnableDocumentDownload(status?: string | null, data?: LiveExecutionStatusLike | null): boolean {
+  if (!isTerminalStatus(status)) return false;
+  return hasReadyEvidenceDocument(data);
+}
+
+export function resolveDocumentAvailabilityState(input: {
+  ready: boolean;
+  state?: string;
+  statusCode?: number;
+  attempt: number;
+  maxAttempts: number;
+}): { state: EvidenceDocumentAvailability; continuePolling: boolean } {
+  if (input.ready) {
+    return { state: 'ready', continuePolling: false };
+  }
+
+  const normalizedState = input.state?.trim().toLowerCase();
+  if (normalizedState === 'failed') {
+    return { state: 'failed', continuePolling: false };
+  }
+  if (normalizedState === 'unavailable') {
+    return { state: 'unavailable', continuePolling: false };
+  }
+
+  const attemptsExceeded = input.attempt >= input.maxAttempts;
+  if (attemptsExceeded) {
+    return { state: 'unavailable', continuePolling: false };
+  }
+
+  if (input.statusCode === 404 || normalizedState === 'preparing' || normalizedState === 'pending') {
+    return { state: 'preparing', continuePolling: true };
+  }
+
+  if ((input.statusCode ?? 0) >= 500) {
+    return { state: 'failed', continuePolling: false };
+  }
+
+  return { state: 'preparing', continuePolling: true };
+}
+
+export function getTerminalUserMessage(status?: string | null): { text: string; tone: 'success' | 'error' | 'neutral' | 'info' } {
+  if (isSuccessTerminalStatus(status)) {
+    return { text: '✓ Ejecución completada', tone: 'success' };
+  }
+  if (isErrorTerminalStatus(status)) {
+    return { text: 'Ejecución finalizada con errores', tone: 'error' };
+  }
+  if (isCancelledStatus(status)) {
+    return { text: 'Ejecución cancelada', tone: 'neutral' };
+  }
+  return { text: 'Ejecutándose ahora', tone: 'info' };
+}
+
+export function shouldResetDocumentStateForJob(previousJobId?: string | null, nextJobId?: string | null): boolean {
+  if (!nextJobId) return false;
+  return previousJobId !== nextJobId;
 }
 
 export function getRunStartTimeMs(run: Pick<ActiveRun, 'startedAt'> | null, data?: LiveExecutionStatusLike): number | null {
@@ -141,10 +321,13 @@ export function computeLiveExecutionMetrics(
     ?? getNumeric(summary?.failed)
     ?? run?.failed
     ?? 0;
-  const progress = getNumeric(data?.progress)
-    ?? (total > 0 ? Math.round((completed / total) * 100) : run?.progress ?? 0);
-  const passRateBase = completed > 0 ? completed : total;
-  const passRate = passRateBase > 0 ? Math.round((passed / passRateBase) * 100) : 0;
+  const progress = resolveProgressPercent({
+    previousProgress: getNumeric(run?.progress),
+    completed,
+    total,
+    backendProgress: getNumeric(data?.progress),
+  });
+  const passRate = computePassRatePercent(passed, completed);
 
   return {
     total,

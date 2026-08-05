@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { toRunLogEntry } from './index';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { runsProxy, toRunLogEntry } from './index';
+
+const originalFetch = global.fetch;
+
+afterEach(() => {
+  global.fetch = originalFetch;
+  vi.restoreAllMocks();
+});
 
 describe('runs service log mapping', () => {
   it('preserva logs SSE con payload { line }', () => {
@@ -49,5 +56,57 @@ describe('runs service log mapping', () => {
 
   it('retorna null para objeto vacío', () => {
     expect(toRunLogEntry({})).toBeNull();
+  });
+});
+
+describe('runsProxy.getEvidenceDocumentStatus', () => {
+  it('devuelve ready con contrato estructurado', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        jobId: 'job-ready',
+        status: 'ready',
+        documentReady: true,
+        reasonCode: 'ready',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as any;
+
+    const result = await runsProxy.getEvidenceDocumentStatus('job-ready');
+    expect(result.status).toBe('ready');
+    expect(result.documentReady).toBe(true);
+    expect(result.reasonCode).toBe('ready');
+  });
+
+  it('maneja 404 job_not_found sin lanzar excepción', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        jobId: 'job-missing',
+        status: 'not_found',
+        documentReady: false,
+        reasonCode: 'job_not_found',
+      }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as any;
+
+    const result = await runsProxy.getEvidenceDocumentStatus('job-missing');
+    expect(result.status).toBe('not_found');
+    expect(result.documentReady).toBe(false);
+    expect(result.reasonCode).toBe('job_not_found');
+    expect(result.statusCode).toBe(404);
+  });
+
+  it('normaliza fallback a failed cuando la respuesta no trae JSON válido', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response('gateway error', { status: 502 }),
+    ) as any;
+
+    const result = await runsProxy.getEvidenceDocumentStatus('job-err');
+    expect(result.status).toBe('failed');
+    expect(result.documentReady).toBe(false);
+    expect(result.statusCode).toBe(502);
   });
 });

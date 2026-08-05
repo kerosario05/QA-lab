@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canEnableDocumentDownload,
+  computePassRatePercent,
   computeLiveExecutionElapsedMs,
   computeLiveExecutionMetrics,
   getLiveExecutionElapsedSeconds,
   getLiveExecutionOutcome,
   getLiveExecutionStatusText,
+  getTerminalUserMessage,
+  resolveDocumentAvailabilityState,
+  resolveProgressPercent,
+  isActiveRunStatus,
+  isErrorTerminalStatus,
+  isSuccessTerminalStatus,
+  isTerminalStatus,
   isTerminalRunStatus,
+  shouldResetDocumentStateForJob,
+  withStableTerminalTimestamp,
 } from './state';
 import type { ActiveRun } from '../../types';
 
@@ -54,8 +65,44 @@ describe('LiveExecution state', () => {
         scenarioCount: 7,
       },
     });
-
     expect(metrics.passRate).toBe(71);
+  });
+
+  it('progreso incremental 0/4 -> 0%', () => {
+    expect(resolveProgressPercent({ previousProgress: 0, completed: 0, total: 4 })).toBe(0);
+  });
+
+  it('progreso incremental 1/4 -> 25%', () => {
+    expect(resolveProgressPercent({ previousProgress: 0, completed: 1, total: 4 })).toBe(25);
+  });
+
+  it('progreso incremental 2/4 -> 50%', () => {
+    expect(resolveProgressPercent({ previousProgress: 0, completed: 2, total: 4 })).toBe(50);
+  });
+
+  it('progreso incremental 3/4 -> 75%', () => {
+    expect(resolveProgressPercent({ previousProgress: 0, completed: 3, total: 4 })).toBe(75);
+  });
+
+  it('progreso incremental 4/4 -> 100%', () => {
+    expect(resolveProgressPercent({ previousProgress: 0, completed: 4, total: 4 })).toBe(100);
+  });
+
+  it('3 aprobados + 1 fallido da progreso 100 y pass rate 75', () => {
+    expect(resolveProgressPercent({ previousProgress: 0, completed: 4, total: 4 })).toBe(100);
+    expect(computePassRatePercent(3, 4)).toBe(75);
+  });
+
+  it('progress=0 obsoleto no sobrescribe completed=2/total=4', () => {
+    expect(
+      resolveProgressPercent({ previousProgress: 0, completed: 2, total: 4, backendProgress: 0 }),
+    ).toBe(50);
+  });
+
+  it('evento antiguo no hace retroceder porcentaje', () => {
+    expect(
+      resolveProgressPercent({ previousProgress: 50, completed: 1, total: 4, backendProgress: 25 }),
+    ).toBe(50);
   });
 
   it('status failed con completed>0 usa texto terminado con errores', () => {
@@ -170,6 +217,7 @@ describe('LiveExecution state', () => {
     expect(isTerminalRunStatus('completed_with_failures')).toBe(true);
     expect(isTerminalRunStatus('failed')).toBe(true);
     expect(isTerminalRunStatus('cancelled')).toBe(true);
+    expect(isTerminalRunStatus('canceled')).toBe(true);
     expect(isTerminalRunStatus('stopped')).toBe(true);
     expect(isTerminalRunStatus('timeout')).toBe(true);
     expect(isTerminalRunStatus('error')).toBe(true);
@@ -211,5 +259,115 @@ describe('LiveExecution state', () => {
         finishedAt: '2026-06-05T10:00:42.000Z',
       }, now),
     ).toBe(42_000);
+  });
+
+  it('running se considera estado activo', () => {
+    expect(isActiveRunStatus('running')).toBe(true);
+    expect(isTerminalStatus('running')).toBe(false);
+  });
+
+  it('done se considera estado terminal exitoso', () => {
+    expect(isTerminalStatus('done')).toBe(true);
+    expect(isSuccessTerminalStatus('done')).toBe(true);
+  });
+
+  it('failed se considera estado terminal con error', () => {
+    expect(isTerminalStatus('failed')).toBe(true);
+    expect(isErrorTerminalStatus('failed')).toBe(true);
+    expect(isActiveRunStatus('failed')).toBe(false);
+  });
+
+  it('elapsed terminal sin finishedAt se congela con timestamp capturado una sola vez', () => {
+    const terminalSnapshot = withStableTerminalTimestamp(
+      { status: 'done' },
+      '2026-06-05T10:00:42.000Z',
+    );
+    const now1 = new Date('2026-06-05T10:01:00.000Z').getTime();
+    const now2 = new Date('2026-06-05T10:05:00.000Z').getTime();
+
+    const elapsed1 = computeLiveExecutionElapsedMs(baseRun, terminalSnapshot, now1);
+    const elapsed2 = computeLiveExecutionElapsedMs(baseRun, terminalSnapshot, now2);
+    expect(elapsed1).toBe(42_000);
+    expect(elapsed2).toBe(42_000);
+  });
+
+  it('progreso 100 con running no habilita descarga', () => {
+    expect(
+      canEnableDocumentDownload('running', {
+        status: 'running',
+        progress: 100,
+        completed: 10,
+        total: 10,
+        documentReady: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('done sin documento listo no habilita descarga', () => {
+    expect(
+      canEnableDocumentDownload('done', {
+        status: 'done',
+        completed: 10,
+        total: 10,
+      }),
+    ).toBe(false);
+  });
+
+  it('done con documento confirmado habilita descarga', () => {
+    expect(
+      canEnableDocumentDownload('done', {
+        status: 'done',
+        documentReady: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('resolver de disponibilidad en estado preparing sigue haciendo polling', () => {
+    const resolution = resolveDocumentAvailabilityState({
+      ready: false,
+      state: 'preparing',
+      statusCode: 404,
+      attempt: 1,
+      maxAttempts: 30,
+    });
+    expect(resolution.state).toBe('preparing');
+    expect(resolution.continuePolling).toBe(true);
+  });
+
+  it('resolver de disponibilidad deja de esperar al exceder intentos', () => {
+    const resolution = resolveDocumentAvailabilityState({
+      ready: false,
+      state: 'preparing',
+      statusCode: 404,
+      attempt: 30,
+      maxAttempts: 30,
+    });
+    expect(resolution.state).toBe('unavailable');
+    expect(resolution.continuePolling).toBe(false);
+  });
+
+  it('resolver de disponibilidad marca failed con error explícito del backend', () => {
+    const resolution = resolveDocumentAvailabilityState({
+      ready: false,
+      state: 'failed',
+      statusCode: 500,
+      attempt: 2,
+      maxAttempts: 30,
+    });
+    expect(resolution.state).toBe('failed');
+    expect(resolution.continuePolling).toBe(false);
+  });
+
+  it('cambiar jobId obliga reset del estado de documento', () => {
+    expect(shouldResetDocumentStateForJob('job-1', 'job-2')).toBe(true);
+    expect(shouldResetDocumentStateForJob('job-2', 'job-2')).toBe(false);
+  });
+
+  it('mensaje terminal para done usa copy semántico y sin texto dañado', () => {
+    const message = getTerminalUserMessage('done');
+    expect(message.text).toBe('✓ Ejecución completada');
+    expect(message.tone).toBe('success');
+    expect(message.text.includes('Γ£ù')).toBe(false);
+    expect(message.text.includes('estado: done')).toBe(false);
   });
 });

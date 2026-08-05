@@ -41,6 +41,29 @@ export interface RunStatusData {
   lastEventAt?: string;
   receivedFinalEventAt?: string;
   durationMs?: number;
+  documentReady?: boolean;
+  documentUrl?: string;
+  documentPath?: string;
+  evidenceDocument?: string;
+  evidenceDocxPath?: string;
+  summary?: Record<string, unknown>;
+}
+
+export interface EvidenceDocumentStatusResponse {
+  ok?: boolean;
+  jobId?: string;
+  status: 'ready' | 'preparing' | 'failed' | 'unavailable' | 'not_found';
+  documentReady: boolean;
+  reasonCode?: string;
+  jobStatus?: string;
+  appSlug?: string;
+  sectionSlug?: string;
+  statusCode?: number;
+  // Backward-compatible aliases (legacy proxy shape)
+  ready?: boolean;
+  state?: 'ready' | 'preparing' | 'failed' | 'unavailable';
+  error?: string;
+  message?: string;
 }
 
 export function toRunLogEntry(entry: Record<string, unknown> | string): LogEntry | null {
@@ -282,6 +305,43 @@ export const runsProxy = {
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
+  },
+
+  /** Verifica disponibilidad del DOCX sin descargar el archivo completo */
+  getEvidenceDocumentStatus: async (jobId: string): Promise<EvidenceDocumentStatusResponse> => {
+    const res = await fetch(`${PROXY}/api/runs/${jobId}/evidence-docx/status`, {
+      headers: { Accept: 'application/json' },
+    });
+    const raw = await res.text();
+    let parsed: Record<string, unknown> = {};
+    try { parsed = raw ? JSON.parse(raw) as Record<string, unknown> : {}; } catch { parsed = {}; }
+
+    const normalizedStatusRaw = parsed.status;
+    const normalizedStatus = typeof normalizedStatusRaw === 'string'
+      ? normalizedStatusRaw.toLowerCase()
+      : undefined;
+    const documentReady = parsed.documentReady === true
+      || parsed.ready === true
+      || normalizedStatus === 'ready';
+    const legacyState = typeof parsed.state === 'string' ? parsed.state.toLowerCase() : undefined;
+
+    return {
+      ok: res.ok,
+      jobId: typeof parsed.jobId === 'string' ? parsed.jobId : jobId,
+      status: (normalizedStatus as EvidenceDocumentStatusResponse['status'] | undefined)
+        ?? (legacyState as EvidenceDocumentStatusResponse['status'] | undefined)
+        ?? (res.status === 404 ? 'not_found' : 'failed'),
+      documentReady,
+      reasonCode: typeof parsed.reasonCode === 'string' ? parsed.reasonCode : undefined,
+      jobStatus: typeof parsed.jobStatus === 'string' ? parsed.jobStatus : undefined,
+      appSlug: typeof parsed.appSlug === 'string' ? parsed.appSlug : undefined,
+      sectionSlug: typeof parsed.sectionSlug === 'string' ? parsed.sectionSlug : undefined,
+      statusCode: res.status,
+      ready: parsed.ready === true ? true : undefined,
+      state: legacyState as EvidenceDocumentStatusResponse['state'] | undefined,
+      error: typeof parsed.error === 'string' ? parsed.error : undefined,
+      message: typeof parsed.message === 'string' ? parsed.message : undefined,
+    };
   },
 
   streamLogs,

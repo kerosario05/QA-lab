@@ -46,6 +46,44 @@ beforeAll(async () => {
   mockApp.get('/api/runs/:jobId', (req, res) => {
     res.json({ jobId: req.params.jobId, status: 'running' });
   });
+  mockApp.get('/api/runs/:jobId/evidence-docx/status', (req, res) => {
+    if (req.params.jobId === 'job-ready') {
+      res.status(200).json({ jobId: req.params.jobId, status: 'ready', documentReady: true, reasonCode: 'ready' });
+      return;
+    }
+    if (req.params.jobId === 'job-pending') {
+      res.status(202).json({ jobId: req.params.jobId, status: 'preparing', documentReady: false, reasonCode: 'document_preparing' });
+      return;
+    }
+    if (req.params.jobId === 'job-failed') {
+      res.status(200).json({ jobId: req.params.jobId, status: 'failed', documentReady: false, reasonCode: 'document_generation_failed' });
+      return;
+    }
+    if (req.params.jobId === 'job-missing') {
+      res.status(404).json({ jobId: req.params.jobId, status: 'not_found', documentReady: false, reasonCode: 'job_not_found' });
+      return;
+    }
+    if (req.params.jobId === 'job-legacy') {
+      res.status(404).send('Not Found');
+      return;
+    }
+    res.status(200).json({ jobId: req.params.jobId, status: 'unavailable', documentReady: false, reasonCode: 'document_not_found_after_completion' });
+  });
+  mockApp.head('/api/runs/:jobId/evidence-docx', (req, res) => {
+    if (req.params.jobId === 'job-ready') {
+      res.status(200).end();
+      return;
+    }
+    if (req.params.jobId === 'job-legacy') {
+      res.status(200).end();
+      return;
+    }
+    if (req.params.jobId === 'job-failed') {
+      res.status(500).end();
+      return;
+    }
+    res.status(404).end();
+  });
 
   await Promise.all([
     new Promise<void>((resolve) => { server = app.listen(PORT, () => resolve()); }),
@@ -241,6 +279,15 @@ describe('runs router — GET endpoints', () => {
     expect(body.errorCode).toBe('RUN_PROVIDER_NOT_CONFIGURED');
   });
 
+  it('GET /:jobId/evidence-docx/status returns 503 when not configured', async () => {
+    delete process.env.RUN_PROVIDER_BASE_URL;
+    delete process.env.SCENARIO_PREVIEW_BASE_URL;
+    const res = await fetch(api('/api/runs/job-1/evidence-docx/status'));
+    expect(res.status).toBe(503);
+    const body = await res.json() as any;
+    expect(body.errorCode).toBe('RUN_PROVIDER_NOT_CONFIGURED');
+  });
+
   it('GET /:jobId/logs proxies SSE when configured', async () => {
     process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
     const res = await fetch(api('/api/runs/job-1/logs'));
@@ -259,5 +306,57 @@ describe('runs router — GET endpoints', () => {
     const body = await res.json() as any;
     expect(body.jobId).toBe('job-1');
     expect(body.status).toBe('running');
+  });
+
+  it('GET /:jobId/evidence-docx/status devuelve ready cuando provider responde ready', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const res = await fetch(api('/api/runs/job-ready/evidence-docx/status'));
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.jobId).toBe('job-ready');
+    expect(body.status).toBe('ready');
+    expect(body.documentReady).toBe(true);
+    expect(body.reasonCode).toBe('ready');
+  });
+
+  it('GET /:jobId/evidence-docx/status devuelve preparing cuando provider responde preparing', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const res = await fetch(api('/api/runs/job-pending/evidence-docx/status'));
+    expect(res.status).toBe(202);
+    const body = await res.json() as any;
+    expect(body.jobId).toBe('job-pending');
+    expect(body.status).toBe('preparing');
+    expect(body.documentReady).toBe(false);
+    expect(body.reasonCode).toBe('document_preparing');
+  });
+
+  it('GET /:jobId/evidence-docx/status devuelve failed cuando provider responde failed', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const res = await fetch(api('/api/runs/job-failed/evidence-docx/status'));
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.jobId).toBe('job-failed');
+    expect(body.status).toBe('failed');
+    expect(body.documentReady).toBe(false);
+    expect(body.reasonCode).toBe('document_generation_failed');
+  });
+
+  it('GET /:jobId/evidence-docx/status devuelve 404 cuando provider reporta job_not_found', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const res = await fetch(api('/api/runs/job-missing/evidence-docx/status'));
+    expect(res.status).toBe(404);
+    const body = await res.json() as any;
+    expect(body.status).toBe('not_found');
+    expect(body.documentReady).toBe(false);
+    expect(body.reasonCode).toBe('job_not_found');
+  });
+
+  it('GET /:jobId/evidence-docx/status usa fallback HEAD cuando provider no expone /status', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const res = await fetch(api('/api/runs/job-legacy/evidence-docx/status'));
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.status).toBe('ready');
+    expect(body.documentReady).toBe(true);
   });
 });
