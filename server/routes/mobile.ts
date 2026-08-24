@@ -2,7 +2,8 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import {
   startEmulator, getEmulatorStatus, stopEmulator, getAppiumStatus,
-  requestMobileScenarioPreview, requestMobileLaunchExecution, requestMobileRunExecute,
+  requestMobileScenarioPreview, requestMobileScenarioGeneration, getMobileScenarioGenerationStatus,
+  requestMobileLaunchExecution, requestMobileRunExecute,
 } from '../mobile-provider';
 import type { MobileProviderResponse } from '../mobile-provider';
 
@@ -94,6 +95,51 @@ router.post('/scenarios/preview', async (req: Request, res: Response) => {
 
   console.log(`[mobile] scenarios/preview request projectKey=${projectKey} sprintId=${sprintId ?? '—'} activeSprint=${activeSprint} appSlug=${payload.appSlug ?? '—'}`);
   const result = await requestMobileScenarioPreview(payload);
+  forward(res, result);
+});
+
+router.post('/scenarios/generation', async (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown>;
+  const projectKey = String(body?.projectKey ?? '');
+  if (!projectKey) {
+    sendJson(res, 400, { ok: false, error: 'projectKey is required', errorCode: 'MISSING_PROJECT_KEY' });
+    return;
+  }
+
+  const sprintId = body?.sprintId ? Number(body.sprintId) : undefined;
+  const activeSprint = body?.activeSprint === true || body?.activeSprint === 'true';
+  if (!sprintId && !activeSprint) {
+    sendJson(res, 400, { ok: false, error: 'sprintId or activeSprint is required', errorCode: 'MISSING_SPRINT' });
+    return;
+  }
+
+  const payload = {
+    projectKey,
+    ...(sprintId ? { sprintId } : { activeSprint: true }),
+    status: String(body?.status ?? '') || undefined,
+    maxResults: body?.maxResults ? Number(body.maxResults) : undefined,
+    appSlug: String(body?.appSlug ?? '') || undefined,
+    selectedIssueKeys: Array.isArray(body?.selectedIssueKeys)
+      ? body.selectedIssueKeys.map((entry) => String(entry ?? '').trim()).filter(Boolean)
+      : undefined,
+    sourceRevision: String(body?.sourceRevision ?? '') || undefined,
+    launchDraftId: String(body?.launchDraftId ?? '') || undefined,
+  };
+
+  console.log(
+    `[mobile] scenarios/generation request requestId=${String(req.headers['x-request-id'] ?? payload.launchDraftId ?? '—')} projectKey=${projectKey} sprintId=${sprintId ?? '—'} activeSprint=${activeSprint} appSlug=${payload.appSlug ?? '—'} issueKeys=${payload.selectedIssueKeys?.join(',') ?? '-'}`,
+  );
+  const result = await requestMobileScenarioGeneration(payload);
+  forward(res, result, 202);
+});
+
+router.get('/scenarios/generation/:generationJobId', async (req: Request, res: Response) => {
+  const generationJobId = String(req.params.generationJobId ?? '').trim();
+  if (!generationJobId) {
+    sendJson(res, 400, { ok: false, error: 'generationJobId is required', errorCode: 'MISSING_GENERATION_JOB_ID' });
+    return;
+  }
+  const result = await getMobileScenarioGenerationStatus(generationJobId);
   forward(res, result);
 });
 

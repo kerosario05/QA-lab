@@ -4,9 +4,14 @@ export type LiveExecutionSummaryLike = {
   scenarioCount?: number;
   totalStories?: number;
   total?: number;
+  requested?: number;
+  executed?: number;
   completed?: number;
   passed?: number;
   failed?: number;
+  skipped?: number;
+  progressPercent?: number;
+  passRate?: number | null;
   errorMessage?: string;
   promotionReason?: string;
   failureGroups?: Record<string, number>;
@@ -22,10 +27,15 @@ export type LiveExecutionSummaryLike = {
 export type LiveExecutionStatusLike = {
   status?: string;
   progress?: number;
+  progressPercent?: number;
   total?: number;
+  requested?: number;
+  executed?: number;
   passed?: number;
   failed?: number;
   completed?: number;
+  skipped?: number;
+  passRate?: number | null;
   currentTest?: string;
   currentCase?: string;
   errorMessage?: string;
@@ -46,16 +56,26 @@ export type LiveExecutionStatusLike = {
 
 export type LiveExecutionMetrics = {
   total: number;
+  requested: number;
   completed: number;
+  executed: number;
   passed: number;
   failed: number;
   progress: number;
-  passRate: number;
+  passRate: number | null;
   currentTestName: string;
   errorMessage: string | null;
   promotionReason: string | null;
   failureGroups: Record<string, number> | null;
   dominantFailure: string | null;
+};
+
+export type LiveExecutionBannerMetric = {
+  id: 'processed' | 'executed' | 'passed' | 'failed';
+  label: string;
+  value: number;
+  total?: number;
+  valueClassName?: string;
 };
 
 export type LiveExecutionOutcome = {
@@ -67,6 +87,8 @@ export type LiveExecutionOutcome = {
 };
 
 export type EvidenceDocumentAvailability = 'idle' | 'preparing' | 'ready' | 'failed' | 'unavailable';
+
+export const LIVE_EXECUTION_BANNER_GRID_CLASS = 'grid grid-cols-2 md:grid-cols-4 gap-6 mt-6 pt-6 border-t border-white/15';
 
 const TERMINAL_STATUSES = new Set([
   'completed',
@@ -144,11 +166,93 @@ export function resolveProgressPercent(input: {
   return Math.max(previousProgress, clampProgressPercent(nextProgress));
 }
 
-export function computePassRatePercent(passed?: number, completed?: number): number {
-  if (!Number.isFinite(passed) || !Number.isFinite(completed) || (completed ?? 0) <= 0) {
-    return 0;
+export function computePassRatePercent(passed?: number, executed?: number): number | null {
+  if (!Number.isFinite(passed) || !Number.isFinite(executed) || (executed ?? 0) <= 0) {
+    return null;
   }
-  return clampProgressPercent(Math.round((Number(passed) / Number(completed)) * 100));
+  return clampProgressPercent(Math.round((Number(passed) / Number(executed)) * 100));
+}
+
+function roundToTwoDecimals(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+export function computeFunctionalPassRatePercent(passed?: number, failed?: number): number | null {
+  const passedCases = Number.isFinite(passed) ? Math.max(0, Number(passed)) : 0;
+  const failedCases = Number.isFinite(failed) ? Math.max(0, Number(failed)) : 0;
+  const executedCases = passedCases + failedCases;
+  if (executedCases <= 0) return null;
+  const raw = (passedCases / executedCases) * 100;
+  return Math.max(0, Math.min(100, roundToTwoDecimals(raw)));
+}
+
+export function computeBlockedCases(completed?: number, executed?: number, skipped?: number): number {
+  const completedCases = Number.isFinite(completed) ? Math.max(0, Number(completed)) : 0;
+  const executedCases = Number.isFinite(executed) ? Math.max(0, Number(executed)) : 0;
+  const skippedCases = Number.isFinite(skipped) ? Math.max(0, Number(skipped)) : 0;
+  if (completedCases >= executedCases) {
+    return Math.max(0, completedCases - executedCases);
+  }
+  return skippedCases;
+}
+
+export function buildLiveExecutionBannerMetrics(input: {
+  completed: number;
+  processedTotal: number;
+  executed: number;
+  passed: number;
+  failed: number;
+}): LiveExecutionBannerMetric[] {
+  return [
+    {
+      id: 'processed',
+      label: 'Procesados',
+      value: input.completed,
+      total: input.processedTotal,
+    },
+    {
+      id: 'executed',
+      label: 'Ejecutados',
+      value: input.executed,
+    },
+    {
+      id: 'passed',
+      label: 'Aprobados',
+      value: input.passed,
+      valueClassName: 'text-[#5EC470]',
+    },
+    {
+      id: 'failed',
+      label: 'Fallidos',
+      value: input.failed,
+      valueClassName: 'text-[#FFB4B4]',
+    },
+  ];
+}
+
+function formatPercentCompact(percent: number): string {
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(2);
+}
+
+export function formatFunctionalPassRateLabel(input: { passed?: number; failed?: number; status?: string | null }): string {
+  const passedCases = Number.isFinite(input.passed) ? Math.max(0, Number(input.passed)) : 0;
+  const failedCases = Number.isFinite(input.failed) ? Math.max(0, Number(input.failed)) : 0;
+  const executedCases = passedCases + failedCases;
+  if (executedCases <= 0) {
+    const normalizedStatus = input.status?.trim().toLowerCase();
+    if (normalizedStatus === 'running' || normalizedStatus === 'in_progress' || normalizedStatus === 'starting') {
+      return 'Pendiente';
+    }
+    if (normalizedStatus === 'pending' || normalizedStatus === 'queued') {
+      return 'Sin resultados';
+    }
+    if (normalizedStatus === 'completed' || normalizedStatus === 'done' || normalizedStatus === 'completed_with_failures') {
+      return 'No aplica';
+    }
+    return 'Sin resultados';
+  }
+  const percent = computeFunctionalPassRatePercent(passedCases, failedCases) ?? 0;
+  return `${formatPercentCompact(percent)}%`;
 }
 
 export function isTerminalStatus(status?: string | null): boolean {
@@ -211,6 +315,23 @@ export function hasReadyEvidenceDocument(data?: LiveExecutionStatusLike | null):
 export function canEnableDocumentDownload(status?: string | null, data?: LiveExecutionStatusLike | null): boolean {
   if (!isTerminalStatus(status)) return false;
   return hasReadyEvidenceDocument(data);
+}
+
+export function shouldShowDefectChecklistButton(input: {
+  failed?: number;
+  defectCount?: number;
+  checklistUrl?: string | null;
+  issueKey?: string | null;
+}): boolean {
+  const failedCases = Math.max(0, Number(input.failed ?? 0));
+  const defects = Math.max(0, Number(input.defectCount ?? 0));
+  const hasFailedCases = failedCases > 0 || defects > 0;
+  const hasChecklistIdentity = Boolean(
+    input.checklistUrl && input.checklistUrl.trim().length > 0,
+  ) || Boolean(
+    input.issueKey && input.issueKey.trim().length > 0,
+  );
+  return hasFailedCases && hasChecklistIdentity;
 }
 
 export function resolveDocumentAvailabilityState(input: {
@@ -306,9 +427,14 @@ export function computeLiveExecutionMetrics(
   const total = getNumeric(summary?.scenarioCount)
     ?? getNumeric(summary?.totalStories)
     ?? getNumeric(summary?.total)
+    ?? getNumeric(summary?.requested)
     ?? getNumeric(data?.total)
+    ?? getNumeric(data?.requested)
     ?? run?.total
     ?? 0;
+  const requested = getNumeric(data?.requested)
+    ?? getNumeric(summary?.requested)
+    ?? total;
   const completed = getNumeric(data?.completed)
     ?? getNumeric(summary?.completed)
     ?? run?.completed
@@ -321,21 +447,31 @@ export function computeLiveExecutionMetrics(
     ?? getNumeric(summary?.failed)
     ?? run?.failed
     ?? 0;
+  const executed = getNumeric(data?.executed)
+    ?? getNumeric(summary?.executed)
+    ?? Math.max(0, passed + failed);
   const progress = resolveProgressPercent({
     previousProgress: getNumeric(run?.progress),
     completed,
-    total,
-    backendProgress: getNumeric(data?.progress),
+    total: requested,
+    backendProgress: getNumeric(data?.progressPercent) ?? getNumeric(summary?.progressPercent) ?? getNumeric(data?.progress),
   });
-  const passRate = computePassRatePercent(passed, completed);
+  const passRate = (data?.passRate ?? summary?.passRate) as number | null | undefined;
+  const resolvedPassRate = typeof passRate === 'number' && Number.isFinite(passRate)
+    ? clampProgressPercent(passRate)
+    : passRate === null
+      ? null
+      : computePassRatePercent(passed, executed);
 
   return {
     total,
+    requested,
     completed,
+    executed,
     passed,
     failed,
     progress,
-    passRate,
+    passRate: resolvedPassRate,
     currentTestName: data?.currentCase || data?.currentTest || run?.currentTest || '',
     errorMessage: data?.errorMessage || summary?.errorMessage || null,
     promotionReason: (summary?.promotionReason as string | undefined) ?? null,

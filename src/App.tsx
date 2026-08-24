@@ -8,6 +8,7 @@ import { TestLaunch } from './pages/TestLaunch';
 import { LiveExecutionScreen } from './pages/LiveExecution';
 import { ExecutionClosure } from './pages/ExecutionClosure';
 import DefectChecklist from './pages/DefectChecklist';
+import { parseChecklistRoute } from './pages/DefectChecklist/route';
 import { Ejecuciones } from './pages/Ejecuciones';
 import type { ActiveRun, View } from './types';
 
@@ -15,22 +16,19 @@ export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [liveRun, setLiveRun] = useState<ActiveRun | null>(null);
   const [closingExecution, setClosingExecution] = useState<any>(null);
-  const [checklistIssueKey, setChecklistIssueKey] = useState<string | null>(null);
+  const [checklistIdentity, setChecklistIdentity] = useState<string | null>(null);
   const [checklistJobId, setChecklistJobId] = useState<string | undefined>(undefined);
   const [checklistScenarioIds, setChecklistScenarioIds] = useState<string[] | undefined>(undefined);
   const [prevView, setPrevView] = useState<View | null>(null);
 
-  // URL-based routing: /checklist/:issueKey
+  // URL-based routing: /checklist/:identity (issueKey | launch:<uuid> | job:<uuid>)
   useEffect(() => {
-    const match = location.pathname.match(/^\/checklist\/([A-Za-z0-9_-]+)$/);
-    if (match) {
-      const issueKey = match[1];
-      const params = new URLSearchParams(location.search);
-      const jobId = params.get('jobId') || undefined;
-      setChecklistIssueKey(issueKey);
-      setChecklistJobId(jobId);
+    const route = parseChecklistRoute(location.pathname, location.search);
+    if (route) {
+      setChecklistIdentity(route.checklistIdentity);
+      setChecklistJobId(route.jobId);
       setView('checklist');
-      console.log(`[checklist-route] pathname=${location.pathname} issueKey=${issueKey} jobId=${jobId ?? 'none'} matched=true`);
+      console.log(`[checklist-route] pathname=${location.pathname} identity=${route.checklistIdentity} jobId=${route.jobId ?? 'none'} matched=true`);
     }
   }, []);
 
@@ -51,14 +49,14 @@ export default function App() {
 
   const handleOpenChecklist = (issueKey: string, jobId?: string, scenarioIds?: string[]) => {
     setPrevView(view);
-    setChecklistIssueKey(issueKey);
+    setChecklistIdentity(issueKey);
     setChecklistJobId(jobId);
     setChecklistScenarioIds(scenarioIds);
     setView('checklist');
   };
 
   const handleCloseChecklist = () => {
-    setChecklistIssueKey(null);
+    setChecklistIdentity(null);
     setChecklistJobId(undefined);
     setView(prevView || 'dashboard');
     setPrevView(null);
@@ -158,8 +156,8 @@ export default function App() {
               onOpenChecklist={handleOpenChecklist}
             />
           )}
-          {view === 'checklist' && checklistIssueKey && (
-            <DefectChecklist issueKey={checklistIssueKey} jobId={checklistJobId} scenarioIds={checklistScenarioIds} onBack={handleCloseChecklist} />
+          {view === 'checklist' && checklistIdentity && (
+            <DefectChecklist issueKey={checklistIdentity} jobId={checklistJobId} scenarioIds={checklistScenarioIds} onBack={handleCloseChecklist} />
           )}
           {view === 'close' && (
             <ExecutionClosure

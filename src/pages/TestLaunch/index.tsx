@@ -16,9 +16,14 @@ import type { RunPayload } from '../../services/runs';
 import { newmanProxy } from '../../services/newman';
 import type { NewmanRunPayload, NewmanCollection } from '../../services/newman';
 import { mobileProxy } from '../../services/mobile';
-import type { EmulatorStatus, AppiumStatus, MobileScenario, MobileRejectedScenario, MobileLaunchExecutionResponse } from '../../services/mobile';
+import type {
+  EmulatorStatus, AppiumStatus, MobileScenario, MobileRejectedScenario, MobileLaunchExecutionResponse,
+  MobileScenarioGenerationIssueProgress, MobileScenarioGenerationStatusResponse,
+} from '../../services/mobile';
 import type { ActiveRun, TestRailProject, JiraProject, JiraSprint } from '../../types';
 import { canContinueFromStep3 } from './step3-launch-gate';
+import { computeLaunchSelectionSummary, normalizePublishedCasesForDiscovery } from './launch-selection';
+import { MobileScenarioSelectionPanel } from './MobileScenarioSelectionPanel';
 
 interface TestLaunchProps {
   onLaunch: (run: ActiveRun) => void;
@@ -184,10 +189,18 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [emulatorBootLogs, setEmulatorBootLogs] = useState<{ time: string; msg: string }[]>([]);
   const [appiumStatus, setAppiumStatus] = useState<AppiumStatus | null>(null);
 
+  // Authority for the mobile "Continuar" gate: BOTH infra must be truly ready.
+  // emulator ready = running && bootCompleted; appium ready = ready flag.
+  const infrastructureReady = !!(emulatorStatus?.running && emulatorStatus?.bootCompleted && appiumStatus?.ready);
+
   const [mobileScenarios, setMobileScenarios] = useState<MobileScenario[]>([]);
   const [mobileRejected, setMobileRejected] = useState<MobileRejectedScenario[]>([]);
   const [mobileScenariosLoading, setMobileScenariosLoading] = useState(false);
   const [mobileScenariosError, setMobileScenariosError] = useState<string | null>(null);
+  const [mobileGenerationNotice, setMobileGenerationNotice] = useState<string | null>(null);
+  const [mobileGenerationJobId, setMobileGenerationJobId] = useState<string | null>(null);
+  const [mobileGenerationStatus, setMobileGenerationStatus] = useState<'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | null>(null);
+  const [mobileGenerationIssueProgress, setMobileGenerationIssueProgress] = useState<MobileScenarioGenerationIssueProgress[]>([]);
   const [selectedMobileScenarioIds, setSelectedMobileScenarioIds] = useState<string[]>([]);
   const [expandedMobileIssueKeys, setExpandedMobileIssueKeys] = useState<string[]>([]);
   // User-edited data values, keyed by scenarioId -> { stepIndex: value }.
@@ -198,6 +211,146 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [mobilePublishError, setMobilePublishError] = useState<string | null>(null);
   const [mobileExecuting, setMobileExecuting] = useState(false);
   const [mobileExecuteError, setMobileExecuteError] = useState<string | null>(null);
+  const mobileGenerationPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mobileGenerationPollTokenRef = useRef(0);
+  // Marks that mobile scenario state was restored from localStorage for the current
+  // context, so the auto-generate effect does not kick off a new AI generation.
+  const mobileHydratedRef = useRef(false);
+  // True while rehydration is querying persisted batches; blocks the auto-generate effect
+  // until rehydration decides whether new HUs need generation.
+  const mobileRehydrationActiveRef = useRef(false);
+
+  type GenerationBatch = { generationJobId: string; issueKeys: string[]; status?: string };
+  const [mobileGenerationBatches, setMobileGenerationBatches] = useState<GenerationBatch[]>([]);
+  const mobileGenerationBatchesRef = useRef<GenerationBatch[]>([]);
+  mobileGenerationBatchesRef.current = mobileGenerationBatches;
+  const selectedMobileScenarioIdsRef = useRef<string[]>([]);
+  selectedMobileScenarioIdsRef.current = selectedMobileScenarioIds;
+
+  // HUs actuales del sprint activo para proyectos Mobile, obtenidas de Jira de forma read-only
+  // (endpoint /api/jira/projects/:key/sprint/:sprintId/issues). NO usa stories ni selectedCases.
+  type MobileSprintIssue = { key: string; summary: string };
+  const [mobileSprintIssues, setMobileSprintIssues] = useState<MobileSprintIssue[]>([]);
+  const mobileSprintCtxRef = useRef<string | null>(null);
+
+  // Autoridad exclusiva de HUs en FUENTES. Para Mobile: HUs actuales del sprint (Jira read-only).
+  // Para Web: historias con al menos un escenario marcado en config.selectedCases.
+  const currentMobileIssueKeys = useMemo(() => {
+    if (currentProjectType === 'mobile') {
+      return Array.from(new Set(mobileSprintIssues.map((i) => i.key))).sort();
+    }
+    const selected = new Set(config.selectedCases.map((k) => k.trim()).filter((k) => k.length > 0));
+    const keys = new Set<string>();
+    for (const story of stories) {
+      const hasSelected = (story.scenarios ?? []).some((_, i) => selected.has(`${story.jiraKey}::${i}`));
+      if (hasSelected) keys.add(story.jiraKey);
+    }
+    return Array.from(keys).sort();
+  }, [mobileSprintIssues, currentProjectType, stories, config.selectedCases]);
+  const currentMobileIssueKeysRef = useRef<string[]>([]);
+  currentMobileIssueKeysRef.current = currentMobileIssueKeys;
+
+  // Mapa key -> summary para resolver el título real de cada HU en el agrupado Mobile.
+  const mobileIssueTitleMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const issue of mobileSprintIssues) {
+      const s = (issue.summary ?? '').trim();
+      if (s) map.set(issue.key, s);
+    }
+    return map;
+  }, [mobileSprintIssues]);
+
+  // HUs ya cubiertas por algún batch (completado, running, pending o failed). Incluye HUs
+  // rechazadas o con 0 escenarios: cada batch las registra por su issueKeys.
+  const processedMobileIssueKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const b of mobileGenerationBatches) {
+      for (const k of b.issueKeys ?? []) keys.add(k);
+    }
+    return keys;
+  }, [mobileGenerationBatches]);
+
+  // HUs con generación en vuelo (batch aún no registrado): evita doble job para la misma HU.
+  const [pendingMobileIssueKeys, setPendingMobileIssueKeys] = useState<string[]>([]);
+  const pendingMobileIssueKeysSet = useMemo(() => new Set(pendingMobileIssueKeys), [pendingMobileIssueKeys]);
+
+  const missingMobileIssueKeys = useMemo(
+    () => currentMobileIssueKeys.filter((k) => !processedMobileIssueKeys.has(k) && !pendingMobileIssueKeysSet.has(k)),
+    [currentMobileIssueKeys, processedMobileIssueKeys, pendingMobileIssueKeysSet],
+  );
+
+  // Escenarios visibles: solo los de HUs presentes en FUENTES.
+  const visibleMobileScenarios = useMemo(() => {
+    const current = new Set(currentMobileIssueKeys);
+    return mobileScenarios.filter((s) => current.has(s.sourceIssueKey));
+  }, [mobileScenarios, currentMobileIssueKeys]);
+
+  // Escenarios para el panel Mobile con el título real de la HU (summary Jira) resuelto.
+  const mobileDisplayScenarios = useMemo(
+    () => visibleMobileScenarios.map((s) =>
+      s.sourceIssueSummary ? s : { ...s, sourceIssueSummary: mobileIssueTitleMap.get(s.sourceIssueKey) ?? s.sourceIssueSummary }
+    ),
+    [visibleMobileScenarios, mobileIssueTitleMap],
+  );
+
+  const mobileStorageKey = config.automationProject ? `qa-lab:mobile:${config.automationProject}` : null;
+
+  const readMobilePersistedState = () => {
+    if (!mobileStorageKey) return null;
+    try {
+      const raw = localStorage.getItem(mobileStorageKey);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== 'object') return null;
+      let generationBatches: GenerationBatch[] = [];
+      if (Array.isArray(parsed.generationBatches)) {
+        generationBatches = (parsed.generationBatches as Array<Record<string, unknown>>)
+          .filter((b) => b && typeof b.generationJobId === 'string')
+          .map((b) => ({
+            generationJobId: b.generationJobId as string,
+            issueKeys: Array.isArray(b.issueKeys) ? (b.issueKeys as unknown[]).map(String) : [],
+            status: typeof b.status === 'string' ? (b.status as string) : undefined,
+          }));
+      } else if (typeof parsed.generationJobId === 'string') {
+        // Legacy single-job: no asumir todas las HU actuales; las issueKeys se completan
+        // al recuperar el job desde la metadata de su resultado (rehidratación).
+        generationBatches = [{
+          generationJobId: parsed.generationJobId as string,
+          issueKeys: [],
+          status: undefined,
+        }];
+      }
+      const selectedScenarioIds = Array.isArray(parsed.selectedScenarioIds)
+        ? (parsed.selectedScenarioIds as unknown[]).map(String)
+        : [];
+      return {
+        appSlug: typeof parsed.appSlug === 'string' ? parsed.appSlug : undefined,
+        projectKey: typeof parsed.projectKey === 'string' ? parsed.projectKey : undefined,
+        sprintId: typeof parsed.sprintId === 'string' || typeof parsed.sprintId === 'number' ? String(parsed.sprintId) : null,
+        generationBatches,
+        selectedScenarioIds,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const persistMobileState = (batches: GenerationBatch[], selectedIds: string[]) => {
+    if (!mobileStorageKey) return;
+    const payload = {
+      appSlug: config.automationProject,
+      projectKey: config.jiraProject,
+      sprintId: activeSprint?.id ?? null,
+      generationBatches: batches,
+      selectedScenarioIds: selectedIds,
+      savedAt: new Date().toISOString(),
+    };
+    try {
+      localStorage.setItem(mobileStorageKey, JSON.stringify(payload));
+    } catch {
+      /* storage unavailable: persistence is best-effort */
+    }
+  };
 
   // ΓöÇΓöÇ Fetch TestRail projects on mount ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
@@ -387,38 +540,182 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       .finally(() => setEmulatorActionLoading(false));
   };
 
-  const handleGenerateMobileScenarios = () => {
+  const stopMobileGenerationPolling = () => {
+    mobileGenerationPollTokenRef.current += 1;
+    if (mobileGenerationPollTimerRef.current) {
+      clearTimeout(mobileGenerationPollTimerRef.current);
+      mobileGenerationPollTimerRef.current = null;
+    }
+  };
+
+  const applyMobileScenarioGenerationResult = (statusResponse: MobileScenarioGenerationStatusResponse) => {
+    const incoming = statusResponse.result?.scenarios ?? [];
+    const incomingRejected = statusResponse.result?.rejected ?? [];
+    // Merge (incremental): conservar escenarios ya generados por otros batches y añadir
+    // los nuevos, deduplicando por scenarioId.
+    setMobileScenarios(prev => {
+      const seen = new Set(prev.map(s => s.scenarioId));
+      const merged = [...prev];
+      for (const sc of incoming) {
+        if (!sc.scenarioId || seen.has(sc.scenarioId)) continue;
+        seen.add(sc.scenarioId);
+        merged.push(sc);
+      }
+      return merged;
+    });
+    setMobileRejected(prev => {
+      const seen = new Set(prev.map(r => r.sourceIssueKey ?? r.reason));
+      const merged = [...prev];
+      for (const r of incomingRejected) {
+        const k = r.sourceIssueKey ?? r.reason;
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        merged.push(r);
+      }
+      return merged;
+    });
+    setExpandedMobileIssueKeys(prev => Array.from(new Set([...prev, ...incoming.map(s => s.sourceIssueKey).filter(Boolean)])));
+    setMobileDataValues(prev => {
+      const next = { ...prev };
+      for (const sc of incoming) {
+        if (next[sc.scenarioId]) continue;
+        const initial: Record<number, string> = {};
+        for (const f of sc.requiredData ?? []) {
+          initial[f.stepIndex] = f.kind === 'select'
+            ? (f.defaultValue ?? f.options?.[0] ?? f.exampleValue ?? '')
+            : (f.exampleValue ?? '');
+        }
+        next[sc.scenarioId] = initial;
+      }
+      return next;
+    });
+    setMobileGenerationIssueProgress(statusResponse.issueProgress ?? []);
+  };
+
+  const markMobileBatchStatus = (generationJobId: string, status: string, realIssueKeys?: string[]) => {
+    const next = mobileGenerationBatchesRef.current.map(b => {
+      if (b.generationJobId !== generationJobId) return b;
+      if (status === 'completed' && realIssueKeys?.length) {
+        return { ...b, status, issueKeys: realIssueKeys };
+      }
+      return { ...b, status };
+    });
+    setMobileGenerationBatches(next);
+    persistMobileState(next, selectedMobileScenarioIdsRef.current);
+  };
+
+  const pollMobileScenarioGeneration = (generationJobId: string, pollStartedAtMs: number, token: number, consecutiveErrors = 0) => {
+    mobileGenerationPollTimerRef.current = setTimeout(async () => {
+      if (token !== mobileGenerationPollTokenRef.current) return;
+      try {
+        const statusResponse = await mobileProxy.getScenarioGenerationStatus(generationJobId);
+        if (token !== mobileGenerationPollTokenRef.current) return;
+        setMobileGenerationStatus(statusResponse.status);
+        setMobileGenerationIssueProgress(statusResponse.issueProgress ?? []);
+        setMobileGenerationNotice(null);
+        if (statusResponse.status === 'completed') {
+          if (!statusResponse.result) {
+            setMobileScenariosError('La generación terminó sin resultado recuperable.');
+          } else {
+            applyMobileScenarioGenerationResult(statusResponse);
+            setMobileScenariosError(null);
+          }
+          markMobileBatchStatus(generationJobId, 'completed', Array.from(new Set([
+            ...(statusResponse.issueKeys ?? []),
+            ...(statusResponse.result?.scenarios ?? []).map(s => s.sourceIssueKey).filter(Boolean),
+            ...(statusResponse.result?.rejected ?? []).map(r => r.sourceIssueKey).filter(Boolean),
+          ])));
+          setMobileScenariosLoading(false);
+          stopMobileGenerationPolling();
+          return;
+        }
+        if (statusResponse.status === 'failed' || statusResponse.status === 'cancelled') {
+          setMobileScenariosError(statusResponse.error?.message ?? `La generación terminó con estado ${statusResponse.status}.`);
+          markMobileBatchStatus(generationJobId, statusResponse.status);
+          setMobileScenariosLoading(false);
+          stopMobileGenerationPolling();
+          return;
+        }
+        if (Date.now() - pollStartedAtMs > 15 * 60 * 1000) {
+          setMobileScenariosLoading(false);
+          setMobileScenariosError('Se agotó el tiempo de seguimiento del job. La generación puede seguir corriendo; usa Reintentar para recuperar su estado.');
+          stopMobileGenerationPolling();
+          return;
+        }
+        pollMobileScenarioGeneration(generationJobId, pollStartedAtMs, token, 0);
+      } catch (e: any) {
+        if (token !== mobileGenerationPollTokenRef.current) return;
+        const nextErrors = consecutiveErrors + 1;
+        setMobileGenerationNotice(`Conexión temporalmente inestable (${nextErrors}). Reintentando estado del job...`);
+        if (Date.now() - pollStartedAtMs > 15 * 60 * 1000) {
+          setMobileScenariosLoading(false);
+          setMobileScenariosError(`No se pudo seguir consultando el job: ${e?.message ?? 'error de conexión'}`);
+          stopMobileGenerationPolling();
+          return;
+        }
+        pollMobileScenarioGeneration(generationJobId, pollStartedAtMs, token, nextErrors);
+      }
+    }, 2000);
+  };
+
+  const handleGenerateMobileScenarios = (missingKeys: string[]) => {
     if (!config.jiraProject || !activeSprint) return;
+    if (missingKeys.length === 0) return; // no llamar IA sin HUs pendientes
     const sprintId = activeSprint.id;
+    stopMobileGenerationPolling();
+    const token = mobileGenerationPollTokenRef.current;
     setMobileScenariosLoading(true);
     setMobileScenariosError(null);
-    setSelectedMobileScenarioIds([]);
-    mobileProxy.previewScenarios({
+    setMobileGenerationNotice(null);
+    // Marcar en vuelo para evitar un segundo job de la misma HU mientras se registra el batch.
+    setPendingMobileIssueKeys(prev => Array.from(new Set([...prev, ...missingKeys])));
+    // Incremental: solo se generan las HUs nuevas; la selección previa se conserva.
+    mobileProxy.startScenarioGeneration({
       projectKey: config.jiraProject,
       status: config.status,
       maxResults: 50,
       appSlug: config.automationProject,
+      selectedIssueKeys: missingKeys,
       ...(sprintId ? { sprintId } : { activeSprint: true }),
     })
-      .then(data => {
-        const scenarios = data.scenarios ?? [];
-        setMobileScenarios(scenarios);
-        setMobileRejected(data.rejected ?? []);
-        setExpandedMobileIssueKeys(Array.from(new Set(scenarios.map(s => s.sourceIssueKey))));
-        // Pre-fill editable data values with each field's example/default value.
-        const initial: Record<string, Record<number, string>> = {};
-        for (const sc of scenarios) {
-          for (const f of sc.requiredData ?? []) {
-            if (!initial[sc.scenarioId]) initial[sc.scenarioId] = {};
-            initial[sc.scenarioId][f.stepIndex] = f.kind === 'select'
-              ? (f.defaultValue ?? f.options?.[0] ?? f.exampleValue ?? '')
-              : (f.exampleValue ?? '');
-          }
+      .then(startResponse => {
+        if (token !== mobileGenerationPollTokenRef.current) return;
+        setMobileGenerationJobId(startResponse.generationJobId);
+        setMobileGenerationStatus(startResponse.status);
+        const newBatch: GenerationBatch = { generationJobId: startResponse.generationJobId, issueKeys: [...missingKeys], status: startResponse.status };
+        const updatedBatches = [...mobileGenerationBatchesRef.current, newBatch];
+        setMobileGenerationBatches(updatedBatches);
+        setPendingMobileIssueKeys(prev => prev.filter(k => !missingKeys.includes(k)));
+        persistMobileState(updatedBatches, selectedMobileScenarioIdsRef.current);
+        if (startResponse.status === 'failed' || startResponse.status === 'cancelled') {
+          setMobileScenariosError(`La generación terminó con estado ${startResponse.status}.`);
+          setMobileScenariosLoading(false);
+          stopMobileGenerationPolling();
+          return undefined;
         }
-        setMobileDataValues(initial);
+        if (startResponse.status === 'completed') {
+          return mobileProxy.getScenarioGenerationStatus(startResponse.generationJobId).then((statusResponse) => {
+            if (token !== mobileGenerationPollTokenRef.current) return;
+            applyMobileScenarioGenerationResult(statusResponse);
+            markMobileBatchStatus(startResponse.generationJobId, 'completed', Array.from(new Set([
+              ...(statusResponse.issueKeys ?? []),
+              ...(statusResponse.result?.scenarios ?? []).map(s => s.sourceIssueKey).filter(Boolean),
+              ...(statusResponse.result?.rejected ?? []).map(r => r.sourceIssueKey).filter(Boolean),
+            ])));
+            setMobileScenariosError(null);
+            setMobileScenariosLoading(false);
+            stopMobileGenerationPolling();
+          });
+        }
+        pollMobileScenarioGeneration(startResponse.generationJobId, Date.now(), token, 0);
+        return undefined;
       })
-      .catch(e => setMobileScenariosError(e.message))
-      .finally(() => setMobileScenariosLoading(false));
+      .catch(e => {
+        if (token !== mobileGenerationPollTokenRef.current) return;
+        setPendingMobileIssueKeys(prev => prev.filter(k => !missingKeys.includes(k)));
+        setMobileScenariosError(e.message);
+        setMobileScenariosLoading(false);
+      });
   };
 
   const setMobileFieldValue = (scenarioId: string, stepIndex: number, value: string) => {
@@ -428,11 +725,159 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     }));
   };
 
+  // ── Cargar HUs del sprint (Jira read-only) para Mobile ──────────────────
+  // Fuente de verdad de currentMobileIssueKeys para Mobile. No genera escenarios, no llama IA.
+  // Consulta Jira de forma read-only, normaliza/deduplica por key, actualiza mobileSprintIssues
+  // y devuelve la colección fresca.
+  // Marca cuándo hubo un refresh Jira reciente para evitar doble consulta en step 3→4.
+  const mobileSprintFreshRef = useRef<number>(0);
+  const refreshMobileSprintIssues = async (): Promise<{ key: string; summary: string }[]> => {
+    if (currentProjectType !== 'mobile' || !config.jiraProject || !activeSprint?.id) return [];
+    const issues = await jiraProjectsProxy.getSprintIssues(config.jiraProject, activeSprint.id, config.status);
+    const seen = new Set<string>();
+    const norm: { key: string; summary: string }[] = [];
+    for (const i of issues ?? []) {
+      const key = String(i?.key ?? '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      norm.push({ key, summary: String(i?.summary ?? '') });
+    }
+    setMobileSprintIssues(norm);
+    mobileSprintCtxRef.current = `${config.jiraProject}:${activeSprint.id}`;
+    mobileSprintFreshRef.current = Date.now();
+    return norm;
+  };
+
+  // Se consulta al entrar al paso FUENTES (step 3) y al entrar a ESCENARIOS (step 4). Evita
+  // re-consultar si Continuar acaba de refrescar (fresh < 2s), pero conserva recuperación en
+  // step 4 para F5/rehidratación cuando no exista un refresh fresco.
+  useEffect(() => {
+    const ctxValid = currentProjectType === 'mobile' && !!config.jiraProject && !!activeSprint?.id;
+    if (!ctxValid) {
+      setMobileSprintIssues([]);
+      mobileSprintCtxRef.current = null;
+      return;
+    }
+    const isMobileStep = step === 3 || step === 4;
+    if (!isMobileStep) return;
+    const ctxKey = `${config.jiraProject}:${activeSprint.id}`;
+    const firstForCtx = mobileSprintCtxRef.current !== ctxKey;
+    if (firstForCtx) setMobileSprintIssues([]);
+    if (!firstForCtx && Date.now() - mobileSprintFreshRef.current < 2000) return; // refresh fresco de Continuar
+    let cancelled = false;
+    refreshMobileSprintIssues().catch(() => { if (!cancelled) setMobileSprintIssues([]); });
+    return () => { cancelled = true; };
+  }, [currentProjectType, config.jiraProject, activeSprint?.id, step]);
+
+  // ── Rehidratar estado Mobile persistido al entrar a la etapa de escenarios ──
+  // Se ejecuta ANTES del efecto auto-generar: tras un F5 recupera todos los batches
+  // persistidos, mergea resultados completados y reutiliza el polling de running/pending.
+  useEffect(() => {
+    if (step !== 4 || currentProjectType !== 'mobile' || !config.jiraProject || !activeSprint) return;
+    if (mobileHydratedRef.current) return; // ya hidratado en esta sesión
+    const persisted = readMobilePersistedState();
+    if (!persisted || (persisted.generationBatches?.length ?? 0) === 0) return; // nada que recuperar
+    // Compatibilidad: mismo app/proyecto y, si ambos conocen sprint, mismo sprint.
+    if (persisted.appSlug !== config.automationProject || persisted.projectKey !== config.jiraProject) return;
+    if (persisted.sprintId && activeSprint.id && persisted.sprintId !== activeSprint.id) return;
+    mobileHydratedRef.current = true;
+    mobileRehydrationActiveRef.current = true;
+    stopMobileGenerationPolling();
+    const token = mobileGenerationPollTokenRef.current;
+    setMobileGenerationBatches(persisted.generationBatches);
+    setMobileScenariosLoading(true);
+    setMobileGenerationNotice(null);
+    void (async () => {
+      const merged: MobileScenario[] = [];
+      const mergedRejected: MobileRejectedScenario[] = [];
+      const mergedDataValues: Record<string, Record<number, string>> = {};
+      const seenScenario = new Set<string>();
+      const seenRejected = new Set<string>();
+      const updatedBatches: GenerationBatch[] = [];
+      let runningJobId: string | null = null;
+      for (const batch of persisted.generationBatches) {
+        if (token !== mobileGenerationPollTokenRef.current) return;
+        let statusResponse;
+        try {
+          statusResponse = await mobileProxy.getScenarioGenerationStatus(batch.generationJobId);
+        } catch {
+          updatedBatches.push(batch); // job inaccesible: se mantiene registrado, sin auto-retry
+          continue;
+        }
+        if (token !== mobileGenerationPollTokenRef.current) return;
+        const scenarios = statusResponse.result?.scenarios ?? [];
+        const rejected = statusResponse.result?.rejected ?? [];
+        if (statusResponse.status === 'completed') {
+          // IssueKeys REALES incluidas por el job: el status response las expone (issueKeys) y se
+          // complementan con sourceIssueKey de scenarios/rejected. NO se mantienen como processed
+          // claves solicitadas que el job realmente no incluyó (ej. filtradas por status Jira).
+          const realKeys = Array.from(new Set([
+            ...(statusResponse.issueKeys ?? []),
+            ...scenarios.map(s => s.sourceIssueKey).filter(Boolean),
+            ...rejected.map(r => r.sourceIssueKey).filter(Boolean),
+          ]));
+          const issueKeys = realKeys.length ? realKeys : batch.issueKeys;
+          updatedBatches.push({ generationJobId: batch.generationJobId, issueKeys, status: 'completed' });
+          for (const sc of scenarios) {
+            if (!sc.scenarioId || seenScenario.has(sc.scenarioId)) continue;
+            seenScenario.add(sc.scenarioId);
+            merged.push(sc);
+            const initial: Record<number, string> = {};
+            for (const f of sc.requiredData ?? []) {
+              initial[f.stepIndex] = f.kind === 'select'
+                ? (f.defaultValue ?? f.options?.[0] ?? f.exampleValue ?? '')
+                : (f.exampleValue ?? '');
+            }
+            mergedDataValues[sc.scenarioId] = initial;
+          }
+          for (const r of rejected) {
+            const k = r.sourceIssueKey ?? r.reason;
+            if (!k || seenRejected.has(k)) continue;
+            seenRejected.add(k);
+            mergedRejected.push(r);
+          }
+        } else if (statusResponse.status === 'running' || statusResponse.status === 'pending') {
+          updatedBatches.push({ ...batch, status: statusResponse.status });
+          runningJobId = runningJobId ?? batch.generationJobId;
+        } else {
+          // failed/cancelled: se mantiene registrado (retry manual en fase posterior).
+          updatedBatches.push({ ...batch, status: statusResponse.status });
+        }
+      }
+      if (token !== mobileGenerationPollTokenRef.current) return;
+      setMobileScenarios(merged);
+      setMobileRejected(mergedRejected);
+      setMobileDataValues(mergedDataValues);
+      setExpandedMobileIssueKeys(Array.from(new Set(merged.map(s => s.sourceIssueKey))));
+      setMobileGenerationBatches(updatedBatches);
+      mobileGenerationBatchesRef.current = updatedBatches;
+      const existingIds = new Set(merged.map(s => s.scenarioId));
+      const restored = (persisted.selectedScenarioIds ?? []).filter(id => existingIds.has(id));
+      setSelectedMobileScenarioIds(restored);
+      persistMobileState(updatedBatches, restored);
+      setMobileScenariosLoading(false);
+      // HUs nuevas en FUENTES aún no cubiertas por ningún batch: generarlas.
+      const processed = new Set(updatedBatches.flatMap(b => b.issueKeys));
+      const missing = currentMobileIssueKeysRef.current.filter(k => !processed.has(k));
+      mobileRehydrationActiveRef.current = false;
+      if (runningJobId) pollMobileScenarioGeneration(runningJobId, Date.now(), token, 0);
+      if (missing.length > 0) handleGenerateMobileScenarios(missing);
+    })();
+  }, [step, config.jiraProject, config.status, activeSprint, currentProjectType]);
+
   // ── Auto-generar escenarios mobile al entrar al step "Escenarios" ────────
   useEffect(() => {
     if (step !== 4 || currentProjectType !== 'mobile' || !config.jiraProject || !activeSprint) return;
-    handleGenerateMobileScenarios();
-  }, [step, config.jiraProject, config.status, activeSprint, currentProjectType]);
+    if (mobileRehydrationActiveRef.current) return; // rehidratación en curso: ella decide si generar
+    handleGenerateMobileScenarios(missingMobileIssueKeys);
+  }, [step, config.jiraProject, config.status, activeSprint, currentProjectType, missingMobileIssueKeys]);
+
+  useEffect(() => {
+    if (step === 4 && currentProjectType === 'mobile') return;
+    stopMobileGenerationPolling();
+  }, [step, currentProjectType]);
+
+  useEffect(() => () => stopMobileGenerationPolling(), []);
 
   const toggleMobileScenario = (scenarioId: string) => {
     setSelectedMobileScenarioIds(prev =>
@@ -440,8 +885,33 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     );
   };
 
+  // Persistir la selección cuando cambia (solo cuando existe contexto de generación).
+  useEffect(() => {
+    if (mobileGenerationBatches.length === 0) return;
+    persistMobileState(mobileGenerationBatches, selectedMobileScenarioIds);
+  }, [selectedMobileScenarioIds, mobileGenerationBatches]);
+
+  // Podar la selección: solo scenarioIds que aún existen y pertenecen a FUENTES.
+  useEffect(() => {
+    const visibleIds = new Set(visibleMobileScenarios.map(s => s.scenarioId));
+    setSelectedMobileScenarioIds(prev => {
+      const next = prev.filter(id => visibleIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [visibleMobileScenarios]);
+
+  // Cambio de app/proyecto: invalidar hidratación/batches previos para no mezclar proyectos.
+  useEffect(() => {
+    mobileHydratedRef.current = false;
+    mobileGenerationBatchesRef.current = [];
+    setMobileGenerationBatches([]);
+    setMobileScenarios([]);
+    setMobileRejected([]);
+    setSelectedMobileScenarioIds([]);
+  }, [config.automationProject, config.jiraProject]);
+
   const handlePublishMobileToTestRail = () => {
-    const selected = mobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
+    const selected = visibleMobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
     if (selected.length === 0 || !selectedSection || !config.testRailProject) return;
 
     setMobilePublishing(true);
@@ -462,7 +932,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   const handleExecuteMobileRun = () => {
     if (!mobilePublishResult) return;
-    const selected = mobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
+    const selected = visibleMobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
 
     // Only send overrides that differ from the field's original example/default.
     const dataOverrides: Record<string, Record<number, string>> = {};
@@ -489,9 +959,9 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       ...(Object.keys(dataOverrides).length > 0 ? { dataOverrides } : {}),
     })
       .then(result => {
-        // El job mobile no devuelve issueKey/checklistUrl, así que lo tomamos del
-        // sourceIssueKey del escenario (mismo que el backend usa como key del checklist).
-        const mobileIssueKey = selected[0]?.sourceIssueKey;
+        // El backend mobile ya devuelve issueKey/checklistUrl (con ?runId=<mobileRunId>),
+        // así que los propagamos para abrir el checklist filtrado por esa ejecución.
+        const mobileIssueKey = result.issueKey ?? selected[0]?.sourceIssueKey;
         const newRun: ActiveRun = {
           id: result.jobId,
           jobId: result.jobId,
@@ -506,7 +976,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           status: result.status,
           runType: 'mobile',
           issueKey: mobileIssueKey,
-          checklistByIssueOnly: true,
+          checklistUrl: result.checklistUrl,
         };
         onLaunch(newRun);
       })
@@ -520,8 +990,28 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       setStep(4);
       return;
     }
+    if (proj?.type === 'mobile' && !infrastructureReady) {
+      return;
+    }
     setStep3Tab(config.source === 'testrail' ? 'cases' : 'scenarios');
     setStep(3);
+  };
+
+  // Avance desde FUENTES (step 3) para Mobile: refresca Jira read-only ANTES de entrar a
+  // ESCENARIOS (step 4), de modo que currentMobileIssueKeys corresponda a la respuesta fresca
+  // y la lógica de missing calcule correctamente las HUs nuevas. No inicia IA aquí.
+  const handleContinueAdvance = async () => {
+    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
+    if (step === 2) { handleStep2Advance(); return; }
+    if ((step === 3 || step === 4) && !canAdvance()) return;
+    if (proj?.type === 'mobile' && step === 3) {
+      try {
+        await refreshMobileSprintIssues();
+      } catch {
+        // Si el refresh falla, se conserva la lista previa; se avanza igualmente.
+      }
+    }
+    setStep(s => Math.min(maxStep, s + 1));
   };
 
   // ΓöÇΓöÇ Helpers for scenario selection keys ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
@@ -593,6 +1083,12 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   const currentJira = jiraProjects.find(j => j.key === config.jiraProject);
   const currentTR = trProjects.find(t => String(t.id) === config.testRailProject);
+
+  const launchSelection = useMemo(() => computeLaunchSelectionSummary({
+    stories,
+    selectedCaseKeys: config.selectedCases,
+    selectedTestRailCaseIds: selectedTrCaseIds,
+  }), [stories, config.selectedCases, selectedTrCaseIds]);
 
   const filteredTrProjects = useMemo(() => {
     if (!trSearch) return trProjects;
@@ -864,7 +1360,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         return !!(config.newmanCollection && config.testRailProject && selectedSection);
       }
       if (isMobileProject) {
-        return !!emulatorStatus?.running;
+        return infrastructureReady;
       }
       if (config.source === 'jira') return config.jiraProject && config.sprint;
       if (config.source === 'testrail') return config.testRailProject;
@@ -949,24 +1445,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       return;
     }
     const suiteId = trSuiteId ?? undefined;
-    const totalSelected = config.selectedCases.length + selectedTrCaseIds.length;
-    const runAll = config.runAll || totalSelected === 0;
-
-    // Filtra solo los escenarios seleccionados (o todos si runAll)
-    const selectedStories = runAll
-      ? stories
-      : stories
-          .map(st => ({
-            ...st,
-            scenarios: st.scenarios.filter((_, i) =>
-              config.selectedCases.includes(`${st.jiraKey}::${i}`)
-            ),
-          }))
-          .filter(st => st.scenarios.length > 0);
-
-    const existingIds = runAll
-      ? trCases.map(c => c.id)
-      : selectedTrCaseIds;
+    const selectedStories = launchSelection.selectedStories;
+    const selectedGeneratedScenarios = launchSelection.selectedGeneratedScenarios;
+    const selectedExistingTestRailCaseIds = launchSelection.existingTestRailCaseIds;
+    const totalSelected = launchSelection.totalSelected;
 
     const normalizeSectionSlug = (name: string): string =>
       name
@@ -993,39 +1475,29 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       setLaunchError('Selecciona un proyecto de automatización (appSlug) antes de lanzar.');
       return;
     }
-    if (selectedStories.length === 0 || selectedStories.every((s: any) => !s.scenarios?.length)) {
-      if (adaptiveScenarios.length === 0) {
-        setLaunchError('No hay escenarios seleccionados para lanzar.');
-        return;
-      }
-      // Allow adaptive-only launch
+    if (!launchSelection.hasLaunchableSelection) {
+      setLaunchError('No hay escenarios seleccionados para lanzar.');
+      return;
     }
 
-    console.log(`[launch] selectedSection id=${selectedSection.id} name="${sectionNameValue}" slug=${sectionSlugValue}`);
-    console.log(`[launch] payload projectId=${projectIdValue} sectionId=${selectedSection.id} appSlug=${config.automationProject} scenarios=${selectedStories.length}`);
-    console.log(`[launch] scenarioIds=${selectedStories.map((s: any) => s.jiraKey).join(",")}`);
-    console.log(`[launch] firstScenarioSteps=${selectedStories[0]?.scenarios?.[0]?.custom_steps_separated?.length ?? "?"} expectedResultPresent=${Boolean(selectedStories[0]?.scenarios?.[0]?.custom_expected)}`);
+    if (selectedTrCaseIds.length > 0 && selectedExistingTestRailCaseIds.length === 0) {
+      setLaunchError('Los casos seleccionados de TestRail no tienen caseId válido para lanzar.');
+      return;
+    }
 
-    // Construir escenarios seleccionados desde selectedStories con IDs ║nicos
-    let scenarioIndex = 0;
-    const selectedScenarios = selectedStories.flatMap((st: any) =>
-      (st.scenarios ?? []).map((sc: any) => {
-        scenarioIndex++;
-        const sid = `LAUNCH-${String(scenarioIndex).padStart(3, "0")}`;
-        return {
-          scenarioId: sid,
-          title: sc.title || `${st.jiraKey} Scenario ${scenarioIndex}`,
-          steps: Array.isArray(sc.custom_steps_separated)
-            ? sc.custom_steps_separated.map((s: any) => `${s.content}`)
-            : (Array.isArray(sc.steps) ? sc.steps : []),
-          expectedResult: sc.custom_expected || '',
-          preconditions: sc.custom_preconds ? [sc.custom_preconds] : [],
-          sourceIssueKey: st.jiraKey,
-        };
-      })
-    );
-    console.log(`[launch] scenarioIds=${selectedScenarios.map((s: any) => s.scenarioId).join(",")}`);
-    console.log(`[launch] sourceScenarioIds=${selectedScenarios.map((s: any) => s.sourceIssueKey).join(",")}`);
+    console.info('[launch-selection]', {
+      jiraSelected: launchSelection.jiraSelectedCount,
+      testRailSelected: launchSelection.testRailSelectedCount,
+      totalSelected: launchSelection.totalSelected,
+      source: launchSelection.sourceLabel,
+    });
+
+    console.log(`[launch] selectedSection id=${selectedSection.id} name="${sectionNameValue}" slug=${sectionSlugValue}`);
+    console.log(`[launch] payload projectId=${projectIdValue} sectionId=${selectedSection.id} appSlug=${config.automationProject} scenarios=${selectedGeneratedScenarios.length} existingCaseIds=${selectedExistingTestRailCaseIds.length}`);
+    console.info('[launch-payload]', {
+      selectedScenarios: selectedGeneratedScenarios.length,
+      existingTestRailCaseIds: selectedExistingTestRailCaseIds.length,
+    });
 
     const launchPayload = {
       appSlug: config.automationProject || '',
@@ -1034,9 +1506,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       sectionId: selectedSection.id,
       sectionName: sectionNameValue,
       sectionSlug: sectionSlugValue,
-      jiraKey: stories[0]?.jiraKey,
+      jiraKey: selectedStories[0]?.jiraKey,
       sprintName: undefined as string | undefined,
-      selectedScenarios,
+      selectedScenarios: selectedGeneratedScenarios,
+      existingTestRailCaseIds: selectedExistingTestRailCaseIds,
       adaptiveScenarios: adaptiveScenarios.length > 0 ? adaptiveScenarios : undefined,
       publishStrategy: 'always_create' as const,
     };
@@ -1056,26 +1529,23 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
       // Fase 2: (futura) discovery job ΓÇö por ahora solo creamos el job para mantener compatibilidad
       try {
-        const runJiraKey = launchPayload.jiraKey || stories[0]?.jiraKey;
+        const runJiraKey = launchPayload.jiraKey || selectedStories[0]?.jiraKey;
         const runPayload: RunPayload = {
+          appSlug: config.automationProject || '',
           projectId: projectIdValue,
           suiteId: suiteId ?? 0,
           sectionId: selectedSection.id,
           sectionName: sectionNameValue,
           sectionSlug: sectionSlugValue,
           stories: selectedStories,
-          existingCaseIds: existingIds,
+          existingCaseIds: selectedExistingTestRailCaseIds,
           launchId: launchResult.launchId,
           testRunId: launchResult.testRunId,
-          publishedCases: launchResult.publishedCases?.map(pc => ({
-            scenarioId: pc.scenarioId,
-            caseId: pc.caseId,
-            title: pc.title,
-          })),
+          publishedCases: normalizePublishedCasesForDiscovery(launchResult.publishedCases),
           jiraKey: runJiraKey,
         };
         console.log(`[launch] create discovery job jiraKey=${runJiraKey} launchId=${launchResult.launchId} testRunId=${launchResult.testRunId}`);
-        const { jobId, status } = await runsProxy.create(runPayload);
+        const { jobId, status, issueKey, checklistUrl, defectCount } = await runsProxy.create(runPayload);
         const newRun: ActiveRun = {
           id: jobId,
           jobId,
@@ -1083,11 +1553,14 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           triggered: 'Carlos M.',
           startedAt: 'Hace 0m',
           progress: 0,
-          total: runAll ? (trTotalCaseCount || totalSelected) : totalSelected,
+          total: totalSelected,
           completed: 0, passed: 0, failed: 0,
           currentTest: '',
           eta: 'ΓÇö',
           status,
+          issueKey,
+          checklistUrl,
+          defectCount,
         };
         onLaunch(newRun);
       } catch (jobErr: any) {
@@ -2053,6 +2526,25 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                       </div>
                     ))}
                   </div>
+                  <div className="mt-5 space-y-2">
+                    <div className="text-[11px] text-white/70">
+                      Job: <span className="font-mono">{mobileGenerationJobId ?? 'iniciando...'}</span> · estado: <span className="font-semibold">{mobileGenerationStatus ?? 'pending'}</span>
+                    </div>
+                    {mobileGenerationIssueProgress.length > 0 && (
+                      <div className="space-y-1 max-h-[140px] overflow-y-auto pr-1">
+                        {mobileGenerationIssueProgress.map((issue) => (
+                          <div key={issue.issueKey} className="text-[11px] text-white/70 flex items-center justify-between gap-2">
+                            <span className="font-mono">{issue.issueKey}</span>
+                            <span>{issue.status}</span>
+                            <span>{issue.scenarioCount} esc.</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {mobileGenerationNotice && (
+                      <div className="text-[11px] text-[#F4A261]">{mobileGenerationNotice}</div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -2073,109 +2565,21 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
             {/* ΓöÇΓöÇ Loaded ΓöÇΓöÇ */}
             {!mobileScenariosLoading && !mobileScenariosError && (
-              <div className="p-6">
-                <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-1">Paso cuatro · Selecciona los escenarios</div>
-                <div className="flex items-center justify-between mb-5">
-                  <div>
-                    <h2 className="text-[22px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                      {mobileScenarios.length > 0
-                        ? <><span className="text-[#104B99]">{mobileScenarios.length}</span> escenarios mobile</>
-                        : 'Sin escenarios para este filtro'}
-                    </h2>
-                    {activeSprint && (
-                      <div className="flex items-center gap-2 mt-1 text-[11px] text-[#8B999D]">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#48A157] animate-pulse" />
-                        {activeSprint.name} · {config.jiraProject} · estado: {config.status}
-                      </div>
-                    )}
-                  </div>
-                  {mobileScenarios.length > 0 && (
-                    <span className="text-[11px] text-[#8B999D]">
-                      <span className="font-semibold text-[#104B99]">{selectedMobileScenarioIds.length}</span> de {mobileScenarios.length} seleccionados
-                    </span>
-                  )}
-                </div>
-
+              <>
                 {mobileRejected.length > 0 && (
-                  <div className="mb-4 text-[11px] text-[#8B999D]">{mobileRejected.length} historia(s) rechazada(s): {mobileRejected.map(r => r.sourceIssueKey).join(', ')}</div>
+                  <div className="px-6 pt-5 text-[11px] text-[#8B999D]">{mobileRejected.length} historia(s) rechazada(s): {mobileRejected.map(r => r.sourceIssueKey).join(', ')}</div>
                 )}
-
-                {mobileScenarios.length > 0 && (
-                  <div className="space-y-3">
-                    {Array.from(new Set(mobileScenarios.map(s => s.sourceIssueKey))).map(issueKey => {
-                      const group = mobileScenarios.filter(s => s.sourceIssueKey === issueKey);
-                      const isExpanded = expandedMobileIssueKeys.includes(issueKey);
-                      return (
-                        <div key={issueKey} className="border border-[#E8EBEC] rounded-2xl overflow-hidden">
-                          <button
-                            onClick={() => setExpandedMobileIssueKeys(prev => isExpanded ? prev.filter(k => k !== issueKey) : [...prev, issueKey])}
-                            className="w-full flex items-center justify-between px-5 py-3.5 bg-[#FAFAF7] hover:bg-[#F4F1EA] transition text-left">
-                            <div className="flex items-center gap-2.5">
-                              <span className="text-[11px] font-mono font-semibold text-[#58646D] bg-white px-2 py-0.5 rounded border border-[#E8EBEC]">{issueKey}</span>
-                              <span className="text-[13px] font-medium text-[#1a1f2e]">{group.length} escenario(s)</span>
-                            </div>
-                            <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform', isExpanded && 'rotate-180')} />
-                          </button>
-                          {isExpanded && (
-                            <div className="divide-y divide-[#F4F1EA]">
-                              {group.map(sc => {
-                                const checked = selectedMobileScenarioIds.includes(sc.scenarioId);
-                                return (
-                                  <div key={sc.scenarioId} className="px-5 py-4">
-                                    <label className="flex items-start gap-3 cursor-pointer">
-                                      <button type="button" onClick={() => toggleMobileScenario(sc.scenarioId)}
-                                        className={cn('w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border-2 mt-0.5', checked ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
-                                        {checked && <Check size={10} className="text-white" strokeWidth={3} />}
-                                      </button>
-                                      <div className="flex-1">
-                                        <div className="text-[13px] font-medium text-[#1a1f2e]">{sc.title}</div>
-                                        <div className="text-[11px] text-[#8B999D] mt-0.5 font-mono">{sc.scenarioId}</div>
-                                        {sc.expectedResult && <div className="text-[12px] text-[#58646D] mt-1.5">Esperado: {sc.expectedResult}</div>}
-                                        {sc.requiredData && sc.requiredData.length > 0 && (
-                                          <div className="mt-3 p-3 rounded-xl bg-[#FAFAF7] border border-[#E8EBEC]" onClick={e => e.preventDefault()}>
-                                            <div className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-2">Datos de la prueba</div>
-                                            <div className="space-y-2">
-                                              {sc.requiredData.map(f => (
-                                                <div key={f.stepIndex} className="flex flex-col gap-1">
-                                                  <label className="text-[11px] font-medium text-[#58646D]">{f.label}</label>
-                                                  {f.kind === 'select' ? (
-                                                    <select
-                                                      value={mobileDataValues[sc.scenarioId]?.[f.stepIndex] ?? f.defaultValue ?? ''}
-                                                      onChange={e => setMobileFieldValue(sc.scenarioId, f.stepIndex, e.target.value)}
-                                                      className="text-[12px] px-2.5 py-1.5 rounded-lg border border-[#E8EBEC] bg-white text-[#1a1f2e] focus:outline-none focus:border-[#48A157]">
-                                                      {(f.options ?? []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                                                    </select>
-                                                  ) : (
-                                                    <input
-                                                      type="text"
-                                                      value={mobileDataValues[sc.scenarioId]?.[f.stepIndex] ?? f.exampleValue ?? ''}
-                                                      onChange={e => setMobileFieldValue(sc.scenarioId, f.stepIndex, e.target.value)}
-                                                      placeholder={f.exampleValue}
-                                                      className="text-[12px] px-2.5 py-1.5 rounded-lg border border-[#E8EBEC] bg-white text-[#1a1f2e] focus:outline-none focus:border-[#48A157]" />
-                                                  )}
-                                                </div>
-                                              ))}
-                                            </div>
-                                          </div>
-                                        )}
-                                        <div className="mt-2 space-y-1">
-                                          {sc.steps.map((st, i) => (
-                                            <div key={i} className="text-[11px] text-[#58646D]"><span className="font-mono text-[#8B999D]">{i + 1}.</span> {st.action}{st.description ? ` — ${st.description}` : ''}</div>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    </label>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+                <MobileScenarioSelectionPanel
+                  mobileScenarios={mobileDisplayScenarios}
+                  selectedMobileScenarioIds={selectedMobileScenarioIds}
+                  expandedMobileIssueKeys={expandedMobileIssueKeys}
+                  setExpandedMobileIssueKeys={setExpandedMobileIssueKeys}
+                  mobileDataValues={mobileDataValues}
+                  setMobileFieldValue={setMobileFieldValue}
+                  toggleMobileScenario={toggleMobileScenario}
+                  setSelectedMobileScenarioIds={setSelectedMobileScenarioIds}
+                />
+              </>
             )}
           </BentoCard>
         )}
@@ -2252,19 +2656,19 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                   <div>
                     <div className="text-[10px] uppercase tracking-wider text-white/60">Casos</div>
                     <div className="text-[28px] font-medium mt-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                      {config.runAll || (config.selectedCases.length === 0 && selectedTrCaseIds.length === 0) ? 'Todos' : config.selectedCases.length + selectedTrCaseIds.length}
+                      {launchSelection.totalSelected}
                     </div>
                   </div>
                   <div>
                     <div className="text-[10px] uppercase tracking-wider text-white/60">Tiempo estimado</div>
                     <div className="text-[28px] font-medium mt-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                      ~{config.runAll || (config.selectedCases.length === 0 && selectedTrCaseIds.length === 0) ? 12 : Math.max(2, Math.floor((config.selectedCases.length + selectedTrCaseIds.length) * 1.2))}
+                      ~{launchSelection.totalSelected === 0 ? 12 : Math.max(2, Math.floor(launchSelection.totalSelected * 1.2))}
                       <span className="text-[14px] text-white/60 ml-1">min</span>
                     </div>
                   </div>
                   <div>
                     <div className="text-[10px] uppercase tracking-wider text-white/60">Fuente</div>
-                    <div className="text-[18px] font-medium mt-2.5">{config.source === 'jira' ? 'Jira' : config.source === 'testrail' ? 'TestRail' : 'Jira + TestRail'}</div>
+                    <div className="text-[18px] font-medium mt-2.5">{launchSelection.sourceLabel}</div>
                   </div>
                 </div>
               </div>
@@ -2365,7 +2769,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             <ChevronLeft size={13} /> Atrás
           </button>
           {step < maxStep ? (
-            <button onClick={() => { if (step === 2) { handleStep2Advance(); return; } if ((step === 3 || step === 4) && !canAdvance()) return; setStep(s => Math.min(maxStep, s + 1)); }} disabled={!canAdvance()}
+            <button onClick={handleContinueAdvance} disabled={!canAdvance()}
               className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5">
               {step === 2 ? ((isApiProject || isMobileProject) ? 'Continuar' : 'Generar escenarios') : 'Continuar'} <ChevronRight size={13} />
             </button>

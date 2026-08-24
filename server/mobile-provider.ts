@@ -113,6 +113,9 @@ export interface MobileScenarioPreviewPayload {
   status?: string;
   maxResults?: number;
   appSlug?: string;
+  selectedIssueKeys?: string[];
+  sourceRevision?: string;
+  launchDraftId?: string;
 }
 
 export function requestMobileScenarioPreview(payload: MobileScenarioPreviewPayload): Promise<MobileProviderResponse> {
@@ -120,6 +123,24 @@ export function requestMobileScenarioPreview(payload: MobileScenarioPreviewPaylo
     'mobile-scenarios-preview',
     '/api/mobile/scenarios/preview',
     { method: 'POST', headers: jsonHeaders, body: JSON.stringify(payload) },
+    'MOBILE_SCENARIOS_NOT_CONFIGURED',
+  );
+}
+
+export function requestMobileScenarioGeneration(payload: MobileScenarioPreviewPayload): Promise<MobileProviderResponse> {
+  return callMobileEndpoint(
+    'mobile-scenarios-generation',
+    '/api/mobile/scenarios/generation',
+    { method: 'POST', headers: jsonHeaders, body: JSON.stringify(payload) },
+    'MOBILE_SCENARIOS_NOT_CONFIGURED',
+  );
+}
+
+export function getMobileScenarioGenerationStatus(generationJobId: string): Promise<MobileProviderResponse> {
+  return callMobileEndpoint(
+    'mobile-scenarios-generation-status',
+    `/api/mobile/scenarios/generation/${encodeURIComponent(generationJobId)}`,
+    { method: 'GET' },
     'MOBILE_SCENARIOS_NOT_CONFIGURED',
   );
 }

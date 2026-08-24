@@ -2,6 +2,7 @@ import { mobileRequest } from './client';
 import type {
   EmulatorStatus, AppiumStatus,
   MobileScenarioPreviewParams, MobileScenarioPreviewResponse,
+  MobileScenarioGenerationStartResponse, MobileScenarioGenerationStatusResponse,
   MobileLaunchExecutionParams, MobileLaunchExecutionResponse,
   MobileRunExecuteParams, MobileRunExecuteResponse,
 } from './types';
@@ -21,6 +22,12 @@ export const mobileProxy = {
 
   previewScenarios: (params: MobileScenarioPreviewParams): Promise<MobileScenarioPreviewResponse> =>
     mobileRequest('/api/mobile/scenarios/preview', { method: 'POST', body: JSON.stringify(params) }),
+
+  startScenarioGeneration: (params: MobileScenarioPreviewParams): Promise<MobileScenarioGenerationStartResponse> =>
+    mobileRequest('/api/mobile/scenarios/generation', { method: 'POST', body: JSON.stringify(params) }),
+
+  getScenarioGenerationStatus: (generationJobId: string): Promise<MobileScenarioGenerationStatusResponse> =>
+    mobileRequest(`/api/mobile/scenarios/generation/${encodeURIComponent(generationJobId)}`, { method: 'GET' }),
 
   publishToTestRail: (params: MobileLaunchExecutionParams): Promise<MobileLaunchExecutionResponse> =>
     mobileRequest('/api/mobile/runs/launch-execution', { method: 'POST', body: JSON.stringify(params) }),

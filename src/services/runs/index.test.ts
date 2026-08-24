@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runsProxy, toRunLogEntry } from './index';
+import { runsProxy, toRunLogEntry, type RunPayload } from './index';
 
 const originalFetch = global.fetch;
 
@@ -108,5 +108,35 @@ describe('runsProxy.getEvidenceDocumentStatus', () => {
     expect(result.status).toBe('failed');
     expect(result.documentReady).toBe(false);
     expect(result.statusCode).toBe(502);
+  });
+});
+
+describe('runsProxy.create', () => {
+  const payload: RunPayload = {
+    projectId: 56,
+    suiteId: 1731,
+    stories: [],
+    existingCaseIds: [42958],
+  };
+
+  it('preserva checklistUrl y defectCount cuando issueKey no existe', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        ok: true,
+        jobId: 'job-discovery-1',
+        status: 'queued',
+        checklistUrl: '/checklist/job:job-discovery-1',
+        defectCount: 1,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as any;
+
+    const result = await runsProxy.create(payload);
+    expect(result.jobId).toBe('job-discovery-1');
+    expect(result.checklistUrl).toBe('/checklist/job:job-discovery-1');
+    expect(result.defectCount).toBe(1);
+    expect(result.issueKey).toBeUndefined();
   });
 });

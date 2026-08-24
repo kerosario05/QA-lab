@@ -94,14 +94,20 @@ async function proxy(req: Request, res: Response, path: string, method: string) 
 
 router.post('/api/user-stories/:issueKey/checklist-url', (req, res) => proxy(req, res, `/api/user-stories/${encodeURIComponent(req.params.issueKey)}/checklist-url`, 'POST'));
 router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
-  const qs = req.query.jobId ? `?jobId=${encodeURIComponent(req.query.jobId as string)}` : '';
+  const params = new URLSearchParams();
+  if (req.query.jobId) params.set('jobId', String(req.query.jobId));
+  if (req.query.runId) params.set('runId', String(req.query.runId));
+  if (req.query.scenarioIds) params.set('scenarioIds', String(req.query.scenarioIds));
+  const encoded = params.toString();
+  const qs = encoded ? `?${encoded}` : '';
   const issueKey = req.params.issueKey;
   const queryJobId = req.query.jobId ? String(req.query.jobId) : undefined;
+  const queryRunId = req.query.runId ? String(req.query.runId) : undefined;
   const queryScenarioIds = req.query.scenarioIds
     ? String(req.query.scenarioIds).split(',').map(s => s.trim()).filter(Boolean)
     : undefined;
 
-  console.log(`[checklists] GET issueKey=${issueKey} jobId=${queryJobId ?? '-'} scenarioIds=${queryScenarioIds?.join(',') ?? '-'}`);
+  console.log(`[checklists] GET issueKey=${issueKey} runId=${queryRunId ?? '-'} jobId=${queryJobId ?? '-'} scenarioIds=${queryScenarioIds?.join(',') ?? '-'}`);
 
   // Load persisted Jira refs for merging
   const jiraRefs = loadJiraRefs();

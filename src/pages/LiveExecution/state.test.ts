@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildLiveExecutionBannerMetrics,
   canEnableDocumentDownload,
+  computeBlockedCases,
+  computeFunctionalPassRatePercent,
   computePassRatePercent,
   computeLiveExecutionElapsedMs,
   computeLiveExecutionMetrics,
+  formatFunctionalPassRateLabel,
   getLiveExecutionElapsedSeconds,
   getLiveExecutionOutcome,
   getLiveExecutionStatusText,
@@ -15,6 +19,8 @@ import {
   isSuccessTerminalStatus,
   isTerminalStatus,
   isTerminalRunStatus,
+  LIVE_EXECUTION_BANNER_GRID_CLASS,
+  shouldShowDefectChecklistButton,
   shouldResetDocumentStateForJob,
   withStableTerminalTimestamp,
 } from './state';
@@ -66,6 +72,186 @@ describe('LiveExecution state', () => {
       },
     });
     expect(metrics.passRate).toBe(71);
+  });
+
+  it('pass rate queda null cuando executed=0', () => {
+    const metrics = computeLiveExecutionMetrics(baseRun, {
+      status: 'running',
+      summary: {
+        requested: 3,
+        completed: 1,
+        executed: 0,
+        passed: 0,
+        failed: 0,
+        passRate: null,
+      },
+    });
+    expect(metrics.passRate).toBeNull();
+  });
+
+  it('pass rate usa executed y no completed', () => {
+    const metrics = computeLiveExecutionMetrics(baseRun, {
+      status: 'running',
+      summary: {
+        requested: 3,
+        completed: 2,
+        executed: 1,
+        passed: 1,
+        failed: 0,
+      },
+    });
+    expect(metrics.passRate).toBe(100);
+  });
+
+  it('resumen final reconciliado: processed 10, executed 6, blocked 4, pass rate 100% (6/6)', () => {
+    const blocked = computeBlockedCases(10, 6, 4);
+    const passRate = computeFunctionalPassRatePercent(6, 0);
+    const label = formatFunctionalPassRateLabel({ passed: 6, failed: 0, status: 'completed' });
+    expect(blocked).toBe(4);
+    expect(6 + blocked).toBe(10);
+    expect(passRate).toBe(100);
+    expect(label).toBe('100%');
+  });
+
+  it('resumen final con 5 pass y 1 fail sobre 6 ejecutados muestra 83.33%', () => {
+    const blocked = computeBlockedCases(10, 6, 4);
+    const passRate = computeFunctionalPassRatePercent(5, 1);
+    const label = formatFunctionalPassRateLabel({ passed: 5, failed: 1, status: 'completed_with_failures' });
+    expect(blocked).toBe(4);
+    expect(passRate).toBe(83.33);
+    expect(label).toBe('83.33%');
+  });
+
+  it('running sin resultados funcionales muestra Pendiente', () => {
+    const label = formatFunctionalPassRateLabel({ passed: 0, failed: 0, status: 'running' });
+    expect(label).toBe('Pendiente');
+  });
+
+  it('pending sin resultados muestra Sin resultados', () => {
+    const label = formatFunctionalPassRateLabel({ passed: 0, failed: 0, status: 'pending' });
+    expect(label).toBe('Sin resultados');
+  });
+
+  it('completed sin resultados funcionales muestra No aplica', () => {
+    const blocked = computeBlockedCases(10, 0, 10);
+    const passRate = computeFunctionalPassRatePercent(0, 0);
+    const label = formatFunctionalPassRateLabel({ passed: 0, failed: 0, status: 'completed' });
+    expect(blocked).toBe(10);
+    expect(passRate).toBeNull();
+    expect(label).toBe('No aplica');
+  });
+
+  it('passed=1 y failed=0 muestra 100%', () => {
+    const label = formatFunctionalPassRateLabel({ passed: 1, failed: 0, status: 'completed' });
+    expect(label).toBe('100%');
+  });
+
+  it('passed=0 y failed=1 muestra 0%', () => {
+    const label = formatFunctionalPassRateLabel({ passed: 0, failed: 1, status: 'completed_with_failures' });
+    expect(label).toBe('0%');
+  });
+
+  it('bloqueados no alteran el denominador del pass rate', () => {
+    const passRate = computeFunctionalPassRatePercent(5, 1);
+    const label = formatFunctionalPassRateLabel({ passed: 5, failed: 1, status: 'completed_with_failures' });
+    expect(passRate).toBe(83.33);
+    expect(label).toBe('83.33%');
+  });
+
+  it('banner de resumen renderiza exactamente cuatro métricas sin bloqueados', () => {
+    const metrics = buildLiveExecutionBannerMetrics({
+      completed: 10,
+      processedTotal: 10,
+      executed: 6,
+      passed: 6,
+      failed: 0,
+    });
+
+    expect(metrics).toHaveLength(4);
+    expect(metrics.map(metric => metric.label)).toEqual([
+      'Procesados',
+      'Ejecutados',
+      'Aprobados',
+      'Fallidos',
+    ]);
+    expect(metrics.some(metric => metric.label === 'Bloqueados')).toBe(false);
+  });
+
+  it('payload legacy con blockedCount no agrega quinta métrica en banner', () => {
+    const legacyPayload: Parameters<typeof computeLiveExecutionMetrics>[1] & {
+      summary: NonNullable<Parameters<typeof computeLiveExecutionMetrics>[1]>['summary'] & { blockedCount?: number };
+    } = {
+      status: 'completed',
+      summary: {
+        requested: 10,
+        completed: 10,
+        executed: 6,
+        passed: 5,
+        failed: 1,
+        blockedCount: 4,
+      },
+    };
+    const resolved = computeLiveExecutionMetrics(baseRun, legacyPayload);
+    const metrics = buildLiveExecutionBannerMetrics({
+      completed: resolved.completed,
+      processedTotal: resolved.requested,
+      executed: resolved.executed,
+      passed: resolved.passed,
+      failed: resolved.failed,
+    });
+
+    expect(metrics).toHaveLength(4);
+    expect(metrics.every(metric => metric.id !== 'failed' || metric.value === 1)).toBe(true);
+    expect(metrics.some(metric => metric.id === 'processed' && metric.total === 10)).toBe(true);
+  });
+
+  it('layout del banner usa distribución responsive de 4 métricas sin quinta columna', () => {
+    expect(LIVE_EXECUTION_BANNER_GRID_CLASS).toContain('grid-cols-2');
+    expect(LIVE_EXECUTION_BANNER_GRID_CLASS).toContain('md:grid-cols-4');
+    expect(LIVE_EXECUTION_BANNER_GRID_CLASS).not.toContain('grid-cols-5');
+  });
+
+  it('métricas funcionales avanzan 0/3 → 1/3 → 2/3 → 3/3 con passRate real', () => {
+    const start = computeLiveExecutionMetrics(baseRun, {
+      status: 'running',
+      summary: { requested: 3, completed: 0, executed: 0, passed: 0, failed: 0, passRate: null },
+    });
+    expect(start.completed).toBe(0);
+    expect(start.requested).toBe(3);
+    expect(start.progress).toBe(0);
+    expect(start.passRate).toBeNull();
+
+    const afterFirst = computeLiveExecutionMetrics(baseRun, {
+      status: 'running',
+      summary: { requested: 3, completed: 1, executed: 1, passed: 1, failed: 0, passRate: 100 },
+    });
+    expect(afterFirst.completed).toBe(1);
+    expect(afterFirst.executed).toBe(1);
+    expect(afterFirst.passed).toBe(1);
+    expect(afterFirst.progress).toBe(33);
+    expect(afterFirst.passRate).toBe(100);
+
+    const afterSecond = computeLiveExecutionMetrics(baseRun, {
+      status: 'running',
+      summary: { requested: 3, completed: 2, executed: 2, passed: 1, failed: 1, passRate: 50 },
+    });
+    expect(afterSecond.completed).toBe(2);
+    expect(afterSecond.executed).toBe(2);
+    expect(afterSecond.passed).toBe(1);
+    expect(afterSecond.failed).toBe(1);
+    expect(afterSecond.progress).toBe(66);
+    expect(afterSecond.passRate).toBe(50);
+
+    const afterThird = computeLiveExecutionMetrics(baseRun, {
+      status: 'done',
+      summary: { requested: 3, completed: 3, executed: 3, passed: 2, failed: 1, passRate: 67 },
+    });
+    expect(afterThird.completed).toBe(3);
+    expect(afterThird.executed).toBe(3);
+    expect(afterThird.passed).toBe(2);
+    expect(afterThird.failed).toBe(1);
+    expect(afterThird.progress).toBe(100);
+    expect(afterThird.passRate).toBe(67);
   });
 
   it('progreso incremental 0/4 -> 0%', () => {
@@ -210,6 +396,39 @@ describe('LiveExecution state', () => {
     expect(outcome.isTechnicalFailure).toBe(false);
     expect(outcome.subtitle).toContain('7 de 8');
     expect(metrics.dominantFailure).toBe(null);
+  });
+
+  it('muestra botón de checklist cuando failed>0 y checklistUrl existe sin issueKey', () => {
+    expect(
+      shouldShowDefectChecklistButton({
+        failed: 1,
+        defectCount: 1,
+        checklistUrl: '/checklist/job:123',
+        issueKey: null,
+      }),
+    ).toBe(true);
+  });
+
+  it('oculta botón cuando no hay fallos aunque exista checklistUrl', () => {
+    expect(
+      shouldShowDefectChecklistButton({
+        failed: 0,
+        defectCount: 0,
+        checklistUrl: '/checklist/job:123',
+        issueKey: null,
+      }),
+    ).toBe(false);
+  });
+
+  it('oculta botón cuando hay fallos pero no existe identidad de checklist', () => {
+    expect(
+      shouldShowDefectChecklistButton({
+        failed: 1,
+        defectCount: 0,
+        checklistUrl: '',
+        issueKey: '',
+      }),
+    ).toBe(false);
   });
 
   it('isTerminalRunStatus detecta estados finales', () => {

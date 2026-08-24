@@ -1,5 +1,5 @@
 import { C } from '../constants/theme';
-import type { Project, Execution, ActiveRun, TestCase, SprintCycle, PendingDefect } from '../types';
+import type { Project, Execution, ActiveRun, TestCase, SprintCycle, PendingDefect, AiRunComparison } from '../types';
 
 export const projects: Project[] = [
   { id: 'p1', name: 'Core Banking', team: 'Plataforma', stack: 'Selenium · Java', automated: 248, runs: 1842, passRate: 94.2, defects: 12, lastRun: '2h', status: 'success', trend: [88, 91, 89, 93, 92, 94, 94] },
@@ -135,5 +135,107 @@ export const activeRuns: ActiveRun[] = [
     currentTest: 'C3045 · Validación biométrica iOS',
     eta: '1m 50s',
     status: 'running',
+  },
+];
+
+export const aiRunComparisons: AiRunComparison[] = [
+  {
+    id: 'aa-91-gpt-5-4',
+    projectKey: 'AA-91',
+    label: 'GPT-5.4',
+    provider: 'copilot_cli',
+    model: 'gpt-5.4',
+    status: 'historical',
+    calls: 1,
+    generated: 6,
+    automatable: 6,
+    validVisible: 6,
+    rejected: 0,
+    durationSeconds: 87.222,
+    tokens: {
+      total: 68557,
+      input: 64352,
+      cachedInput: 41088,
+      nonCachedInput: 23264,
+      output: 4205,
+      reasoning: 547,
+    },
+    repair: {
+      routePrefix: 6,
+      aiRepair: '3 repairs',
+      aiRepairSuccess: '0 success',
+    },
+    huPerCycle: '18-20',
+    efficiencyScore: 92,
+    qualityScore: 84,
+    notes: [
+      '6/6 validos y visibles',
+      '6/6 con route-prefix repair',
+      'Capacidad estimada 18-20 HU/ciclo',
+    ],
+  },
+  {
+    id: 'aa-91-gpt-5-4-integral',
+    projectKey: 'AA-91',
+    label: 'GPT-5.4 integral',
+    provider: 'copilot_cli',
+    model: 'gpt-5.4',
+    status: 'historical',
+    calls: 1,
+    generated: 6,
+    automatable: 6,
+    validVisible: 6,
+    rejected: 0,
+    durationSeconds: null,
+    tokens: {
+      total: 227757,
+      input: 0,
+      output: 0,
+      copilot: 'Generacion 70,801 + AI-REPAIR 156,956',
+    },
+    repair: {
+      routePrefix: 6,
+      aiRepair: '3 repairs',
+      aiRepairSuccess: '0 success',
+    },
+    huPerCycle: '18-20',
+    efficiencyScore: 74,
+    qualityScore: 84,
+    notes: [
+      'Historico integral conservado',
+      'Capacidad estimada basada en 70,801 tokens/HU',
+      'No se recalculan tokens de Copilot',
+    ],
+  },
+  {
+    id: 'aa-91-claude-sonnet-4-6',
+    projectKey: 'AA-91',
+    label: 'Claude Sonnet 4.6',
+    provider: 'copilot_cli',
+    model: 'claude-sonnet-4.6',
+    status: 'partial',
+    calls: 1,
+    generated: 6,
+    automatable: 6,
+    validVisible: 5,
+    rejected: 1,
+    durationSeconds: 64.02,
+    tokens: {
+      copilot: 'No disponible / no calculable',
+    },
+    repair: {
+      routePrefix: 6,
+      branchCoverage: '1/1',
+      aiRepair: 'desactivado',
+      aiRepairSuccess: 'N/A',
+    },
+    huPerCycle: 'No calculable',
+    efficiencyScore: 100,
+    qualityScore: 79,
+    notes: [
+      '1 rechazado por patron MCP',
+      '6/6 route-prefix repair',
+      'Comparabilidad parcial hasta ejecutar Claude',
+    ],
   },
 ];

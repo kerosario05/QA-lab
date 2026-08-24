@@ -18,11 +18,32 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
 
   const stories: Array<Record<string, unknown>> = Array.isArray(body?.stories) ? body.stories : [];
   const existingCaseIds: number[] = Array.isArray(body?.existingCaseIds) ? body.existingCaseIds.filter((id: unknown) => typeof id === 'number') : [];
+  const launchId = body?.launchId as string | undefined;
+  const testRunId = body?.testRunId ? Number(body.testRunId) : undefined;
+  const publishedCases = Array.isArray(body?.publishedCases)
+    ? (body.publishedCases as Array<{
+        scenarioId: string;
+        caseId: number;
+        title?: string;
+        sourceType?: 'jira_preview' | 'testrail_case';
+        sourceIssueKey?: string;
+        launchScenarioId?: string;
+        executionScenarioId?: string;
+      }>)
+    : undefined;
+  const jiraKey = body?.jiraKey as string | undefined;
+  const appSlug = typeof body?.appSlug === 'string' ? body.appSlug : undefined;
+  const sectionName = body?.sectionName as string | undefined;
+  const sectionSlug = body?.sectionSlug as string | undefined;
 
   const hasStoriesWithScenarios = stories.some(s => Array.isArray(s.scenarios) && (s.scenarios as unknown[]).length > 0);
   const hasCaseIds = existingCaseIds.length > 0;
+  const publishedCaseIds = (publishedCases ?? [])
+    .map((entry) => Number(entry.caseId))
+    .filter((id) => Number.isInteger(id) && id > 0);
+  const executionCaseIds = Array.from(new Set([...existingCaseIds, ...publishedCaseIds]));
 
-  console.log(`[runs] from-scenarios request stories=${stories.length} existingCaseIds=${existingCaseIds.length}`);
+  console.log(`[runs] from-scenarios request stories=${stories.length} existingCaseIds=${existingCaseIds.length} publishedCaseIds=${publishedCaseIds.length}`);
 
   if (!hasStoriesWithScenarios && !hasCaseIds) {
     return sendJson(res, 400, { ok: false, error: 'No hay escenarios ni casos seleccionados', errorCode: 'INVALID_RUN_REQUEST' });
@@ -64,20 +85,36 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
     let result;
 
     if (hasCaseIds) {
-      console.log(`[runs] delegating to discovery-batch caseIds=${existingCaseIds.length}`);
-      result = await requestDiscoveryBatch(existingCaseIds, undefined, testRailProjectName);
+      const shouldExecutePromotedSpecs = Boolean(launchId && testRunId && executionCaseIds.length > 0);
+      const caseIdsForExecution = shouldExecutePromotedSpecs ? executionCaseIds : existingCaseIds;
+      console.log(
+        `[runs] delegating to discovery-batch caseIds=${caseIdsForExecution.length} executePromotedSpecs=${shouldExecutePromotedSpecs}`,
+      );
+      result = await requestDiscoveryBatch(
+        caseIdsForExecution,
+        sectionName,
+        testRailProjectName,
+        shouldExecutePromotedSpecs
+          ? {
+              appSlug,
+              sectionName,
+              sectionSlug,
+              executePromotedSpecs: true,
+              launchId,
+              testRunId,
+              jiraKey,
+              publishedCases,
+            }
+          : {
+              appSlug,
+              sectionName,
+              sectionSlug,
+            },
+      );
     } else {
       console.log(`[runs] delegating to scenario-preview stories=${stories.length}`);
       const suiteId = Number(body?.suiteId ?? 0);
       const sectionId = body?.sectionId ? Number(body.sectionId) : undefined;
-      const sectionName = body?.sectionName as string | undefined;
-      const sectionSlug = body?.sectionSlug as string | undefined;
-      const launchId = body?.launchId as string | undefined;
-      const testRunId = body?.testRunId ? Number(body.testRunId) : undefined;
-      const publishedCases = Array.isArray(body?.publishedCases)
-        ? (body.publishedCases as Array<{ scenarioId: string; caseId: number; title?: string }>)
-        : undefined;
-      const jiraKey = body?.jiraKey as string | undefined;
       const pubCaseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");
       console.log(`[runs] forwarding launch metadata launchId=${launchId ?? '—'} testRunId=${testRunId ?? '—'} publishedCases=${publishedCases?.length ?? 0} caseIds=${pubCaseIds} jiraKey=${jiraKey ?? '—'}`);
       result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId, testRailProjectName, sectionName, sectionSlug, launchId, testRunId, publishedCases, jiraKey);

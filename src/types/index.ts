@@ -42,6 +42,8 @@ export interface ActiveRun {
   collectionName?: string;
   /** Jira issue key used to open the defect checklist (mobile: sourceIssueKey). */
   issueKey?: string;
+  checklistUrl?: string;
+  defectCount?: number;
   /** When true, open the checklist by issueKey only (no jobId filter). Mobile jobs
    *  don't echo issueKey/checklistUrl and tag defects with an internal execution id,
    *  so filtering by the launch jobId returns nothing. */
@@ -109,6 +111,40 @@ export interface PendingDefect {
   daysWaiting: number;
   sprint: string;
   component: string;
+}
+
+export interface AiRunComparison {
+  id: string;
+  projectKey: string;
+  label: string;
+  provider: string;
+  model: string;
+  status: 'comparable' | 'partial' | 'historical';
+  calls: number;
+  generated: number;
+  automatable: number;
+  validVisible: number;
+  rejected: number;
+  durationSeconds: number | null;
+  tokens: {
+    total?: number;
+    input?: number;
+    cachedInput?: number;
+    nonCachedInput?: number;
+    output?: number;
+    reasoning?: number;
+    copilot?: string;
+  };
+  repair?: {
+    routePrefix: number;
+    branchCoverage?: string;
+    aiRepair?: string;
+    aiRepairSuccess?: string;
+  };
+  huPerCycle?: string;
+  efficiencyScore: number;
+  qualityScore: number;
+  notes: string[];
 }
 
 export interface FailedTest {

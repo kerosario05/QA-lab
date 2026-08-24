@@ -9,6 +9,7 @@ const ORIG_ENV = { ...process.env };
 let app: ReturnType<typeof express>;
 let server: Server;
 let mockProvider: Server;
+let lastDiscoveryBatchPayload: Record<string, unknown> | null = null;
 
 const api = (path: string) => `http://localhost:${PORT}${path}`;
 
@@ -25,8 +26,18 @@ beforeAll(async () => {
 
   const mockApp = express();
   mockApp.use(express.json());
-  mockApp.post('/api/runs/discovery-batch', (_req, res) => {
+  mockApp.post('/api/runs/discovery-batch', (req, res) => {
+    lastDiscoveryBatchPayload = req.body as Record<string, unknown>;
     res.status(202).json({ jobId: 'mock-job-1', status: 'queued' });
+  });
+  mockApp.post('/api/runs/discovery-batch-checklist', (req, res) => {
+    lastDiscoveryBatchPayload = req.body as Record<string, unknown>;
+    res.status(202).json({
+      jobId: 'mock-job-checklist',
+      status: 'queued',
+      checklistUrl: '/checklist/job:mock-job-checklist',
+      defectCount: 1,
+    });
   });
   mockApp.post('/api/runs/scenario-preview', (_req, res) => {
     res.status(202).json({ ok: true, jobId: 'mock-job-2', status: 'queued', mode: 'scenario-preview', scenarioCount: 1 });
@@ -203,6 +214,7 @@ describe('runs router — provider configured', () => {
   afterEach(() => {
     delete process.env.RUN_PROVIDER_ENDPOINT_PREVIEW;
     delete process.env.RUN_PROVIDER_ENDPOINT_DISCOVERY;
+    lastDiscoveryBatchPayload = null;
   });
 
   it('proxies discovery-batch and returns jobId', async () => {
@@ -217,6 +229,75 @@ describe('runs router — provider configured', () => {
     expect(body.ok).toBe(true);
     expect(body.jobId).toBe('mock-job-1');
     expect(body.status).toBe('queued');
+    expect(lastDiscoveryBatchPayload?.executePromotedSpecs).toBeUndefined();
+  });
+
+  it('uses executePromotedSpecs for launch metadata and merges published caseIds', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const res = await fetch(api('/api/runs/from-scenarios'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        appSlug: 'app-a',
+        projectId: 56,
+        suiteId: 1731,
+        sectionId: 4903,
+        sectionName: 'Detalle Kiosko',
+        sectionSlug: 'detalle-kiosko',
+        stories: [{ jiraKey: 'AA-1', scenarios: [{ title: 'S1' }] }],
+        existingCaseIds: [100, 200],
+        launchId: 'launch-1',
+        testRunId: 9999,
+        jiraKey: 'AA-1',
+        publishedCases: [
+          { scenarioId: 'TR-CASE-100', caseId: 100, sourceType: 'testrail_case' },
+          {
+            scenarioId: 'L-abc-001',
+            caseId: 300,
+            sourceType: 'jira_preview',
+            sourceIssueKey: 'AA-1',
+            launchScenarioId: 'LAUNCH-001',
+            executionScenarioId: 'PREVIEW-001',
+          },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.ok).toBe(true);
+    expect(body.jobId).toBe('mock-job-1');
+    expect(lastDiscoveryBatchPayload).toBeTruthy();
+    expect(lastDiscoveryBatchPayload?.executePromotedSpecs).toBe(true);
+    expect(lastDiscoveryBatchPayload?.launchId).toBe('launch-1');
+    expect(lastDiscoveryBatchPayload?.testRunId).toBe(9999);
+    expect(lastDiscoveryBatchPayload?.appSlug).toBe('app-a');
+    expect(lastDiscoveryBatchPayload?.sectionSlug).toBe('detalle-kiosko');
+    expect(lastDiscoveryBatchPayload?.caseIds).toEqual([100, 200, 300]);
+    const forwardedPublishedCases = lastDiscoveryBatchPayload?.publishedCases as Array<Record<string, unknown>>;
+    expect(forwardedPublishedCases).toHaveLength(2);
+    expect(forwardedPublishedCases[1]).toMatchObject({
+      sourceType: 'jira_preview',
+      sourceIssueKey: 'AA-1',
+      launchScenarioId: 'LAUNCH-001',
+      executionScenarioId: 'PREVIEW-001',
+    });
+  });
+
+  it('propaga checklistUrl y defectCount en discovery-batch sin issueKey obligatorio', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    process.env.RUN_PROVIDER_ENDPOINT_DISCOVERY = '/api/runs/discovery-batch-checklist';
+    const res = await fetch(api('/api/runs/from-scenarios'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(casePayload),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.ok).toBe(true);
+    expect(body.jobId).toBe('mock-job-checklist');
+    expect(body.checklistUrl).toBe('/checklist/job:mock-job-checklist');
+    expect(body.defectCount).toBe(1);
+    expect(body.issueKey).toBeUndefined();
   });
 
   it('proxies scenario-preview and returns jobId', async () => {

@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { ClipboardList, ArrowLeft, ExternalLink, Check, Upload, User, Loader2 } from 'lucide-react';
-import { getChecklist, type ChecklistResponse, type Defect } from '../../services/checklist';
+import { ChecklistFetchError, getChecklist, type ChecklistResponse, type Defect } from '../../services/checklist';
 import { uploadDefectsToJira, searchJiraUsers, type JiraUser } from '../../services/jira';
+import { isNeutralChecklistIdentity } from './route';
 
 /* ── Helpers ── */
 const sevLabel: Record<string, string> = { critical: 'Crítica', high: 'Alta', medium: 'Media', low: 'Baja' };
@@ -86,23 +87,32 @@ interface Props { issueKey: string; jobId?: string; scenarioIds?: string[]; onBa
 export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }: Props) {
   const [data, setData] = useState<ChecklistResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<'not_found' | 'error' | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [localJiraKeys, setLocalJiraKeys] = useState<Record<string, { key: string; url: string }>>({});
   const [expandedDefects, setExpandedDefects] = useState<Set<string>>(new Set());
 
+  const runId = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('runId') ?? undefined
+    : undefined;
+
   useEffect(() => {
     setLoading(true);
-    getChecklist(issueKey, jobId, scenarioIds)
+    setLoadError(null);
+    getChecklist(issueKey, jobId, scenarioIds, runId)
       .then(data => {
         setData(data);
-        console.log(`[checklist-load] issueKey=${issueKey} jobId=${jobId ?? 'none'} received=${data?.defects?.length ?? 0}`);
+        console.log(`[checklist-load] issueKey=${issueKey} jobId=${jobId ?? 'none'} runId=${runId ?? 'none'} received=${data?.defects?.length ?? 0}`);
       })
       .catch(err => {
-        console.log(`[defects:jira] checklist API failed issueKey=${issueKey} reason=${err.message}, falling back to localStorage`);
+        const message = err instanceof Error ? err.message : String(err);
+        const status = err instanceof ChecklistFetchError ? err.status : undefined;
+        setLoadError(status === 404 ? 'not_found' : 'error');
+        console.log(`[defects:jira] checklist API failed issueKey=${issueKey} status=${status ?? 'unknown'} reason=${message}, falling back to localStorage`);
         // Don't set null — we'll build list from localStorage below
       })
       .finally(() => setLoading(false));
-  }, [issueKey, jobId]);
+  }, [issueKey, jobId, scenarioIds, runId]);
 
   const apiDefects: Defect[] = Array.isArray(data?.defects) ? data!.defects : [];
 
@@ -131,6 +141,10 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
   const pendCount = defects.filter(d => d.status === 'pending_review').length;
   const maxSev = defects.reduce((m, d) => (sevOrder[d.severity] ?? 0) > (sevOrder[m] ?? -1) ? d.severity : m, '');
   const maxSevLbl = maxSev ? sevLabel[maxSev] || maxSev : '—';
+  const checklistNotFound = !loading
+    && defects.length === 0
+    && (loadError === 'not_found'
+      || (isNeutralChecklistIdentity(issueKey) && data?.createdAt == null && data?.updatedAt == null));
 
   const toggleSelection = useCallback((id: string) => {
     setSelectedIds(prev => {
@@ -345,6 +359,18 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
 
         {loading ? (
           <div className="bg-white border border-[#E6E9EA] rounded-2xl p-12 text-center shadow-sm"><div className="text-[14px] text-[#94A3B8]">Cargando checklist...</div></div>
+        ) : checklistNotFound ? (
+          <div className="bg-white border border-[#FECACA] rounded-[20px] p-12 text-center shadow-sm">
+            <div className="w-14 h-14 rounded-2xl bg-[#FEF2F2] flex items-center justify-center mx-auto mb-4"><ClipboardList size={26} className="text-[#DC2626]" /></div>
+            <div className="text-[17px] font-bold text-[#7F1D1D] mb-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Checklist no encontrado</div>
+            <div className="text-[13px] text-[#991B1B]">No existe un checklist asociado a esta identidad de ejecución.</div>
+          </div>
+        ) : loadError === 'error' && defects.length === 0 ? (
+          <div className="bg-white border border-[#FDE68A] rounded-[20px] p-12 text-center shadow-sm">
+            <div className="w-14 h-14 rounded-2xl bg-[#FEF9C3] flex items-center justify-center mx-auto mb-4"><ClipboardList size={26} className="text-[#A16207]" /></div>
+            <div className="text-[17px] font-bold text-[#713F12] mb-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>No se pudo cargar el checklist</div>
+            <div className="text-[13px] text-[#854D0E]">Intenta de nuevo en unos segundos.</div>
+          </div>
         ) : defects.length === 0 ? (
           <div className="bg-white border border-dashed border-[#CBD5E1] rounded-[20px] p-12 text-center shadow-sm">
             <div className="w-14 h-14 rounded-2xl bg-[#F1F5F9] flex items-center justify-center mx-auto mb-4"><ClipboardList size={26} className="text-[#94A3B8]" /></div>

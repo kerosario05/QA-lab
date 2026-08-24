@@ -9,6 +9,7 @@ export interface StoryScenario {
   custom_preconds: string | null;
   custom_expected?: string;
   custom_steps_separated: ScenarioStep[];
+  authIntent?: "gate_observation" | "full_authentication";
 }
 
 export interface Story {

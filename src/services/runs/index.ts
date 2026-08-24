@@ -2,7 +2,18 @@ import type { Story } from '../scenarios';
 
 const PROXY = import.meta.env.VITE_API_URL ?? '';
 
+export interface PublishedCaseEntry {
+  scenarioId: string;
+  caseId: number;
+  title?: string;
+  sourceType?: 'jira_preview' | 'testrail_case';
+  sourceIssueKey?: string;
+  launchScenarioId?: string;
+  executionScenarioId?: string;
+}
+
 export interface RunPayload {
+  appSlug?: string;
   projectId: number;
   suiteId: number;
   sectionId?: number;
@@ -12,13 +23,16 @@ export interface RunPayload {
   existingCaseIds: number[];
   launchId?: string;
   testRunId?: number;
-  publishedCases?: Array<{ scenarioId: string; caseId: number; title?: string }>;
+  publishedCases?: PublishedCaseEntry[];
   jiraKey?: string;
 }
 
 export interface RunCreateResponse {
   jobId: string;
   status: string;
+  issueKey?: string;
+  checklistUrl?: string;
+  defectCount?: number;
 }
 
 export interface LogEntry {
@@ -30,10 +44,15 @@ export interface LogEntry {
 export interface RunStatusData {
   status?: string;
   progress?: number;
+  progressPercent?: number;
   total?: number;
+  requested?: number;
+  executed?: number;
   passed?: number;
   failed?: number;
   completed?: number;
+  skipped?: number;
+  passRate?: number | null;
   currentTest?: string;
   startedAt?: string;
   completedAt?: string;
@@ -108,11 +127,18 @@ function normalizeRunData(raw: Record<string, unknown>): Record<string, unknown>
     if (out.passed    === undefined && summary.passed     !== undefined) out.passed    = summary.passed;
     if (out.failed    === undefined && summary.failed     !== undefined) out.failed    = summary.failed;
     if (out.completed === undefined && summary.completed  !== undefined) out.completed = summary.completed;
+    if (out.executed  === undefined && summary.executed   !== undefined) out.executed  = summary.executed;
+    if (out.skipped   === undefined && summary.skipped    !== undefined) out.skipped   = summary.skipped;
+    if (out.requested === undefined && summary.requested  !== undefined) out.requested = summary.requested;
+    if (out.passRate  === undefined && summary.passRate   !== undefined) out.passRate  = summary.passRate;
+    if (out.progressPercent === undefined && summary.progressPercent !== undefined) out.progressPercent = summary.progressPercent;
+    if (out.progress  === undefined && summary.progressPercent !== undefined) out.progress  = summary.progressPercent;
     if (out.progress  === undefined && summary.progress   !== undefined) out.progress  = summary.progress;
     if (out.total === undefined) {
       if      (summary.total         !== undefined) out.total = summary.total;
       else if (summary.totalStories  !== undefined) out.total = summary.totalStories;
       else if (summary.scenarioCount !== undefined) out.total = summary.scenarioCount;
+      else if (summary.requested     !== undefined) out.total = summary.requested;
     }
   }
 
@@ -248,12 +274,15 @@ export interface LaunchExecutionPayload {
   jiraKey?: string;
   sprintName?: string;
   selectedScenarios: Array<{
+    scenarioId?: string;
     title: string;
     steps: string[];
     expectedResult: string;
     preconditions: string[];
     sourceIssueKey?: string;
+    authIntent?: "gate_observation" | "full_authentication";
   }>;
+  existingTestRailCaseIds?: number[];
   publishStrategy?: 'always_create' | 'use_existing';
 }
 
@@ -261,7 +290,7 @@ export interface LaunchExecutionResponse {
   ok: boolean;
   launchId?: string;
   status?: string;
-  publishedCases?: Array<{ scenarioId: string; caseId: number; title: string }>;
+  publishedCases?: PublishedCaseEntry[];
   testRunId?: number;
   manifestPath?: string;
   error?: string;

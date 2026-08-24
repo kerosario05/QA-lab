@@ -94,6 +94,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
       custom_preconds: Array.isArray(preconds) ? preconds.join('\n') : String(preconds),
       custom_expected: item.custom_expected ?? item.expectedResult ?? item.expected ?? '',
       custom_steps_separated: steps,
+      authIntent: item.authIntent,
     });
     existing.scenarioCount = existing.scenarios.length;
     grouped.set(jiraKey, existing);

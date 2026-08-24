@@ -38,6 +38,26 @@ router.get('/projects/:key/sprint/active', async (req: Request, res: Response) =
   }
 });
 
+// GET /api/jira/projects/:key/sprint/:sprintId/issues
+// Read-only: devuelve las HUs del sprint activo (agile API), sin generar escenarios ni llamar IA/MCP/TestRail.
+// Opcional ?status=<nombre> para devolver solo issues compatibles con ese estado Jira.
+router.get('/projects/:key/sprint/:sprintId/issues', async (req: Request, res: Response) => {
+  const projectKey = String(req.params.key);
+  const sprintId = String(req.params.sprintId);
+  const status = String(req.query.status ?? '').trim() || undefined;
+  console.log(`[jira-api] sprint_issues request project=${projectKey} sprintId=${sprintId} status=${status ?? 'none'}`);
+
+  try {
+    const issues = await client.getSprintIssues(sprintId, status);
+    console.log(`[jira-api] sprint_issues response project=${projectKey} sprintId=${sprintId} status=${status ?? 'none'} count=${issues.length}`);
+    res.json({ ok: true, issues });
+  } catch (err: any) {
+    console.log(`[jira-api] sprint_issues error project=${projectKey} sprintId=${sprintId}: ${err.message}`);
+    sendError(res, err.status ?? 503, err.message ?? 'Failed to fetch sprint issues');
+  }
+});
+
+
 // GET /api/jira/users/search?query=<text>&projectKey=<key>
 router.get('/users/search', async (req: Request, res: Response) => {
   const query = String(req.query.query ?? '').trim();

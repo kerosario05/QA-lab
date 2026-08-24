@@ -132,6 +132,35 @@ export class JiraClient {
     }
   }
 
+  async getSprintIssues(sprintId: number | string, status?: string): Promise<Array<{ key: string; summary: string }>> {
+    const issues: Array<{ key: string; summary: string }> = [];
+    const statusNorm = status ? String(status).trim().toLowerCase() : '';
+    let startAt = 0;
+    const maxResults = 50;
+
+    for (;;) {
+      const path = `/rest/agile/1.0/sprint/${sprintId}/issue?startAt=${startAt}&maxResults=${maxResults}`;
+      console.log(`[jira-api] sprint_issues request sprintId=${sprintId} startAt=${startAt} statusFilter=${statusNorm || 'none'}`);
+      const data = await this.request<{ issues?: any[]; total?: number; startAt?: number }>(path);
+      const page = Array.isArray(data?.issues) ? data.issues : [];
+      for (const it of page) {
+        const key = it?.key ?? it?.id;
+        if (!key) continue;
+        if (statusNorm) {
+          const issueStatus = String(it?.fields?.status?.name ?? '').trim().toLowerCase();
+          if (issueStatus !== statusNorm) continue;
+        }
+        issues.push({ key: String(key), summary: String(it?.fields?.summary ?? '') });
+      }
+      const total = Number(data?.total ?? page.length);
+      startAt += page.length;
+      if (page.length === 0 || startAt >= total) break;
+    }
+
+    console.log(`[jira-api] sprint_issues response sprintId=${sprintId} statusFilter=${statusNorm || 'none'} count=${issues.length}`);
+    return issues;
+  }
+
   async createIssue(payload: {
     projectKey: string;
     summary: string;

@@ -40,10 +40,16 @@ export interface MobileDataField {
 export interface MobileScenario {
   scenarioId: string;
   sourceIssueKey: string;
+  sourceIssueTitle?: string;
+  sourceIssueSummary?: string;
   title: string;
   steps: MobileStep[];
   expectedResult: string;
   preconditions: string[];
+  sourceTrace?: {
+    jiraSummary?: string;
+    [key: string]: unknown;
+  };
   /** Editable data fields (text inputs + dropdown selects) the user fills before executing. */
   requiredData?: MobileDataField[];
 }
@@ -60,6 +66,9 @@ export interface MobileScenarioPreviewParams {
   status?: string;
   maxResults?: number;
   appSlug?: string;
+  selectedIssueKeys?: string[];
+  sourceRevision?: string;
+  launchDraftId?: string;
 }
 
 export interface MobileScenarioPreviewResponse {
@@ -67,6 +76,64 @@ export interface MobileScenarioPreviewResponse {
   issuesFound: number;
   scenarios: MobileScenario[];
   rejected: MobileRejectedScenario[];
+}
+
+export interface MobileScenarioGenerationIssueProgress {
+  issueKey: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  scenarioCount: number;
+  rejectedCount: number;
+  reasonCode?: string;
+  errorMessage?: string;
+}
+
+export interface MobileScenarioGenerationStartResponse {
+  ok: boolean;
+  requestId?: string;
+  generationJobId: string;
+  launchDraftId?: string;
+  idempotencyKeyHash?: string;
+  issueKeys?: string[];
+  appSlug?: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  reused?: boolean;
+  cacheHit?: boolean;
+  consumersWaiting?: number;
+}
+
+export interface MobileScenarioGenerationStatusResponse {
+  ok: boolean;
+  requestId?: string;
+  generationJobId: string;
+  launchDraftId?: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  appSlug?: string;
+  issueKeys?: string[];
+  issueProgress?: MobileScenarioGenerationIssueProgress[];
+  startedAt?: string;
+  finishedAt?: string;
+  consumersWaiting?: number;
+  result?: {
+    issuesFound: number;
+    scenarios: MobileScenario[];
+    rejected: MobileRejectedScenario[];
+    diagnosticsByIssue?: Record<string, unknown>;
+    scenariosByIssue?: Record<string, MobileScenario[]>;
+    rejectedByIssue?: Record<string, MobileRejectedScenario[]>;
+    consolidated?: {
+      totalScenarios: number;
+      totalRejected: number;
+      perIssueScenarioCount?: Record<string, number>;
+      perIssueRejectedCount?: Record<string, number>;
+    };
+  };
+  error?: {
+    code?: string;
+    message?: string;
+  };
 }
 
 export interface MobilePublishedCase {
@@ -110,6 +177,10 @@ export interface MobileRunExecuteResponse {
   jobId: string;
   status: string;
   mode?: string;
+  /** Jira issue key used to open the defect checklist (sourceIssueKey). */
+  issueKey?: string;
+  /** Checklist URL, already carrying ?runId=<mobileRunId> when the backend resolved an issueKey. */
+  checklistUrl?: string;
 }
 
 export interface MobileApiError extends Error {

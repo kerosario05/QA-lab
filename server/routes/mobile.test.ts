@@ -92,6 +92,37 @@ describe('mobile router', () => {
     expect(body.errorCode).toBe('MOBILE_SCENARIOS_NOT_CONFIGURED');
   });
 
+  it('scenarios/generation returns 400 when projectKey is missing', async () => {
+    const res = await fetch(api('/api/mobile/scenarios/generation'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activeSprint: true }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.errorCode).toBe('MISSING_PROJECT_KEY');
+  });
+
+  it('scenarios/generation returns 503 when SCENARIO_PREVIEW_BASE_URL is not set', async () => {
+    const res = await fetch(api('/api/mobile/scenarios/generation'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectKey: 'AA', sprintId: 123 }),
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.errorCode).toBe('MOBILE_SCENARIOS_NOT_CONFIGURED');
+  });
+
+  it('scenarios/generation/:jobId returns 503 when SCENARIO_PREVIEW_BASE_URL is not set', async () => {
+    const res = await fetch(api('/api/mobile/scenarios/generation/job-123'), {
+      method: 'GET',
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.errorCode).toBe('MOBILE_SCENARIOS_NOT_CONFIGURED');
+  });
+
   it('runs/launch-execution returns 400 when scenarios is empty', async () => {
     const res = await fetch(api('/api/mobile/runs/launch-execution'), {
       method: 'POST',

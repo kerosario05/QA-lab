@@ -20,10 +20,15 @@ import {
   isSuccessTerminalStatus,
   isTerminalStatus,
   canEnableDocumentDownload,
+  buildLiveExecutionBannerMetrics,
+  computeFunctionalPassRatePercent,
+  formatFunctionalPassRateLabel,
   resolveProgressPercent,
   resolveDocumentAvailabilityState,
   getTerminalUserMessage,
+  LIVE_EXECUTION_BANNER_GRID_CLASS,
   shouldResetDocumentStateForJob,
+  shouldShowDefectChecklistButton,
   withStableTerminalTimestamp,
   type EvidenceDocumentAvailability,
   type LiveExecutionStatusLike,
@@ -46,6 +51,7 @@ interface DisplayLog { time: string; type: string; msg: string; }
 
 const DOC_STATUS_POLL_INTERVAL_MS = 2000;
 const DOC_STATUS_MAX_ATTEMPTS = 30;
+const RUN_STATUS_POLL_INTERVAL_MS = 2000;
 
 const formatTime = (s: number) => {
   const m   = Math.floor(s / 60);
@@ -65,18 +71,22 @@ const mapLevel = (level?: string): DisplayLog['type'] => {
 export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution, onOpenChecklist }: LiveExecutionScreenProps) {
   const [progress,        setProgress]        = useState(run?.progress ?? 0);
   const [total,           setTotal]           = useState(run?.total ?? 0);
+  const [requested,       setRequested]       = useState(run?.total ?? 0);
   const [completed,       setCompleted]       = useState(run?.completed ?? 0);
+  const [executed,        setExecuted]        = useState(0);
   const [passed,          setPassed]          = useState(run?.passed ?? 0);
   const [failed,          setFailed]          = useState(run?.failed ?? 0);
+  const [skipped,         setSkipped]         = useState(0);
+  const [passRate,        setPassRate]        = useState<number | null>(null);
   const [currentTestName, setCurrentTestName] = useState(run?.currentTest || '');
   const [jobStatus,       setJobStatus]       = useState(run?.status || 'queued');
   const [logs,            setLogs]            = useState<DisplayLog[]>([]);
   const [streamError,     setStreamError]     = useState<string | null>(null);
   const [elapsed,         setElapsed]         = useState(0);
   const [currentJobId,    setCurrentJobId]    = useState(run?.jobId || run?.id || '');
-  const [checklistUrl,    setChecklistUrl]    = useState<string | null>(null);
+  const [checklistUrl,    setChecklistUrl]    = useState<string | null>(run?.checklistUrl ?? null);
   const [issueKey,        setIssueKey]        = useState<string | null>(run?.issueKey ?? null);
-  const [defectCount,     setDefectCount]     = useState<number>(0);
+  const [defectCount,     setDefectCount]     = useState<number>(typeof run?.defectCount === 'number' ? run.defectCount : 0);
   const [rerunning,       setRerunning]        = useState(false);
   const [downloadingDocx,  setDownloadingDocx]  = useState(false);
   const [docxError,      setDocxError]      = useState<string | null>(null);
@@ -95,15 +105,29 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const terminalReceivedAtRef = useRef<string | null>(null);
   const activeJobIdRef = useRef(currentJobId);
   const totalRef = useRef(total);
+  const requestedRef = useRef(requested);
   const completedRef = useRef(completed);
+  const executedRef = useRef(executed);
   const passedRef = useRef(passed);
   const failedRef = useRef(failed);
+  const skippedRef = useRef(skipped);
+  const passRateRef = useRef<number | null>(passRate);
   const progressRef = useRef(progress);
 
   const isDone = isTerminalStatus(jobStatus);
   const isFailed = isErrorTerminalStatus(jobStatus);
   const isSuccessDone = isSuccessTerminalStatus(jobStatus);
   const isCancelled = isCancelledStatus(jobStatus);
+  const processedTotal = requested > 0 ? requested : total;
+  const bannerMetrics = buildLiveExecutionBannerMetrics({
+    completed,
+    processedTotal,
+    executed,
+    passed,
+    failed,
+  });
+  const functionalPassRate = computeFunctionalPassRatePercent(passed, failed);
+  const functionalPassRateLabel = formatFunctionalPassRateLabel({ passed, failed, status: jobStatus });
   const finalUserMessage = getTerminalUserMessage(jobStatus);
   const canDownloadDocument = isTerminalStatus(jobStatus) && documentReady && Boolean(currentJobId);
 
@@ -118,9 +142,13 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         const newChecklistUrl = (result as any).checklistUrl || checklistUrl;
         // Reset state for new run
         setProgress(0);
+        setRequested(0);
         setCompleted(0);
+        setExecuted(0);
         setPassed(0);
         setFailed(0);
+        setSkipped(0);
+        setPassRate(null);
         setCurrentTestName('');
         setLogs([]);
         setJobStatus('queued');
@@ -189,37 +217,76 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   };
 
   const setProgressSnapshot = (snapshot: LiveExecutionStatusLike) => {
-    const incomingTotal = typeof snapshot.total === 'number' ? Math.max(0, snapshot.total) : undefined;
+    const summary = snapshot.summary && typeof snapshot.summary === 'object'
+      ? (snapshot.summary as Record<string, unknown>)
+      : undefined;
+    const numeric = (value: unknown): number | undefined => (
+      typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : undefined
+    );
+    const passRateNumeric = (value: unknown): number | null | undefined => {
+      if (value === null) return null;
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return Math.max(0, Math.min(100, value));
+      }
+      return undefined;
+    };
+
+    const incomingRequested = numeric(snapshot.requested) ?? numeric(summary?.requested);
+    const incomingTotal = numeric(snapshot.total)
+      ?? numeric(summary?.total)
+      ?? numeric(summary?.totalStories)
+      ?? numeric(summary?.scenarioCount);
+    const nextRequested = incomingRequested != null
+      ? Math.max(requestedRef.current, incomingRequested)
+      : requestedRef.current;
     const nextTotal = incomingTotal != null
       ? Math.max(totalRef.current, incomingTotal)
-      : totalRef.current;
-    const nextCompletedRaw = typeof snapshot.completed === 'number' ? Math.max(0, snapshot.completed) : completedRef.current;
-    const nextCompleted = nextTotal > 0
-      ? Math.min(nextTotal, Math.max(completedRef.current, nextCompletedRaw))
+      : (nextRequested > 0 ? Math.max(totalRef.current, nextRequested) : totalRef.current);
+    const nextCompletedRaw = numeric(snapshot.completed) ?? numeric(summary?.completed) ?? completedRef.current;
+    const completionBound = nextRequested > 0 ? nextRequested : nextTotal;
+    const nextCompleted = completionBound > 0
+      ? Math.min(completionBound, Math.max(completedRef.current, nextCompletedRaw))
       : Math.max(completedRef.current, nextCompletedRaw);
-    const nextPassed = typeof snapshot.passed === 'number'
-      ? Math.max(passedRef.current, Math.max(0, snapshot.passed))
-      : passedRef.current;
-    const nextFailed = typeof snapshot.failed === 'number'
-      ? Math.max(failedRef.current, Math.max(0, snapshot.failed))
-      : failedRef.current;
+    const nextPassedRaw = numeric(snapshot.passed) ?? numeric(summary?.passed) ?? passedRef.current;
+    const nextFailedRaw = numeric(snapshot.failed) ?? numeric(summary?.failed) ?? failedRef.current;
+    const nextPassed = Math.max(passedRef.current, nextPassedRaw);
+    const nextFailed = Math.max(failedRef.current, nextFailedRaw);
+    const nextSkippedRaw = numeric(snapshot.skipped) ?? numeric(summary?.skipped) ?? skippedRef.current;
+    const nextSkipped = Math.max(skippedRef.current, nextSkippedRaw);
+    const nextExecutedRaw = numeric(snapshot.executed) ?? numeric(summary?.executed) ?? (nextPassed + nextFailed);
+    const nextExecuted = Math.max(executedRef.current, nextExecutedRaw);
+    const incomingPassRate = passRateNumeric(snapshot.passRate) ?? passRateNumeric(summary?.passRate);
+    const nextPassRate = incomingPassRate !== undefined
+      ? incomingPassRate
+      : (nextExecuted > 0 ? Math.max(0, Math.min(100, Math.round((nextPassed / nextExecuted) * 100))) : null);
     const nextProgress = resolveProgressPercent({
       previousProgress: progressRef.current,
       completed: nextCompleted,
-      total: nextTotal,
-      backendProgress: typeof snapshot.progress === 'number' ? snapshot.progress : undefined,
+      total: completionBound,
+      backendProgress: numeric(snapshot.progressPercent)
+        ?? numeric(summary?.progressPercent)
+        ?? numeric(snapshot.progress)
+        ?? numeric(summary?.progress),
     });
 
+    requestedRef.current = nextRequested;
     totalRef.current = nextTotal;
     completedRef.current = nextCompleted;
+    executedRef.current = nextExecuted;
     passedRef.current = nextPassed;
     failedRef.current = nextFailed;
+    skippedRef.current = nextSkipped;
+    passRateRef.current = nextPassRate;
     progressRef.current = nextProgress;
 
+    setRequested(nextRequested);
     setTotal(nextTotal);
     setCompleted(nextCompleted);
+    setExecuted(nextExecuted);
     setPassed(nextPassed);
     setFailed(nextFailed);
+    setSkipped(nextSkipped);
+    setPassRate(nextPassRate);
     setProgress(nextProgress);
   };
 
@@ -286,12 +353,16 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   }, [currentJobId]);
 
   useEffect(() => {
+    requestedRef.current = requested;
     totalRef.current = total;
     completedRef.current = completed;
+    executedRef.current = executed;
     passedRef.current = passed;
     failedRef.current = failed;
+    skippedRef.current = skipped;
+    passRateRef.current = passRate;
     progressRef.current = progress;
-  }, [total, completed, passed, failed, progress]);
+  }, [requested, total, completed, executed, passed, failed, skipped, passRate, progress]);
 
   // Reset job-scoped states when job changes
   useEffect(() => {
@@ -303,20 +374,31 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     setDocumentState('idle');
     setDocxError(null);
     setDownloadingDocx(false);
+    setChecklistUrl(run?.checklistUrl ?? null);
+    setIssueKey(run?.issueKey ?? null);
+    setDefectCount(typeof run?.defectCount === 'number' ? run.defectCount : 0);
     setLogs([]);
     terminalReceivedAtRef.current = null;
     lastStatusRef.current = null;
     documentPollAttemptsRef.current = 0;
     progressRef.current = 0;
+    requestedRef.current = 0;
     totalRef.current = 0;
     completedRef.current = 0;
+    executedRef.current = 0;
     passedRef.current = 0;
     failedRef.current = 0;
+    skippedRef.current = 0;
+    passRateRef.current = null;
     setProgress(0);
+    setRequested(0);
     setTotal(0);
     setCompleted(0);
+    setExecuted(0);
     setPassed(0);
     setFailed(0);
+    setSkipped(0);
+    setPassRate(null);
     stopTimer();
     syncElapsed(undefined, Date.now());
   }, [run?.jobId, run?.id, currentJobId]);
@@ -347,6 +429,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   useEffect(() => {
     const streamJobId = currentJobId || run?.jobId;
     if (!streamJobId) return;
+    let statusPollTimer: number | null = null;
 
     // Mobile: el backend reporta passed/failed a nivel PASO en su summary, así que
     // ignoramos esos contadores y los derivamos a nivel ESCENARIO parseando los logs
@@ -355,30 +438,6 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     const mobileTotal = run?.total ?? 0;
     const mobileState = createMobileProgressState();
     if (isMobile && mobileTotal > 0) setTotal(mobileTotal);
-
-    // Fetch job data to get issueKey and checklistUrl
-    runsProxy.getJob(streamJobId).then(data => {
-      if (activeJobIdRef.current !== streamJobId) return;
-      if ((data as any).issueKey) setIssueKey((data as any).issueKey);
-      if ((data as any).checklistUrl) setChecklistUrl((data as any).checklistUrl);
-      if (typeof (data as any).defectCount === 'number') setDefectCount((data as any).defectCount);
-      const stableData = withStableTerminalTimestamp(data as LiveExecutionStatusLike, terminalReceivedAtRef.current ?? undefined) ?? (data as LiveExecutionStatusLike);
-      lastStatusRef.current = stableData;
-      if (stableData.status) setJobStatus(stableData.status);
-      if (stableData.currentTest) setCurrentTestName(stableData.currentTest);
-      setProgressSnapshot(stableData);
-      if (canEnableDocumentDownload(stableData.status, stableData)) {
-        setDocumentReady(true);
-        setDocumentState('ready');
-        setDocxError(null);
-        stopDocumentPolling();
-      } else if (isTerminalStatus(stableData.status) && (isSuccessTerminalStatus(stableData.status) || isCancelledStatus(stableData.status))) {
-        setDocumentReady(false);
-        setDocumentState('preparing');
-        setDocxError(null);
-        startDocumentPolling(streamJobId);
-      }
-    }).catch(() => {});
 
     const applyStatus = (data: any) => {
       if (activeJobIdRef.current !== streamJobId) return;
@@ -408,7 +467,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         setDocumentState('ready');
         setDocxError(null);
         stopDocumentPolling();
-      } else if (isTerminalStatus(stableStatus.status) && (isSuccessTerminalStatus(stableStatus.status) || isCancelledStatus(stableStatus.status))) {
+      } else if (isTerminalStatus(stableStatus.status)) {
         setDocumentReady(false);
         setDocumentState('preparing');
         setDocxError(null);
@@ -420,6 +479,57 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         stopTimer();
       }
     };
+
+    const stopRunStatusPolling = () => {
+      if (statusPollTimer != null) {
+        window.clearTimeout(statusPollTimer);
+        statusPollTimer = null;
+      }
+    };
+
+    const shouldContinueRunStatusPolling = (statusLike?: LiveExecutionStatusLike): boolean => {
+      const latestStatus = statusLike?.status ?? lastStatusRef.current?.status ?? jobStatus;
+      if (isTerminalStatus(latestStatus)) return false;
+      const hasPendingCases = requestedRef.current > 0 && completedRef.current < requestedRef.current;
+      return hasPendingCases || isActiveRunStatus(latestStatus);
+    };
+
+    function scheduleRunStatusPolling() {
+      if (statusPollTimer != null) return;
+      statusPollTimer = window.setTimeout(() => {
+        statusPollTimer = null;
+        void pollRunStatus();
+      }, RUN_STATUS_POLL_INTERVAL_MS);
+    }
+
+    async function pollRunStatus() {
+      if (activeJobIdRef.current !== streamJobId) return;
+      try {
+        const statusData = await runsProxy.getJob(streamJobId);
+        if (activeJobIdRef.current !== streamJobId) return;
+        applyStatus(statusData as LiveExecutionStatusLike);
+      } catch {
+        // Ignore transient polling errors; stream keeps primary real-time channel.
+      } finally {
+        if (activeJobIdRef.current !== streamJobId) return;
+        if (shouldContinueRunStatusPolling()) scheduleRunStatusPolling();
+        else stopRunStatusPolling();
+      }
+    }
+
+    // Initial snapshot for issue metadata + partial counters.
+    void runsProxy.getJob(streamJobId).then(data => {
+      if (activeJobIdRef.current !== streamJobId) return;
+      applyStatus(data as LiveExecutionStatusLike);
+      if (shouldContinueRunStatusPolling(data as LiveExecutionStatusLike)) {
+        scheduleRunStatusPolling();
+      }
+    }).catch(() => {
+      if (activeJobIdRef.current !== streamJobId) return;
+      if (shouldContinueRunStatusPolling()) {
+        scheduleRunStatusPolling();
+      }
+    });
 
     const cleanup = runsProxy.streamLogs(streamJobId, {
       onLog: entry => {
@@ -436,6 +546,10 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
             setFailed(counters.failed);
             setCompleted(counters.completed);
             setProgress(counters.progress);
+            setExecuted(counters.passed + counters.failed);
+            setPassRate((counters.passed + counters.failed) > 0
+              ? Math.round((counters.passed / (counters.passed + counters.failed)) * 100)
+              : null);
             setCurrentTestName(counters.currentTest);
           }
         }
@@ -443,6 +557,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       onStatus: applyStatus,
       onDone: data => {
         if (activeJobIdRef.current !== streamJobId) return;
+        stopRunStatusPolling();
         applyStatus(data);
         const finalStatus = data.status || 'completed';
         setJobStatus(finalStatus);
@@ -452,6 +567,9 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
           setFailed(mobileFinal.failed);
           setCompleted(mobileFinal.completed);
           setProgress(mobileFinal.progress);
+          const mobileExecuted = mobileFinal.passed + mobileFinal.failed;
+          setExecuted(mobileExecuted);
+          setPassRate(mobileExecuted > 0 ? Math.round((mobileFinal.passed / mobileExecuted) * 100) : null);
           if (mobileTotal > 0) setTotal(mobileTotal);
         } else if (data.progress == null) {
           setProgress(100);
@@ -479,6 +597,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     return () => {
       cleanup();
       stopDocumentPolling();
+      stopRunStatusPolling();
     };
   }, [currentJobId, rerunKey]);
 
@@ -623,23 +742,18 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
               </div>
 
               {/* Contadores */}
-              <div className="grid grid-cols-4 gap-6 mt-6 pt-6 border-t border-white/15">
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-white/60">Completados</div>
-                  <div className="text-[24px] font-medium mt-1 font-mono">{completed}<span className="text-[12px] text-white/50">/{total}</span></div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-white/60">Exitosos</div>
-                  <div className="text-[24px] font-medium mt-1 text-[#5EC470] font-mono">{passed}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-white/60">Fallidos</div>
-                  <div className="text-[24px] font-medium mt-1 text-[#FFB4B4] font-mono">{failed}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-white/60">Tiempo</div>
-                  <div className="text-[24px] font-medium mt-1 font-mono">{formatTime(elapsed)}</div>
-                </div>
+              <div className={LIVE_EXECUTION_BANNER_GRID_CLASS}>
+                {bannerMetrics.map((metric) => (
+                  <div key={metric.id}>
+                    <div className="text-[10px] uppercase tracking-wider text-white/60">{metric.label}</div>
+                    <div className={cn('text-[24px] font-medium mt-1 font-mono', metric.valueClassName)}>
+                      {metric.value}
+                      {typeof metric.total === 'number' && (
+                        <span className="text-[12px] text-white/50">/{metric.total}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -681,21 +795,33 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
 
             {/* When done: show title + optional checklist button */}
             {isDone && (() => {
-              const hasFailedCases = failed > 0 || defectCount > 0;
-              const hasChecklist = Boolean(checklistUrl || issueKey);
-              const visible = hasFailedCases && hasChecklist;
+              const visible = shouldShowDefectChecklistButton({
+                failed,
+                defectCount,
+                checklistUrl,
+                issueKey,
+              });
               console.log(`[live-checklist-visibility] status=${jobStatus} failed=${failed} checklistUrl=${Boolean(checklistUrl)} issueKey=${Boolean(issueKey)} finished=${true} visible=${visible}`);
               if (!visible) return null;
-               const params = new URLSearchParams();
-               // Mobile: los defectos se taggean con un jobId interno distinto al del launch,
-               // así que abrimos el checklist por issueKey sin filtrar por jobId.
-               if (currentJobId && !run?.checklistByIssueOnly) params.set('jobId', currentJobId);
-               const qs = params.toString();
-               const targetUrl = run?.checklistByIssueOnly
-                 ? `/checklist/${encodeURIComponent(issueKey!)}`
-                 : checklistUrl && !checklistUrl.includes('?jobId=')
-                 ? `${checklistUrl}${checklistUrl.includes('?') ? '&' : '?'}${qs}`
-                 : checklistUrl || `/checklist/${encodeURIComponent(issueKey!)}${qs ? `?${qs}` : ''}`;
+               // Mobile ejecución real: el runId canónico ES el execution job id actual
+               // (el mismo que se muestra como job://<id> en LiveExecution y con el que el
+               // backend etiqueta los defectos: defect.runId). Usamos ese id para abrir el
+               // checklist filtrado por la ejecución actual, no los defectos históricos.
+               const executionRunId = currentJobId || '';
+               const checklistHasRunId = Boolean(checklistUrl && checklistUrl.includes('?runId='));
+               const isMobileRun = run?.runType === 'mobile';
+               let targetUrl: string;
+               if (checklistHasRunId) {
+                 // La respuesta backend ya trae ?runId=<mobileRunId>: conservarlo tal cual.
+                 targetUrl = checklistUrl!;
+               } else if (isMobileRun && executionRunId && issueKey) {
+                 // Sin runId en checklistUrl pero con contexto de ejecución Mobile: reconstruir
+                 // la URL con el execution job id canónico.
+                 targetUrl = `/checklist/${encodeURIComponent(issueKey)}?runId=${encodeURIComponent(executionRunId)}`;
+               } else {
+                 // Sin contexto de una ejecución Mobile: navegación histórica del checklist.
+                 targetUrl = checklistUrl || `/checklist/${encodeURIComponent(issueKey || '')}`;
+               }
               return (
               <div>
                 <div className="text-[18px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
@@ -727,7 +853,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
               <ResponsiveContainer width="100%" height={150}>
                 <RadialBarChart
                   innerRadius="65%" outerRadius="100%"
-                  data={[{ name: 'pass', value: completed > 0 ? (passed / completed) * 100 : 0, fill: C.green }]}
+                  data={[{ name: 'pass', value: functionalPassRate ?? 0, fill: C.green }]}
                   startAngle={90} endAngle={-270}
                 >
                   <PolarAngleAxis type="number" domain={[0, 100]} angleAxisId={0} tick={false} />
@@ -736,7 +862,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                 <div className="text-[24px] font-medium leading-none text-[#1a1f2e]" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                  {completed > 0 ? Math.round((passed / completed) * 100) : 0}<span className="text-[12px] text-[#8B999D]">%</span>
+                  {functionalPassRateLabel}
                 </div>
                 <div className="text-[9px] text-[#8B999D] uppercase tracking-wider mt-1">Pass rate</div>
               </div>

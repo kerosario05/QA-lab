@@ -13,9 +13,31 @@ export interface RunProviderResponse {
   status?: string;
   scenarioCount?: number;
   mode?: string;
+  issueKey?: string;
+  checklistUrl?: string;
+  defectCount?: number;
   errorCode?: string;
   error?: string;
   message?: string;
+}
+
+export interface DiscoveryBatchRequestOptions {
+  appSlug?: string;
+  sectionName?: string;
+  sectionSlug?: string;
+  executePromotedSpecs?: boolean;
+  launchId?: string;
+  testRunId?: number;
+  jiraKey?: string;
+  publishedCases?: Array<{
+    scenarioId: string;
+    caseId: number;
+    title?: string;
+    sourceType?: 'jira_preview' | 'testrail_case';
+    sourceIssueKey?: string;
+    launchScenarioId?: string;
+    executionScenarioId?: string;
+  }>;
 }
 
 export interface McpScenarioInput {
@@ -125,6 +147,9 @@ async function fetchProvider(url: string, body: unknown, timeoutMs: number): Pro
       status: parsed.status,
       scenarioCount: parsed.scenarioCount,
       mode: parsed.mode,
+      issueKey: typeof parsed.issueKey === 'string' ? parsed.issueKey : undefined,
+      checklistUrl: typeof parsed.checklistUrl === 'string' ? parsed.checklistUrl : undefined,
+      defectCount: typeof parsed.defectCount === 'number' ? parsed.defectCount : undefined,
     };
   } catch (err: any) {
     clearTimeout(timeoutId);
@@ -135,7 +160,12 @@ async function fetchProvider(url: string, body: unknown, timeoutMs: number): Pro
   }
 }
 
-export async function requestDiscoveryBatch(caseIds: number[], sectionName?: string, testRailProjectName?: string): Promise<RunProviderResponse> {
+export async function requestDiscoveryBatch(
+  caseIds: number[],
+  sectionName?: string,
+  testRailProjectName?: string,
+  options?: DiscoveryBatchRequestOptions,
+): Promise<RunProviderResponse> {
   const config = getRunProviderConfig();
   if (!config.baseUrl) {
     return { ok: false, errorCode: 'RUN_PROVIDER_NOT_CONFIGURED', error: 'Run provider base URL is not set' };
@@ -144,18 +174,30 @@ export async function requestDiscoveryBatch(caseIds: number[], sectionName?: str
   const url = `${config.baseUrl.replace(/\/+$/, '')}${config.endpointDiscovery}`;
   const body: Record<string, unknown> = {
     caseIds,
-    sectionName: sectionName || undefined,
+    appSlug: options?.appSlug || undefined,
+    sectionName: options?.sectionName || sectionName || undefined,
+    sectionSlug: options?.sectionSlug || undefined,
     overwrite: true,
     autoPromote: true,
     autoPom: true,
     rerunActive: true,
   };
 
+  if (options?.executePromotedSpecs === true) {
+    body.executePromotedSpecs = true;
+    body.launchId = options.launchId || undefined;
+    body.testRunId = options.testRunId || undefined;
+    body.jiraKey = options.jiraKey || undefined;
+    body.publishedCases = options.publishedCases || undefined;
+  }
+
   if (testRailProjectName) {
     body.testRailProjectName = testRailProjectName;
   }
 
-  console.log(`[runs] provider request discovery-batch caseIds=${caseIds.length}`);
+  console.log(
+    `[runs] provider request discovery-batch caseIds=${caseIds.length} executePromotedSpecs=${options?.executePromotedSpecs === true}`,
+  );
   const result = await fetchProvider(url, body, config.timeoutMs);
   console.log(`[runs] provider response ok=${result.ok} jobId=${result.jobId ?? 'ΓÇö'} status=${result.status ?? 'ΓÇö'}`);
   return result;

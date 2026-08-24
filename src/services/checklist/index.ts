@@ -1,5 +1,15 @@
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
+export class ChecklistFetchError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = 'ChecklistFetchError';
+    this.status = status;
+  }
+}
+
 export interface Defect {
   id: string;
   scenarioId?: string;
@@ -34,13 +44,16 @@ export interface ChecklistResponse {
   updatedAt: string | null;
 }
 
-export async function getChecklist(issueKey: string, jobId?: string, scenarioIds?: string[]): Promise<ChecklistResponse> {
+export async function getChecklist(issueKey: string, jobId?: string, scenarioIds?: string[], runId?: string): Promise<ChecklistResponse> {
   const params = new URLSearchParams();
   if (jobId) params.set('jobId', jobId);
+  if (runId) params.set('runId', runId);
   if (scenarioIds && scenarioIds.length > 0) params.set('scenarioIds', scenarioIds.join(','));
   const qs = params.toString() ? `?${params.toString()}` : '';
   const res = await fetch(`${API_BASE}/api/checklists/${encodeURIComponent(issueKey)}${qs}`);
-  if (!res.ok) throw new Error(`Failed to fetch checklist: ${res.statusText}`);
+  if (!res.ok) {
+    throw new ChecklistFetchError(`Failed to fetch checklist (${res.status}): ${res.statusText || 'unknown error'}`, res.status);
+  }
   return res.json();
 }
 
