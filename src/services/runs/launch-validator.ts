@@ -81,8 +81,10 @@ function resolveFunctionalAppSlug(selection: LaunchSelection, validMcpScenarios:
 export function validateAndBuildLaunchPayload(selection: LaunchSelection): LaunchValidationResult {
   const { selectedMcpScenarios, selectedTrCaseIds, defaultAppSlug, functionalAppSlug, targetAppName, sectionName, routeProfile, source } = selection;
 
+  // Selection is not execution authority. Preserve selected adaptive scenarios
+  // so the backend can classify them with their structured readiness fields.
   const validMcpScenarios = selectedMcpScenarios.filter(
-    (s) => s.mcpExecutable === true && s.validation?.valid !== false
+    (s) => s.validation?.valid !== false
   );
 
   const scenariosWithCaseId = validMcpScenarios.filter(hasRealCaseId);
@@ -158,6 +160,7 @@ export function validateAndBuildLaunchPayload(selection: LaunchSelection): Launc
         database: s.database,
         isConverted: s.isConverted,
         automationType: s.automationType,
+        launchClassification: s.launchClassification,
         setupStrategy: s.setupStrategy,
         appSlug: s.targetAppSlug ?? s.appSlug,
         targetAppSlug: s.targetAppSlug,
@@ -166,8 +169,16 @@ export function validateAndBuildLaunchPayload(selection: LaunchSelection): Launc
         dataRequirements: s.dataRequirements,
         nonExecutableCriteria: s.nonExecutableCriteria,
         mcpExecutable: s.mcpExecutable,
-        validation: s.validation,
-        caseId: s.caseId,
+        executionReadiness: s.executionReadiness,
+         semanticValidity: s.semanticValidity,
+         validation: s.validation,
+         publicationClassification: s.publicationClassification,
+         nonAutomatable: s.nonAutomatable,
+         metadata: s.metadata,
+         targetScreen: s.targetScreen,
+         actualChain: s.actualChain,
+         requiredChain: s.requiredChain,
+         caseId: s.caseId,
       })),
       options: {
         overwrite: true,
@@ -229,7 +240,7 @@ export function detectLaunchMode(selection: LaunchSelection): 'discovery-batch' 
   const { selectedMcpScenarios, selectedTrCaseIds } = selection;
 
   const validMcpScenarios = selectedMcpScenarios.filter(
-    (s) => s.mcpExecutable === true && s.validation?.valid !== false
+    (s) => s.validation?.valid !== false
   );
 
   const hasTrCases = selectedTrCaseIds.length > 0;

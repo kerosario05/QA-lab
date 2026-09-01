@@ -10,6 +10,22 @@ export type SelectedGeneratedScenario = {
   preconditions: string[];
   sourceIssueKey?: string;
   authIntent?: "gate_observation" | "full_authentication";
+  mcpExecutable?: boolean;
+  executionReadiness?: string;
+  semanticValidity?: string;
+  automationType?: string;
+  launchClassification?: "standard" | "adaptive" | "nonAutomatable";
+  publicationClassification?: string;
+  nonAutomatable?: boolean;
+  metadata?: Record<string, unknown>;
+  targetScreen?: string;
+  actualChain?: unknown;
+  requiredChain?: unknown;
+  branchId?: string;
+  functionalBranch?: { branchId?: string };
+  branchAssociation?: { branchId?: string };
+  requirementDependencies?: unknown[];
+  stepRequirementRefs?: unknown[];
 };
 
 export type LaunchSelectionSummary = {
@@ -66,9 +82,12 @@ function toSelectedGeneratedScenarios(selectedStories: Story[]): SelectedGenerat
   const selectedScenarios: SelectedGeneratedScenario[] = [];
   for (const story of selectedStories) {
     for (const scenario of story.scenarios) {
+      const metadata = scenario.metadata ?? {};
+      const authority = (field: string): any => (scenario as any)[field] ?? (metadata as any)[field];
       scenarioIndex++;
-      selectedScenarios.push({
-        scenarioId: `LAUNCH-${String(scenarioIndex).padStart(3, '0')}`,
+selectedScenarios.push({
+        ...scenario,
+        scenarioId: scenario.scenarioId,
         title: scenario.title || `${story.jiraKey} Scenario ${scenarioIndex}`,
         steps: Array.isArray(scenario.custom_steps_separated)
           ? scenario.custom_steps_separated.map((step) => `${step.content}`)
@@ -77,10 +96,51 @@ function toSelectedGeneratedScenarios(selectedStories: Story[]): SelectedGenerat
         preconditions: scenario.custom_preconds ? [scenario.custom_preconds] : [],
         sourceIssueKey: story.jiraKey,
         authIntent: scenario.authIntent,
+        mcpExecutable: authority('mcpExecutable'),
+        executionReadiness: authority('executionReadiness'),
+        semanticValidity: authority('semanticValidity'),
+        automationType: authority('automationType'),
+        launchClassification: authority('launchClassification'),
+        publicationClassification: authority('publicationClassification'),
+        nonAutomatable: authority('nonAutomatable'),
+        metadata: scenario.metadata,
+        targetScreen: authority('targetScreen'),
+        actualChain: authority('actualChain'),
+        requiredChain: authority('requiredChain'),
+        branchId: authority('branchId'),
+        functionalBranch: authority('functionalBranch'),
+        branchAssociation: authority('branchAssociation'),
+        requirementDependencies: authority('requirementDependencies'),
+        stepRequirementRefs: authority('stepRequirementRefs'),
       });
     }
   }
   return selectedScenarios;
+}
+
+export function buildLaunchPayloadScenarios(scenarios: SelectedGeneratedScenario[]): SelectedGeneratedScenario[] {
+  return scenarios.map((scenario) => {
+    const metadata = scenario.metadata ?? {};
+    const authority = (field: string): any => (scenario as any)[field] ?? (metadata as any)[field];
+    return {
+      ...scenario,
+      mcpExecutable: authority('mcpExecutable'),
+      executionReadiness: authority('executionReadiness'),
+      semanticValidity: authority('semanticValidity'),
+      automationType: authority('automationType'),
+      launchClassification: authority('launchClassification'),
+      publicationClassification: authority('publicationClassification'),
+      nonAutomatable: authority('nonAutomatable'),
+      targetScreen: authority('targetScreen'),
+      actualChain: authority('actualChain'),
+      requiredChain: authority('requiredChain'),
+      branchId: authority('branchId'),
+      functionalBranch: authority('functionalBranch'),
+      branchAssociation: authority('branchAssociation'),
+      requirementDependencies: authority('requirementDependencies'),
+      stepRequirementRefs: authority('stepRequirementRefs'),
+    };
+  });
 }
 
 export function deriveSelectedSourceLabel(jiraSelectedCount: number, testRailSelectedCount: number): LaunchSourceLabel {

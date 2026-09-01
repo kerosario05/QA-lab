@@ -110,7 +110,9 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
       console.log(`[scenario-preview] provider firstRejectedReasons=${firstReasons}`);
     }
 
+    for (const _sc of (parsed.scenarios ?? [])) { console.log('[scenario-id-trace] PROXY_IN=' + JSON.stringify({ bucket: 'scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
     const normalized = normalizeScenarioPreviewResponse(parsed);
+    for (const _s of normalized.stories) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] PROXY_OUT=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
     console.log(`[scenario-preview] normalized stories=${normalized.stories.length} totalScenarios=${normalized.totalScenarios}`);
 
     return {

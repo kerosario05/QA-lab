@@ -35,16 +35,43 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
     firstPreconds: flatItems[0]?.custom_preconds,
   });
 
-  const totalScenarios = parsed?.summary?.generated
+  // Prefer summary.visible (final visible scenarios after generation/quality/functional
+  // pass/classification) over summary.generated (early AI count). Fall back to the
+  // actual rendered collection so headerScenarioCount === renderedVisibleScenarioCount.
+  const hasPopulatedStories = flatItems.some((item: any) => Array.isArray(item.scenarios) && item.scenarios.length > 0);
+  const renderedCount = hasPopulatedStories
+    ? flatItems.reduce((acc: number, s: any) => acc + (s.scenarios?.length ?? 0), 0)
+    : flatItems.length;
+  const totalScenarios = parsed?.summary?.visible
     ?? parsed?.totalScenarios
-    ?? flatItems.length;
+    ?? renderedCount;
   const rawShape = typeof parsed === 'object'
     ? Object.keys(parsed).join(',')
     : typeof parsed;
 
-  // If items already have populated scenarios[], return as-is
+  // Preserve the canonical scenario shape when the backend already grouped stories.
   if (flatItems.some((item: any) => Array.isArray(item.scenarios) && item.scenarios.length > 0)) {
-    return { stories: flatItems, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
+    const stories = flatItems.map((story: any) => ({
+      ...story,
+      scenarios: Array.isArray(story.scenarios) ? story.scenarios.map((scenario: any) => {
+        const metadata = scenario.metadata ?? {};
+        const authority = (field: string): any => scenario[field] ?? metadata[field];
+        return {
+          ...scenario,
+          mcpExecutable: authority('mcpExecutable'),
+          executionReadiness: authority('executionReadiness'),
+          semanticValidity: authority('semanticValidity'),
+          automationType: authority('automationType'),
+          publicationClassification: authority('publicationClassification'),
+          branchId: authority('branchId'),
+          functionalBranch: authority('functionalBranch'),
+          branchAssociation: authority('branchAssociation'),
+          requirementDependencies: authority('requirementDependencies'),
+          stepRequirementRefs: authority('stepRequirementRefs'),
+        };
+}) : story.scenarios,
+    }));
+    return { stories, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
   }
 
   // Group flat scenario items by jiraKey
@@ -89,13 +116,30 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
     const title = item.title ?? item.scenarioTitle ?? item.name ?? `Escenario ${existing.scenarios.length + 1}`;
 
     existing.scenarios.push({
+      scenarioId: typeof item.scenarioId === 'string' ? item.scenarioId : typeof item.id === 'string' ? item.id : undefined,
       title,
       refs: item.refs ?? item.jiraKey ?? jiraKey,
       custom_preconds: Array.isArray(preconds) ? preconds.join('\n') : String(preconds),
       custom_expected: item.custom_expected ?? item.expectedResult ?? item.expected ?? '',
-      custom_steps_separated: steps,
-      authIntent: item.authIntent,
-    });
+        custom_steps_separated: steps,
+        authIntent: item.authIntent,
+        mcpExecutable: item.mcpExecutable,
+        executionReadiness: item.executionReadiness,
+         semanticValidity: item.semanticValidity,
+         automationType: item.automationType,
+         launchClassification: item.launchClassification,
+         publicationClassification: item.publicationClassification,
+         nonAutomatable: item.nonAutomatable,
+         metadata: item.metadata,
+          targetScreen: item.targetScreen,
+          actualChain: item.actualChain,
+          requiredChain: item.requiredChain,
+          branchId: item.branchId,
+          functionalBranch: item.functionalBranch,
+          branchAssociation: item.branchAssociation,
+          requirementDependencies: item.requirementDependencies,
+          stepRequirementRefs: item.stepRequirementRefs,
+       });
     existing.scenarioCount = existing.scenarios.length;
     grouped.set(jiraKey, existing);
   }

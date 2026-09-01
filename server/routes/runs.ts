@@ -117,7 +117,7 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
       const sectionId = body?.sectionId ? Number(body.sectionId) : undefined;
       const pubCaseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");
       console.log(`[runs] forwarding launch metadata launchId=${launchId ?? '—'} testRunId=${testRunId ?? '—'} publishedCases=${publishedCases?.length ?? 0} caseIds=${pubCaseIds} jiraKey=${jiraKey ?? '—'}`);
-      result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId, testRailProjectName, sectionName, sectionSlug, launchId, testRunId, publishedCases, jiraKey);
+      result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId, testRailProjectName, sectionName, sectionSlug, launchId, testRunId, publishedCases, jiraKey, appSlug);
     }
 
     if (!result.ok) {

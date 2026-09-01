@@ -28,6 +28,8 @@ function makeMcpScenario(overrides: Partial<McpScenario> = {}): McpScenario {
     dataRequirements: overrides.dataRequirements ?? '',
     nonExecutableCriteria: overrides.nonExecutableCriteria ?? '',
     mcpExecutable: overrides.mcpExecutable ?? true,
+    executionReadiness: overrides.executionReadiness,
+    semanticValidity: overrides.semanticValidity,
     validation: overrides.validation ?? { valid: true, errors: [], warnings: [] },
     caseId: overrides.caseId,
   };
@@ -181,7 +183,7 @@ describe('validateAndBuildLaunchPayload', () => {
     }
   });
 
-  it('does not include mcpExecutable=false', () => {
+  it('preserves selected mcpExecutable=false for backend classification', () => {
     const selection: LaunchSelection = {
       selectedMcpScenarios: [
         makeMcpScenario({ sourceIssueKey: 'PROJ-1', caseId: undefined, mcpExecutable: false }),
@@ -195,8 +197,28 @@ describe('validateAndBuildLaunchPayload', () => {
     expect(result.ok).toBe(true);
     expect(result.mode).toBe('scenario-preview');
     if (result.payload && 'scenarios' in result.payload) {
-      expect(result.payload.scenarios).toHaveLength(1);
-      expect(result.payload.scenarios[0].sourceIssueKey).toBe('PROJ-2');
+      expect(result.payload.scenarios).toHaveLength(2);
+      expect(result.payload.scenarios.map((scenario) => scenario.mcpExecutable)).toEqual([false, true]);
+    }
+  });
+
+  it('preserves readiness fields for executable preview scenarios', () => {
+    const selection: LaunchSelection = {
+      selectedMcpScenarios: [makeMcpScenario({
+        executionReadiness: 'standard',
+        semanticValidity: 'valid',
+      })],
+      selectedTrCaseIds: [],
+      functionalAppSlug: 'test-app',
+    };
+    const result = validateAndBuildLaunchPayload(selection);
+    expect(result.ok).toBe(true);
+    if (result.payload && 'scenarios' in result.payload) {
+      expect(result.payload.scenarios[0]).toMatchObject({
+        mcpExecutable: true,
+        executionReadiness: 'standard',
+        semanticValidity: 'valid',
+      });
     }
   });
 

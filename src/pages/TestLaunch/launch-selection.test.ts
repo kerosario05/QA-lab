@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Story } from '../../services/scenarios';
 import {
   computeLaunchSelectionSummary,
+  buildLaunchPayloadScenarios,
   deriveSelectedSourceLabel,
   normalizePublishedCasesForDiscovery,
 } from './launch-selection';
@@ -74,6 +75,46 @@ describe('launch selection summary', () => {
     expect(summary.totalSelected).toBe(2);
     expect(summary.selectedGeneratedScenarios).toHaveLength(2);
     expect(summary.existingTestRailCaseIds).toHaveLength(0);
+  });
+
+  it('preserva lineage directa de route discovery en selección y payload', () => {
+    const scenario = {
+      ...makeStories()[0].scenarios[0],
+      executionReadiness: 'requires_route_discovery',
+      semanticValidity: 'valid',
+      mcpExecutable: false,
+      branchId: 'BR-1',
+      stepRequirementRefs: [{ stepIndex: 0, requirementId: 'REQ-1' }],
+    } as any;
+    const stories = [{ ...makeStories()[0], scenarios: [scenario] }];
+    const summary = computeLaunchSelectionSummary({ stories, selectedCaseKeys: ['AA-1::0'], selectedTestRailCaseIds: [] });
+    const [payload] = buildLaunchPayloadScenarios(summary.selectedGeneratedScenarios);
+    expect(payload.mcpExecutable).toBe(false);
+    expect(payload.executionReadiness).toBe('requires_route_discovery');
+    expect(payload.branchId).toBe('BR-1');
+    expect(payload.stepRequirementRefs).toEqual([{ stepIndex: 0, requirementId: 'REQ-1' }]);
+  });
+
+  it('preserva el escenario canónico y no genera LAUNCH-00X', () => {
+    const scenarios = [{
+      scenarioId: 'ISSUE:standard:01', title: 'Standard', refs: '', custom_preconds: null,
+      custom_expected: 'OK', custom_steps_separated: [], mcpExecutable: true,
+      executionReadiness: 'standard', semanticValidity: 'valid', authIntent: 'gate_observation',
+    }, {
+      scenarioId: 'ISSUE:route:01', title: 'Route', refs: '', custom_preconds: null,
+      custom_expected: 'OK', custom_steps_separated: [], mcpExecutable: false,
+      executionReadiness: 'requires_route_discovery', semanticValidity: 'valid', branchId: 'fixture-branch',
+      stepRequirementRefs: [{ stepIndex: 0, requirementId: 'REQ-1' }],
+    }] as any;
+    const summary = computeLaunchSelectionSummary({
+      stories: [{ ...makeStories()[0], scenarios, scenarioCount: 2 }],
+      selectedCaseKeys: ['AA-1::0', 'AA-1::1'], selectedTestRailCaseIds: [],
+    });
+    const payload = buildLaunchPayloadScenarios(summary.selectedGeneratedScenarios);
+    expect(payload.map(s => s.scenarioId)).toEqual(['ISSUE:standard:01', 'ISSUE:route:01']);
+    expect(payload.some(s => s.scenarioId.startsWith('LAUNCH-'))).toBe(false);
+    expect(payload[0]).toMatchObject({ mcpExecutable: true, executionReadiness: 'standard' });
+    expect(payload[1]).toMatchObject({ mcpExecutable: false, executionReadiness: 'requires_route_discovery', branchId: 'fixture-branch' });
   });
 
   it('selección mixta: fuente Jira + TestRail y suma correcta', () => {

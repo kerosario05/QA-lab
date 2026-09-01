@@ -266,13 +266,28 @@ export function MobileScenarioSelectionPanel({
                               </div>
                             )}
 
+                            {scenario.requiredDataProfile && (
+                              <div className="px-4 py-2 border-b border-white/10 bg-[#48A157]/8">
+                                <div className="text-[9px] uppercase tracking-wider text-[#48A157]/70 mb-1">Perfil de datos</div>
+                                <div className="text-[11px] text-white/80 font-mono">{scenario.requiredDataProfile}</div>
+                                <div className="text-[9px] text-white/50 mt-1">
+                                  {scenario.requiresManualData
+                                    ? 'Requiere datos manuales — el usuario debe proveer valores antes de ejecutar.'
+                                    : 'Los valores reales se resuelven en ejecución desde la configuración.'}
+                                </div>
+                              </div>
+                            )}
+
                             {(scenario.requiredData?.length ?? 0) > 0 && (
                               <div className="px-4 py-3 border-b border-white/10 bg-white/[0.03]">
                                 <div className="text-[9px] uppercase tracking-wider text-white/60 mb-2">Datos de la prueba</div>
                                 <div className="space-y-2">
                                   {scenario.requiredData?.map((field) => (
                                     <div key={`${scenario.scenarioId}-field-${field.stepIndex}`} className="flex flex-col gap-1">
-                                      <label className="text-[11px] font-medium text-white/75">{field.label}</label>
+                                      <label className="text-[11px] font-medium text-white/75">
+                                        {field.label}
+                                        {field.sensitive && <span className="ml-1 text-[9px] text-[#F4A261]/70">(sensible)</span>}
+                                      </label>
                                       {field.kind === 'select' ? (
                                         <select
                                           value={mobileDataValues[scenario.scenarioId]?.[field.stepIndex] ?? field.defaultValue ?? ''}
@@ -283,10 +298,10 @@ export function MobileScenarioSelectionPanel({
                                         </select>
                                       ) : (
                                         <input
-                                          type="text"
+                                          type={field.sensitive ? 'password' : 'text'}
                                           value={mobileDataValues[scenario.scenarioId]?.[field.stepIndex] ?? field.exampleValue ?? ''}
                                           onChange={(event) => setMobileFieldValue(scenario.scenarioId, field.stepIndex, event.target.value)}
-                                          placeholder={field.exampleValue}
+                                          placeholder={field.sensitive ? '••••••••' : field.exampleValue}
                                           className="text-[12px] px-2.5 py-1.5 rounded-lg border border-white/20 bg-black/30 text-white placeholder:text-white/35 focus:outline-none focus:border-[#5EC470]"
                                         />
                                       )}

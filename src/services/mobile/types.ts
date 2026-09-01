@@ -52,6 +52,10 @@ export interface MobileScenario {
   };
   /** Editable data fields (text inputs + dropdown selects) the user fills before executing. */
   requiredData?: MobileDataField[];
+  /** Name of a functional data profile this scenario depends on (business/backend state). */
+  requiredDataProfile?: string;
+  /** True when the scenario declared a profile that is missing/unresolved — user must supply data manually. */
+  requiresManualData?: boolean;
 }
 
 export interface MobileRejectedScenario {

@@ -267,4 +267,64 @@ describe('normalizeScenarioPreviewResponse', () => {
     });
     expect(result.totalScenarios).toBe(3);
   });
+
+  it('TEST 1 — headerScenarioCount uses summary.visible (final) not summary.generated (early)', () => {
+    const result = normalizeScenarioPreviewResponse({
+      scenarios: [
+        { sourceIssueKey: 'AA-82', title: 'E1', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'E2', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'E3', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'E4', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'E5', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'E6', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'E7', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'E8', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-82', title: 'E9', steps: [], preconditions: [] },
+      ],
+      summary: { generated: 6, visible: 9 },
+    });
+    expect(result.totalScenarios).toBe(9);
+  });
+
+  it('TEST 2 — headerScenarioCount sums final visible scenarios across stories (HU-1=4, HU-2=5)', () => {
+    const scenarios = [
+      { sourceIssueKey: 'HU-1', title: 'A1', steps: [], preconditions: [] },
+      { sourceIssueKey: 'HU-1', title: 'A2', steps: [], preconditions: [] },
+      { sourceIssueKey: 'HU-1', title: 'A3', steps: [], preconditions: [] },
+      { sourceIssueKey: 'HU-1', title: 'A4', steps: [], preconditions: [] },
+      { sourceIssueKey: 'HU-2', title: 'B1', steps: [], preconditions: [] },
+      { sourceIssueKey: 'HU-2', title: 'B2', steps: [], preconditions: [] },
+      { sourceIssueKey: 'HU-2', title: 'B3', steps: [], preconditions: [] },
+      { sourceIssueKey: 'HU-2', title: 'B4', steps: [], preconditions: [] },
+      { sourceIssueKey: 'HU-2', title: 'B5', steps: [], preconditions: [] },
+    ];
+    const result = normalizeScenarioPreviewResponse({
+      scenarios,
+      summary: { generated: 6, visible: 9 },
+    });
+    expect(result.totalScenarios).toBe(9);
+    const byStory = Object.fromEntries(result.stories.map((s: any) => [s.jiraKey, s.scenarioCount]));
+    expect(byStory['HU-1']).toBe(4);
+    expect(byStory['HU-2']).toBe(5);
+  });
+
+  it('TEST 3 — rejected/omitted not counted; visible=6 stays 6', () => {
+    const result = normalizeScenarioPreviewResponse({
+      scenarios: [
+        { sourceIssueKey: 'AA-1', title: 'V1', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-1', title: 'V2', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-1', title: 'V3', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-1', title: 'V4', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-1', title: 'V5', steps: [], preconditions: [] },
+        { sourceIssueKey: 'AA-1', title: 'V6', steps: [], preconditions: [] },
+      ],
+      rejected: [
+        { sourceIssueKey: 'AA-1', reason: 'no steps' },
+        { sourceIssueKey: 'AA-1', reason: 'narrative' },
+      ],
+      summary: { generated: 9, visible: 6 },
+    });
+    expect(result.totalScenarios).toBe(6);
+    expect(result.rejected).toHaveLength(2);
+  });
 });

@@ -21,6 +21,7 @@ router.post('/preview', async (req: Request, res: Response) => {
   const status = String(body?.status ?? '');
 
   console.log(`[scenario-preview] request projectKey=${projectKey || '—'} sprintId=${sprintId ?? '—'} activeSprint=${activeSprint} status=${status || '—'}`);
+  console.log(`[scenario-preview-proxy-in] bodyAppSlug=${body?.appSlug ?? 'undefined'}`);
 
   if (!projectKey) {
     sendJson(res, 400, { ok: false, error: 'projectKey is required', errorCode: 'MISSING_PROJECT_KEY' });
@@ -56,6 +57,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     maxResults: body?.maxResults ? Number(body.maxResults) : 50,
   };
 
+  console.log(`[scenario-preview-proxy-out] payloadAppSlug=${payload.appSlug ?? 'undefined'}`);
   const providerResponse = await requestScenarioPreview(payload);
 
   if (!providerResponse.ok) {

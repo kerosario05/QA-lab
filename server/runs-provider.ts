@@ -60,6 +60,7 @@ export interface McpScenarioInput {
   targetAppName?: string;
   caseId?: number;
   validation?: { valid: boolean; errors: string[]; warnings: string[] };
+  authIntent?: "gate_observation" | "full_authentication";
 }
 
 export function getRunProviderConfig(): RunProviderConfig {
@@ -76,7 +77,7 @@ function extractRouteProfileFromPreconditions(preconds: string | null): string |
   return match ? match[1] : undefined;
 }
 
-function storiesToMcpScenarios(stories: Story[]): McpScenarioInput[] {
+function storiesToMcpScenarios(stories: Story[], appSlug?: string): McpScenarioInput[] {
   const result: McpScenarioInput[] = [];
   for (const story of stories) {
     for (const sc of story.scenarios) {
@@ -97,11 +98,12 @@ function storiesToMcpScenarios(stories: Story[]): McpScenarioInput[] {
         isConverted: 0,
         automationType: 'playwright',
         setupStrategy: 'basic',
-        appSlug: 'arquitectura-automatizacion',
+        appSlug: appSlug || 'arquitectura-automatizacion',
         routeProfile,
         dataRequirements: '',
         nonExecutableCriteria: '',
         mcpExecutable: true,
+        authIntent: sc.authIntent,
       });
     }
   }
@@ -215,13 +217,14 @@ export async function requestScenarioPreviewRun(
   testRunId?: number,
   publishedCases?: Array<{ scenarioId: string; caseId: number; title?: string }>,
   jiraKey?: string,
+  appSlug?: string,
 ): Promise<RunProviderResponse> {
   const config = getRunProviderConfig();
   if (!config.baseUrl) {
     return { ok: false, errorCode: 'RUN_PROVIDER_NOT_CONFIGURED', error: 'Run provider base URL is not set' };
   }
 
-  const scenarios = storiesToMcpScenarios(stories);
+  const scenarios = storiesToMcpScenarios(stories, appSlug);
   if (scenarios.length === 0) {
     return { ok: false, errorCode: 'INVALID_RUN_REQUEST', error: 'No valid scenarios to run after conversion' };
   }
@@ -229,7 +232,7 @@ export async function requestScenarioPreviewRun(
   const url = `${config.baseUrl.replace(/\/+$/, '')}${config.endpointPreview}`;
   const body: Record<string, unknown> = {
     scenarios,
-    appSlug: 'arquitectura-automatizacion',
+    appSlug: appSlug || 'arquitectura-automatizacion',
     testrailProjectId: (projectId && projectId > 0) ? projectId : undefined,
     testrailSuiteId: (suiteId && suiteId > 0) ? suiteId : undefined,
     testrailSectionId: (sectionId && sectionId > 0) ? sectionId : undefined,
@@ -250,6 +253,8 @@ export async function requestScenarioPreviewRun(
   if (testRailProjectName) {
     body.testRailProjectName = testRailProjectName;
   }
+
+  console.log(`[launch-app-propagation] launchAppSlug=${appSlug ?? 'undefined'} runnerRequestedAppSlug=${body.appSlug} source=launch`);
 
   const scenarioIds = (publishedCases ?? []).map(pc => pc.scenarioId).join(",");
   const caseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");

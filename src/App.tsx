@@ -10,6 +10,7 @@ import { ExecutionClosure } from './pages/ExecutionClosure';
 import DefectChecklist from './pages/DefectChecklist';
 import { parseChecklistRoute } from './pages/DefectChecklist/route';
 import { Ejecuciones } from './pages/Ejecuciones';
+import { Configuracion } from './pages/Configuracion';
 import type { ActiveRun, View } from './types';
 
 export default function App() {
@@ -77,22 +78,24 @@ export default function App() {
     setView('dashboard');
   };
 
-  const titles: Record<View, string> = {
+  const titles: Record<string, string> = {
     live: 'Ejecución en vivo',
     close: 'Cierre de ejecución',
     dashboard: 'Buenos días, Carlos',
     execute: 'Lanzar pruebas',
     ejecuciones: 'Ejecuciones',
     checklist: 'Checklist de defectos',
+    configuracion: 'Configuración',
   };
 
-  const subtitles: Record<View, string> = {
+  const subtitles: Record<string, string> = {
     live: 'Monitoreo en tiempo real del progreso',
     close: 'Revisa fallos, reporta bugs y firma el cierre',
     dashboard: 'Aquí está el pulso de tus pruebas automatizadas hoy',
     execute: 'Configura una nueva ejecución en 4 pasos',
     ejecuciones: 'Resumen de corridas y resultados',
     checklist: 'Defectos detectados en la ejecución',
+    configuracion: 'Administración de proyectos de automatización.',
   };
 
   return (
@@ -168,6 +171,9 @@ export default function App() {
           )}
           {view === 'ejecuciones' && (
             <Ejecuciones />
+          )}
+          {(view as string) === 'configuracion' && (
+            <Configuracion />
           )}
         </div>
       </main>

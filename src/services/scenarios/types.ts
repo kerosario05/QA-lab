@@ -3,13 +3,39 @@ export interface ScenarioStep {
   expected: string;
 }
 
+export interface DataRequirement {
+  key: string;
+  label: string;
+  required: boolean;
+  editable: boolean;
+  suggestedValue?: string;
+  source: string;
+  controlType?: "text" | "number" | "select" | "date" | "boolean";
+  options?: string[];
+  optionsSource?: string;
+}
+
 export interface StoryScenario {
+  scenarioId?: string;
   title: string;
   refs: string;
   custom_preconds: string | null;
   custom_expected?: string;
   custom_steps_separated: ScenarioStep[];
   authIntent?: "gate_observation" | "full_authentication";
+  dataRequirements?: DataRequirement[];
+  requiredData?: string;
+  mcpExecutable?: boolean;
+  executionReadiness?: string;
+  semanticValidity?: string;
+  automationType?: string;
+  launchClassification?: "standard" | "adaptive" | "nonAutomatable";
+  publicationClassification?: string;
+  nonAutomatable?: boolean;
+  metadata?: Record<string, unknown>;
+  targetScreen?: string;
+  actualChain?: unknown;
+  requiredChain?: unknown;
 }
 
 export interface Story {

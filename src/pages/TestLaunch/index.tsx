@@ -22,7 +22,7 @@ import type {
 } from '../../services/mobile';
 import type { ActiveRun, TestRailProject, JiraProject, JiraSprint } from '../../types';
 import { canContinueFromStep3 } from './step3-launch-gate';
-import { computeLaunchSelectionSummary, normalizePublishedCasesForDiscovery } from './launch-selection';
+import { buildLaunchPayloadScenarios, computeLaunchSelectionSummary, normalizePublishedCasesForDiscovery } from './launch-selection';
 import { MobileScenarioSelectionPanel } from './MobileScenarioSelectionPanel';
 
 interface TestLaunchProps {
@@ -48,10 +48,30 @@ interface LaunchProjectOption {
   type: 'web' | 'api' | 'mobile';
 }
 
-const LAUNCH_PROJECTS: LaunchProjectOption[] = [
-  { id: 'kiosko', name: 'Kiosko', stack: 'Web · Playwright', type: 'web' },
-  { id: 'app-conversacional-bsc', name: 'App Conversacional', stack: 'Android · Appium', type: 'mobile' },
-];
+interface LaunchProjectApiItem {
+  slug: string;
+  name: string;
+  projectType: number;
+  status: number;
+  enabled: boolean;
+}
+
+const LAUNCH_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
+async function fetchLaunchProjects(): Promise<LaunchProjectOption[]> {
+  const res = await fetch(`${LAUNCH_API_BASE}/api/projects`);
+  if (!res.ok) throw new Error(`Failed to fetch projects: ${res.statusText}`);
+  const body = await res.json();
+  const items = (Array.isArray(body?.projects) ? body.projects : []) as LaunchProjectApiItem[];
+  return items
+    .filter(p => p.status === 1 && p.enabled === true)
+    .map(p => ({
+      id: p.slug,
+      name: p.name || p.slug,
+      stack: p.projectType === 2 ? 'Mobile · Android' : 'Web · Playwright',
+      type: (p.projectType === 2 ? 'mobile' : 'web') as LaunchProjectOption['type'],
+    }));
+}
 
 export function TestLaunch({ onLaunch }: TestLaunchProps) {
   // Normalize TestRail project name to appSlug for automation framework
@@ -73,7 +93,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   });
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
-  const currentProjectType = LAUNCH_PROJECTS.find(p => p.id === config.automationProject)?.type;
+  const [launchProjects, setLaunchProjects] = useState<LaunchProjectOption[]>([]);
+  const [launchProjectsLoading, setLaunchProjectsLoading] = useState(true);
+  const [launchProjectsError, setLaunchProjectsError] = useState<string | null>(null);
+  const currentProjectType = launchProjects.find(p => p.id === config.automationProject)?.type;
 
   // ΓöÇΓöÇ TestRail project state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const [trProjects, setTrProjects] = useState<TestRailProject[]>([]);
@@ -205,6 +228,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [expandedMobileIssueKeys, setExpandedMobileIssueKeys] = useState<string[]>([]);
   // User-edited data values, keyed by scenarioId -> { stepIndex: value }.
   const [mobileDataValues, setMobileDataValues] = useState<Record<string, Record<number, string>>>({});
+  // Web: generic dataRequirements values keyed by scenarioKey -> { requirementKey: value }
+  const [webDataValues, setWebDataValues] = useState<Record<string, Record<string, string | boolean>>>({});
 
   const [mobilePublishResult, setMobilePublishResult] = useState<MobileLaunchExecutionResponse | null>(null);
   const [mobilePublishing, setMobilePublishing] = useState(false);
@@ -352,6 +377,15 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     }
   };
 
+  // ΓöÇΓöÇ Fetch launch projects (GET /api/projects, status=READY && enabled) on mount ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  useEffect(() => {
+    setLaunchProjectsLoading(true);
+    fetchLaunchProjects()
+      .then(data => { setLaunchProjects(data); setLaunchProjectsError(null); })
+      .catch(e => setLaunchProjectsError(e.message))
+      .finally(() => setLaunchProjectsLoading(false));
+  }, []);
+
   // ΓöÇΓöÇ Fetch TestRail projects on mount ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     setTrLoading(true);
@@ -372,7 +406,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   // ΓöÇΓöÇ Fetch Newman collections when API project is selected ΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
-    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
+    const proj = launchProjects.find(p => p.id === config.automationProject);
     if (proj?.type !== 'api') return;
     setNewmanCollLoading(true);
     setNewmanCollError(null);
@@ -444,17 +478,21 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     if (step !== 3 || !config.jiraProject || !activeSprint || currentProjectType === 'mobile') return;
     setConfig(c => ({ ...c, selectedCases: [] }));
     const sprintId = activeSprint.id;
-    console.log('[scenario-preview] request', { projectKey: config.jiraProject, sprintId, activeSprint: !sprintId });
+    console.log(`[scenario-preview-browser] automationProject=${config.automationProject} appSlug=${config.automationProject || 'undefined'}`);
     setStoriesLoading(true);
     setStoriesError(null);
     scenariosProxy.post({
       projectKey: config.jiraProject,
       status: config.status,
       maxResults: 50,
+      appSlug: config.automationProject || undefined,
       ...(sprintId ? { sprintId } : { activeSprint: true }),
     })
       .then(data => {
+        for (const _s of (data.stories ?? [])) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
+        for (const _sc of (data.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'flat-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
         const normalized = normalizeScenarioPreviewResponse(data);
+        for (const _s of normalized.stories) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_NORMALIZED=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
         setStories(normalized.stories);
         setTotalScenarios(normalized.totalScenarios);
         setSprintMeta(normalized.sprint);
@@ -464,7 +502,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       })
       .catch(e => setStoriesError(e.message))
       .finally(() => setStoriesLoading(false));
-  }, [step, config.jiraProject, config.status, activeSprint]);
+  }, [step, config.jiraProject, config.status, config.automationProject, activeSprint]);
 
   // ΓöÇΓöÇ Fetch TR cases when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
@@ -724,6 +762,44 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       [scenarioId]: { ...(prev[scenarioId] ?? {}), [stepIndex]: value },
     }));
   };
+
+  const setWebFieldValue = (scenarioKey: string, requirementKey: string, value: string | boolean) => {
+    setWebDataValues(prev => ({
+      ...prev,
+      [scenarioKey]: { ...(prev[scenarioKey] ?? {}), [requirementKey]: value },
+    }));
+  };
+
+  // Initialize webDataValues when stories load (preload suggestedValue, keep isolation per scenario)
+  useEffect(() => {
+    if (stories.length === 0) return;
+    setWebDataValues(prev => {
+      const next = { ...prev };
+      for (const story of stories) {
+        for (let i = 0; i < story.scenarios.length; i++) {
+          const sc: any = story.scenarios[i] as any;
+          const key = scenarioKey(story.jiraKey, i);
+          const reqs: any[] = Array.isArray(sc.dataRequirements) ? sc.dataRequirements : [];
+          if (reqs.length === 0) continue;
+          if (next[key]) continue; // already initialized, preserve user edits
+          const init: Record<string, string | boolean> = {};
+          for (const r of reqs) {
+            if (r.source === 'project_config' || r.source === 'runtime_dynamic' || r.source === 'jit_secret') continue;
+            const k = r.key ?? r.label;
+            if (!k) continue;
+            if (r.suggestedValue !== undefined && r.suggestedValue !== null && String(r.suggestedValue) !== '') {
+              if (r.controlType === 'boolean') init[k] = Boolean(r.suggestedValue);
+              else init[k] = String(r.suggestedValue);
+            } else if (r.controlType === 'boolean') {
+              // leave unchecked by default
+            }
+          }
+          if (Object.keys(init).length > 0) next[key] = init;
+        }
+      }
+      return next;
+    });
+  }, [stories]);
 
   // ── Cargar HUs del sprint (Jira read-only) para Mobile ──────────────────
   // Fuente de verdad de currentMobileIssueKeys para Mobile. No genera escenarios, no llama IA.
@@ -985,7 +1061,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   };
 
   const handleStep2Advance = () => {
-    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
+    const proj = launchProjects.find(p => p.id === config.automationProject);
     if (proj?.type === 'api') {
       setStep(4);
       return;
@@ -1001,7 +1077,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   // ESCENARIOS (step 4), de modo que currentMobileIssueKeys corresponda a la respuesta fresca
   // y la lógica de missing calcule correctamente las HUs nuevas. No inicia IA aquí.
   const handleContinueAdvance = async () => {
-    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
+    const proj = launchProjects.find(p => p.id === config.automationProject);
     if (step === 2) { handleStep2Advance(); return; }
     if ((step === 3 || step === 4) && !canAdvance()) return;
     if (proj?.type === 'mobile' && step === 3) {
@@ -1352,7 +1428,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   const canAdvance = () => {
     if (step === 1) return config.automationProject;
-    const selectedProject = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
+    const selectedProject = launchProjects.find(p => p.id === config.automationProject);
     const isApiProject = selectedProject?.type === 'api';
     const isMobileProject = selectedProject?.type === 'mobile';
     if (step === 2) {
@@ -1389,7 +1465,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   };
 
   const handleNewmanLaunch = async () => {
-    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
+    const proj = launchProjects.find(p => p.id === config.automationProject);
     if (!config.newmanCollection) { setLaunchError('Selecciona una colección Newman.'); return; }
     if (!config.testRailProject) { setLaunchError('Selecciona un proyecto TestRail.'); return; }
     if (!selectedSection?.id) { setLaunchError('Selecciona una sección TestRail.'); return; }
@@ -1436,7 +1512,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   };
 
   const handleLaunch = async () => {
-    const proj = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
+    const proj = launchProjects.find(p => p.id === config.automationProject);
     if (proj?.type === 'api') {
       return handleNewmanLaunch();
     }
@@ -1499,7 +1575,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       existingTestRailCaseIds: selectedExistingTestRailCaseIds.length,
     });
 
-    const launchPayload = {
+    const launchPayload: any = {
       appSlug: config.automationProject || '',
       projectId: projectIdValue,
       suiteId: suiteId ?? undefined,
@@ -1508,14 +1584,29 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       sectionSlug: sectionSlugValue,
       jiraKey: selectedStories[0]?.jiraKey,
       sprintName: undefined as string | undefined,
-      selectedScenarios: selectedGeneratedScenarios,
+      selectedScenarios: buildLaunchPayloadScenarios(selectedGeneratedScenarios),
       existingTestRailCaseIds: selectedExistingTestRailCaseIds,
       adaptiveScenarios: adaptiveScenarios.length > 0 ? adaptiveScenarios : undefined,
       publishStrategy: 'always_create' as const,
     };
+    // Web: proyectar valores del formulario a dataOverrides usando requirement.key (aislado por escenario)
+    const webDataOverrides: Record<string, Record<string, string>> = {};
+    for (const k of config.selectedCases) {
+      const vals = (webDataValues as any)[k];
+      if (!vals) continue;
+      const filtered: Record<string, string> = {};
+      for (const [rk, v] of Object.entries(vals)) {
+        if (typeof v === 'boolean') filtered[rk] = String(v);
+        else if (String(v).trim() !== '') filtered[rk] = String(v);
+      }
+      if (Object.keys(filtered).length > 0) webDataOverrides[k] = filtered;
+    }
+    if (Object.keys(webDataOverrides).length > 0) (launchPayload as any).dataOverrides = webDataOverrides;
 
     setIsLaunching(true);
     setLaunchError(null);
+
+    for (const _sc of (launchPayload.selectedScenarios ?? [])) { console.log('[scenario-id-trace] LAUNCH_HTTP_OUT=' + JSON.stringify({ bucket: 'launch-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
 
     // Fase 1: Publish + TestRun (launch-execution endpoint)
     try {
@@ -1530,7 +1621,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       // Fase 2: (futura) discovery job ΓÇö por ahora solo creamos el job para mantener compatibilidad
       try {
         const runJiraKey = launchPayload.jiraKey || selectedStories[0]?.jiraKey;
-        const runPayload: RunPayload = {
+        const runPayload: any = {
           appSlug: config.automationProject || '',
           projectId: projectIdValue,
           suiteId: suiteId ?? 0,
@@ -1543,6 +1634,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           testRunId: launchResult.testRunId,
           publishedCases: normalizePublishedCasesForDiscovery(launchResult.publishedCases),
           jiraKey: runJiraKey,
+          ...(Object.keys(webDataOverrides).length > 0 ? { dataOverrides: webDataOverrides } : {}),
         };
         console.log(`[launch] create discovery job jiraKey=${runJiraKey} launchId=${launchResult.launchId} testRunId=${launchResult.testRunId}`);
         const { jobId, status, issueKey, checklistUrl, defectCount } = await runsProxy.create(runPayload);
@@ -1589,7 +1681,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   };
 
   // ΓöÇΓöÇ Computed: project type ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  const selectedProject = LAUNCH_PROJECTS.find(p => p.id === config.automationProject);
+  const selectedProject = launchProjects.find(p => p.id === config.automationProject);
   const isApiProject = selectedProject?.type === 'api';
   const isMobileProject = selectedProject?.type === 'mobile';
   const maxStep = isMobileProject ? 5 : 4;
@@ -1645,6 +1737,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       projectKey: config.jiraProject,
       status: config.status,
       maxResults: 50,
+      appSlug: config.automationProject || undefined,
       ...(sprintId ? { sprintId } : { activeSprint: true }),
     })
       .then(data => {
@@ -1701,7 +1794,24 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿Qué proyecto vamos a correr?</h2>
             <p className="text-[13px] text-[#58646D] mb-7">Selecciona el framework de automatización.</p>
             <div className="grid grid-cols-2 gap-4 max-w-xl">
-              {LAUNCH_PROJECTS.map(p => {
+              {launchProjectsLoading && (
+                <>
+                  {[0, 1].map(i => (
+                    <div key={i} className="h-[120px] rounded-2xl bg-white border border-[#E8EBEC] animate-pulse" />
+                  ))}
+                </>
+              )}
+              {!launchProjectsLoading && launchProjectsError && (
+                <div className="col-span-2 rounded-xl border border-[#E63946]/30 bg-[#E63946]/5 px-4 py-3 text-[12px] text-[#E63946] flex items-center gap-2">
+                  <AlertCircle size={14} /> No se pudieron cargar los proyectos ({launchProjectsError})
+                </div>
+              )}
+              {!launchProjectsLoading && !launchProjectsError && launchProjects.length === 0 && (
+                <div className="col-span-2 rounded-xl border border-[#E8EBEC] bg-[#FAFAF7] px-4 py-6 text-center text-[12px] text-[#8B999D]">
+                  No hay proyectos listos para ejecutar.
+                </div>
+              )}
+              {!launchProjectsLoading && !launchProjectsError && launchProjects.map(p => {
                 const selected = config.automationProject === p.id;
                 return (
                   <button
@@ -1994,7 +2104,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
               {(config.source === 'testrail' || config.source === 'both') && renderTestRailPanel(t => {
                 const appSlug = normalizeAppSlug(t.name);
                 console.log(`[testrail-select] projectId=${t.id} name="${t.name}" appSlug="${appSlug}"`);
-                setConfig({ ...config, testRailProject: String(t.id), automationProject: appSlug });
+                setConfig({ ...config, testRailProject: String(t.id) });
               })}
             </div>
           </BentoCard>
@@ -2371,6 +2481,57 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                                           <div className="px-4 py-2.5 border-b border-white/10 bg-[#F4A261]/5">
                                             <div className="text-[9px] uppercase tracking-wider text-[#F4A261]/70 mb-1.5">Precondiciones</div>
                                             <p className="text-[11px] text-white/60 leading-relaxed font-mono whitespace-pre-wrap">{sc.custom_preconds}</p>
+                                          </div>
+                                        )}
+                                        {/* Datos de la prueba - generado dinámicamente desde scenario.dataRequirements */}
+                                        {Array.isArray((sc as any).dataRequirements) && (sc as any).dataRequirements.length > 0 && (
+                                          <div className="px-4 py-3 border-b border-white/10 bg-white/[0.03]">
+                                            <div className="text-[9px] uppercase tracking-wider text-white/60 mb-2">Datos de la prueba</div>
+                                            <div className="space-y-2">
+                                              {(sc as any).dataRequirements.map((req: any) => {
+                                                const scenarioKeyStr = key;
+                                                const currentVal = webDataValues[scenarioKeyStr]?.[req.key] ?? (req.suggestedValue ?? (req.controlType === 'boolean' ? false : ''));
+                                                const isSelect = req.controlType === 'select';
+                                                const isNumber = req.controlType === 'number';
+                                                const isDate = req.controlType === 'date';
+                                                const isBoolean = req.controlType === 'boolean';
+                                                const opts: string[] = Array.isArray(req.options) ? req.options : [];
+                                                const editable = req.editable !== false;
+                                                return (
+                                                  <div key={`${scenarioKeyStr}-${req.key}`} className="flex flex-col gap-1">
+                                                    <label className="text-[11px] font-medium text-white/75 flex items-center gap-1">
+                                                      {req.label}
+                                                      {req.required && <span className="text-[#F4A261]">*</span>}
+                                                    </label>
+                                                    {isSelect ? (
+                                                      <select
+                                                        value={String(currentVal ?? '')}
+                                                        onChange={(e) => editable && setWebFieldValue(scenarioKeyStr, req.key, e.target.value)}
+                                                        disabled={!editable}
+                                                        className="text-[12px] px-2.5 py-1.5 rounded-lg border border-white/20 bg-black/30 text-white focus:outline-none focus:border-[#5EC470] disabled:opacity-50"
+                                                      >
+                                                        <option value="">{req.required ? 'Selecciona...' : '—'}</option>
+                                                        {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+                                                      </select>
+                                                    ) : isBoolean ? (
+                                                      <label className="flex items-center gap-2 text-[11px] text-white/75">
+                                                        <input type="checkbox" checked={Boolean(currentVal)} onChange={(e) => editable && setWebFieldValue(scenarioKeyStr, req.key, e.target.checked)} disabled={!editable} className="rounded" />
+                                                        {req.label}
+                                                      </label>
+                                                    ) : (
+                                                      <input
+                                                        type={isNumber ? 'number' : isDate ? 'date' : 'text'}
+                                                        value={String(currentVal ?? '')}
+                                                        onChange={(e) => editable && setWebFieldValue(scenarioKeyStr, req.key, e.target.value)}
+                                                        placeholder={req.suggestedValue ?? ''}
+                                                        disabled={!editable}
+                                                        className="text-[12px] px-2.5 py-1.5 rounded-lg border border-white/20 bg-black/30 text-white placeholder:text-white/35 focus:outline-none focus:border-[#5EC470] disabled:opacity-50"
+                                                      />
+                                                    )}
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
                                           </div>
                                         )}
                                         {/* Steps */}
