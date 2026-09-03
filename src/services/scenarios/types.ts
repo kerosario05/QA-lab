@@ -15,6 +15,8 @@ export interface DataRequirement {
   optionsSource?: string;
 }
 
+export type RouteProfile = Record<string, unknown>;
+
 export interface StoryScenario {
   scenarioId?: string;
   title: string;
@@ -22,6 +24,7 @@ export interface StoryScenario {
   custom_preconds: string | null;
   custom_expected?: string;
   custom_steps_separated: ScenarioStep[];
+  routeProfile?: RouteProfile;
   authIntent?: "gate_observation" | "full_authentication";
   dataRequirements?: DataRequirement[];
   requiredData?: string;
@@ -52,6 +55,7 @@ export interface ScenariosPreviewResponse {
   totalStories?: number;
   totalScenarios?: number;
   stories: Story[];
+  routeProfile?: RouteProfile;
 }
 
 export interface ScenariosPreviewParams {

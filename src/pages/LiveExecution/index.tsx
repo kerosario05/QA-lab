@@ -30,8 +30,12 @@ import {
   shouldResetDocumentStateForJob,
   shouldShowDefectChecklistButton,
   withStableTerminalTimestamp,
+  resolveActiveScenarioUpdate,
   type EvidenceDocumentAvailability,
   type LiveExecutionStatusLike,
+  type ActiveScenarioLike,
+  getCompactScenarioSteps,
+  getScenarioStepState,
 } from './state';
 import {
   createMobileProgressState,
@@ -79,6 +83,9 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [skipped,         setSkipped]         = useState(0);
   const [passRate,        setPassRate]        = useState<number | null>(null);
   const [currentTestName, setCurrentTestName] = useState(run?.currentTest || '');
+  const [activeScenario, setActiveScenario] = useState<ActiveScenarioLike | null>(
+    ((run as (ActiveRun & { activeScenario?: ActiveScenarioLike | null }) | null)?.activeScenario) ?? null,
+  );
   const [jobStatus,       setJobStatus]       = useState(run?.status || 'queued');
   const [logs,            setLogs]            = useState<DisplayLog[]>([]);
   const [streamError,     setStreamError]     = useState<string | null>(null);
@@ -129,6 +136,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const functionalPassRate = computeFunctionalPassRatePercent(passed, failed);
   const functionalPassRateLabel = formatFunctionalPassRateLabel({ passed, failed, status: jobStatus });
   const finalUserMessage = getTerminalUserMessage(jobStatus);
+  const compactScenarioSteps = getCompactScenarioSteps(activeScenario?.steps ?? []);
   const canDownloadDocument = isTerminalStatus(jobStatus) && documentReady && Boolean(currentJobId);
 
   const handleRerun = async () => {
@@ -150,6 +158,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         setSkipped(0);
         setPassRate(null);
         setCurrentTestName('');
+        setActiveScenario(null);
         setLogs([]);
         setJobStatus('queued');
         setChecklistUrl(newChecklistUrl);
@@ -375,6 +384,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     setDocxError(null);
     setDownloadingDocx(false);
     setChecklistUrl(run?.checklistUrl ?? null);
+    setActiveScenario(null);
     setIssueKey(run?.issueKey ?? null);
     setDefectCount(typeof run?.defectCount === 'number' ? run.defectCount : 0);
     setLogs([]);
@@ -458,6 +468,12 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         setProgressSnapshot(stableStatus);
       }
       if (stableStatus.currentTest) setCurrentTestName(stableStatus.currentTest);
+      const activeScenarioUpdate = resolveActiveScenarioUpdate(data);
+      if (isTerminalStatus(stableStatus.status) || (data as any)?.type === 'case_finished') {
+        setActiveScenario(null);
+      } else if (activeScenarioUpdate !== undefined) {
+        setActiveScenario(activeScenarioUpdate);
+      }
       if (stableStatus.status)      setJobStatus(stableStatus.status);
       if (data.checklistUrl)        setChecklistUrl(data.checklistUrl);
       if (data.issueKey)            setIssueKey(data.issueKey);
@@ -781,16 +797,37 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
               </div>
             </div>
 
-            {/* During execution: show current test name */}
-            {!isDone && currentTestName && (
-              <div className="text-[18px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                {currentTestName}
-              </div>
-            )}
-            {!isDone && !currentTestName && (
-              <div className="text-[13px] text-[#8B999D]">
-                Esperando primer caso...
-              </div>
+            {/* During execution: show the structured active scenario, not a log-derived id. */}
+             {!isDone && activeScenario && (
+               <div className="space-y-3">
+                 <div>
+                   <div className="flex items-center gap-1.5 text-[10px] text-[#58646D]">
+                     <span className="text-[#48A157]">●</span>
+                     <span>Ejecutando · escenario {activeScenario.index} de {activeScenario.total}</span>
+                   </div>
+                   <div className="text-[18px] font-medium text-[#1a1f2e] leading-tight line-clamp-2 mt-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
+                     {activeScenario.title}
+                   </div>
+                   <div className="text-[10px] text-[#8B999D] font-mono mt-1">{activeScenario.id} · {activeScenario.index} de {activeScenario.total}</div>
+                 </div>
+
+                 <div className="border-t border-[#E8ECEE] pt-2.5 text-[12px] text-[#58646D]">
+                   <div className="text-[9px] uppercase tracking-[0.14em] font-semibold text-[#8B999D] mb-1.5">Pasos</div>
+                   <div className="space-y-1">
+                     {compactScenarioSteps.steps.map((step, index) => {
+                       const state = getScenarioStepState(activeScenario.stepResults, index);
+                       const marker = state === 'completed' ? '✓' : state === 'running' ? '●' : '○';
+                       return <div className="flex items-start gap-2 leading-5" key={`${index}-${step}`}><span className="w-3 shrink-0 text-center">{marker}</span><span className="truncate">{step}</span></div>;
+                     })}
+                   </div>
+                   {compactScenarioSteps.remaining > 0 && (
+                     <div className="text-[11px] text-[#8B999D] mt-1">+ {compactScenarioSteps.remaining} pasos</div>
+                   )}
+                 </div>
+               </div>
+             )}
+            {!isDone && !activeScenario && (
+              <div className="text-[13px] text-[#8B999D]">Esperando escenario activo...</div>
             )}
 
             {/* When done: show title + optional checklist button */}

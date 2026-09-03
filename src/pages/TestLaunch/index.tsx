@@ -194,6 +194,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   // ΓöÇΓöÇ Stories state (step 3) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const [stories, setStories] = useState<Story[]>([]);
+  const [routeProfile, setRouteProfile] = useState<Record<string, unknown> | undefined>();
   const [totalScenarios, setTotalScenarios] = useState(0);
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [storiesError, setStoriesError] = useState<string | null>(null);
@@ -491,9 +492,18 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       .then(data => {
         for (const _s of (data.stories ?? [])) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
         for (const _sc of (data.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'flat-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
+        console.info('[scenario-preview-shape]', {
+          dataKeys: Object.keys(data ?? {}),
+          dataRouteProfileType: typeof data?.routeProfile,
+          routeProfilePresent: data?.routeProfile != null,
+          dataType: typeof data?.data,
+          nestedDataKeys: Object.keys(data?.data ?? {}),
+          nestedDataRouteProfileType: typeof data?.data?.routeProfile,
+        });
         const normalized = normalizeScenarioPreviewResponse(data);
         for (const _s of normalized.stories) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_NORMALIZED=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
-        setStories(normalized.stories);
+         setStories(normalized.stories);
+         setRouteProfile(normalized.routeProfile);
         setTotalScenarios(normalized.totalScenarios);
         setSprintMeta(normalized.sprint);
         setBlockedScenarios(normalized.blockedScenarios ?? []);
@@ -1628,7 +1638,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           sectionId: selectedSection.id,
           sectionName: sectionNameValue,
           sectionSlug: sectionSlugValue,
-          stories: selectedStories,
+           stories: selectedStories,
+           routeProfile,
           existingCaseIds: selectedExistingTestRailCaseIds,
           launchId: launchResult.launchId,
           testRunId: launchResult.testRunId,
@@ -1741,8 +1752,17 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       ...(sprintId ? { sprintId } : { activeSprint: true }),
     })
       .then(data => {
+        console.info('[scenario-preview-shape]', {
+          dataKeys: Object.keys(data ?? {}),
+          dataRouteProfileType: typeof data?.routeProfile,
+          routeProfilePresent: data?.routeProfile != null,
+          dataType: typeof data?.data,
+          nestedDataKeys: Object.keys(data?.data ?? {}),
+          nestedDataRouteProfileType: typeof data?.data?.routeProfile,
+        });
         const normalized = normalizeScenarioPreviewResponse(data);
-        setStories(normalized.stories);
+         setStories(normalized.stories);
+         setRouteProfile(normalized.routeProfile);
         setTotalScenarios(normalized.totalScenarios);
         setSprintMeta(normalized.sprint);
         setBlockedScenarios(normalized.blockedScenarios ?? []);
@@ -1793,7 +1813,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso uno · Elige tu lanzadera</div>
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>¿Qué proyecto vamos a correr?</h2>
             <p className="text-[13px] text-[#58646D] mb-7">Selecciona el framework de automatización.</p>
-            <div className="grid grid-cols-2 gap-4 max-w-xl">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 max-w-4xl">
               {launchProjectsLoading && (
                 <>
                   {[0, 1].map(i => (
@@ -2589,7 +2609,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                       {trCases.map(tc => {
                         const isSelected = selectedTrCaseIds.includes(tc.id);
                         const isExpanded = expandedCaseId === tc.id;
-                        const hasDetail = !!(tc.custom_steps || tc.custom_preconds);
+                         const preconditions = cleanTestRailDetail(tc.custom_preconds);
+                         const steps = cleanTestRailDetail(tc.custom_steps);
+                         const expectedResult = cleanTestRailDetail(tc.custom_expected);
+                         const hasDetail = preconditions.length > 0 || steps.length > 0 || expectedResult.length > 0;
                         return (
                           <div key={tc.id} className={cn(isSelected ? 'bg-[#48A157]/4' : '')}>
                             <div className="flex items-center gap-3 px-6 py-3.5">
@@ -2616,17 +2639,32 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                                   <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/10">
                                     <span className="w-1.5 h-1.5 rounded-full bg-[#48A157]" />
                                     <span className="text-[10px] font-mono text-white/50 uppercase tracking-wider">C{tc.id} · {tc.title}</span>
-                                    {tc.custom_preconds && <span className="ml-auto text-[10px] text-[#F4A261]/70 font-mono">con precondiciones</span>}
+                                     {preconditions.length > 0 && <span className="ml-auto text-[10px] text-[#F4A261]/70 font-mono">con precondiciones</span>}
                                   </div>
-                                  {tc.custom_preconds && (
-                                    <div className="px-4 py-2.5 border-b border-white/10 bg-[#F4A261]/5">
-                                      <div className="text-[9px] uppercase tracking-wider text-[#F4A261]/70 mb-1.5">Precondiciones</div>
-                                      <p className="text-[11px] text-white/60 leading-relaxed font-mono whitespace-pre-wrap">{tc.custom_preconds}</p>
-                                    </div>
-                                  )}
-                                  {tc.custom_steps && (
-                                    <div className="p-4 max-h-[280px] overflow-y-auto font-mono text-[11px] text-white/75 leading-relaxed whitespace-pre-wrap">{tc.custom_steps}</div>
-                                  )}
+                                   {preconditions.length > 0 && (
+                                     <div className="px-4 py-2.5 border-b border-white/10 bg-[#F4A261]/5">
+                                       <div className="text-[9px] uppercase tracking-wider text-[#F4A261]/70 mb-1.5">PRECONDICIONES</div>
+                                       <ul className="list-disc pl-4 space-y-1 text-[11px] text-white/60 leading-relaxed font-mono">
+                                         {preconditions.map((precondition, index) => <li key={`${tc.id}-precondition-${index}`}>{precondition}</li>)}
+                                       </ul>
+                                     </div>
+                                   )}
+                                   {steps.length > 0 && (
+                                     <div className="px-4 py-2.5 border-b border-white/10">
+                                       <div className="text-[9px] uppercase tracking-wider text-white/45 mb-1.5">PASOS</div>
+                                       <ol className="list-decimal pl-4 space-y-1.5 text-[11px] text-white/75 leading-relaxed font-mono">
+                                          {steps.map((step, index) => <li key={`${tc.id}-step-${index}`}>{normalizeTestRailStep(step)}</li>)}
+                                       </ol>
+                                     </div>
+                                   )}
+                                   {expectedResult.length > 0 && (
+                                     <div className="px-4 py-2.5">
+                                       <div className="text-[9px] uppercase tracking-wider text-[#8BD3DD]/70 mb-1.5">RESULTADO ESPERADO</div>
+                                       <div className="text-[11px] text-white/75 leading-relaxed font-mono space-y-1">
+                                         {expectedResult.map((result, index) => <p key={`${tc.id}-expected-${index}`}>{result}</p>)}
+                                       </div>
+                                     </div>
+                                   )}
                                 </div>
                               </div>
                             )}
@@ -2951,4 +2989,28 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       </div>
     </div>
   );
+}
+
+export function cleanTestRailDetail(value: string | null | undefined): string[] {
+  if (!value) return [];
+  const cleaned = value
+    .replace(/\[\s*(?:automationScenarioId|appSlug|executionSource|internalId\w*)\s*:[^\]]*\]/gi, '')
+    .replace(/<\s*(?:br|\/p|p|\/li|li|\/ol|ol|\/ul|ul)\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+
+  return cleaned
+    .split(/\r?\n+/)
+    .map(line => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .filter(line => !/\b(?:automationScenarioId|appSlug|executionSource|internalId)\s*:/i.test(line));
+}
+
+export function normalizeTestRailStep(value: string): string {
+  return value.replace(/^\s*\d+\s*(?:[.)]|-)\s*/, '').trim();
 }

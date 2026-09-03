@@ -11,6 +11,7 @@ function extractKeyFromText(text: string | undefined | null): string | undefined
 
 export function normalizeScenarioPreviewResponse(parsed: any): {
   stories: any[];
+  routeProfile?: Record<string, unknown>;
   totalScenarios: number;
   blockedScenarios: any[];
   adaptiveScenarios: any[];
@@ -22,6 +23,9 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
   const blockedScenarios = Array.isArray(parsed?.blockedScenarios) ? parsed.blockedScenarios : [];
   const adaptiveScenarios = Array.isArray(parsed?.adaptiveScenarios) ? parsed.adaptiveScenarios : [];
   const rejected = Array.isArray(parsed?.rejected) ? parsed.rejected : [];
+  const routeProfile = parsed?.routeProfile && typeof parsed.routeProfile === 'object'
+    ? parsed.routeProfile as Record<string, unknown>
+    : undefined;
 
   console.log('[scenario-normalize] input', {
     source: Object.keys(parsed ?? {}).slice(0, 5).join(','),
@@ -58,6 +62,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
         const authority = (field: string): any => scenario[field] ?? metadata[field];
         return {
           ...scenario,
+          routeProfile: scenario.routeProfile ?? routeProfile,
           mcpExecutable: authority('mcpExecutable'),
           executionReadiness: authority('executionReadiness'),
           semanticValidity: authority('semanticValidity'),
@@ -71,7 +76,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
         };
 }) : story.scenarios,
     }));
-    return { stories, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
+     return { stories, routeProfile, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
   }
 
   // Group flat scenario items by jiraKey
@@ -118,6 +123,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
     existing.scenarios.push({
       scenarioId: typeof item.scenarioId === 'string' ? item.scenarioId : typeof item.id === 'string' ? item.id : undefined,
       title,
+      routeProfile: item.routeProfile ?? routeProfile,
       refs: item.refs ?? item.jiraKey ?? jiraKey,
       custom_preconds: Array.isArray(preconds) ? preconds.join('\n') : String(preconds),
       custom_expected: item.custom_expected ?? item.expectedResult ?? item.expected ?? '',
@@ -147,5 +153,5 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
   const stories = Array.from(grouped.values());
   console.log('[scenario-normalize] output', { stories: stories.length, blockedScenarios: blockedScenarios.length, firstScenarios: stories[0]?.scenarios?.length });
 
-  return { stories, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
+   return { stories, routeProfile, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
 }

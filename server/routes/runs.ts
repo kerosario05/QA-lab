@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { getRunProviderConfig, requestDiscoveryBatch, requestScenarioPreviewRun } from '../runs-provider';
+import { getRunProviderConfig, requestDiscoveryBatch, requestScenarioPreviewRun, rememberActiveScenarios, resolveActiveScenario } from '../runs-provider';
 import { resolveTestRailProjectName, shouldMigrateAppConfig, normalizeAppSlug } from '../app-config-service';
 import { TestRailClient } from '../testrail-client';
 
@@ -8,6 +8,18 @@ const router = Router();
 
 function sendJson(res: Response, status: number, body: Record<string, unknown>): void {
   res.status(status).json(body);
+}
+
+function enrichSseLine(line: string, jobId: string): string {
+  if (!line.startsWith('data:')) return line;
+  const raw = line.slice(5).trim();
+  if (!raw || raw === '[DONE]') return line;
+  try {
+    const payload = JSON.parse(raw) as Record<string, unknown>;
+    return `data: ${JSON.stringify({ ...payload, activeScenario: resolveActiveScenario(jobId, payload) })}`;
+  } catch {
+    return line;
+  }
 }
 
 console.log('[runs] route registered');
@@ -117,7 +129,7 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
       const sectionId = body?.sectionId ? Number(body.sectionId) : undefined;
       const pubCaseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");
       console.log(`[runs] forwarding launch metadata launchId=${launchId ?? '—'} testRunId=${testRunId ?? '—'} publishedCases=${publishedCases?.length ?? 0} caseIds=${pubCaseIds} jiraKey=${jiraKey ?? '—'}`);
-      result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId, testRailProjectName, sectionName, sectionSlug, launchId, testRunId, publishedCases, jiraKey, appSlug);
+      result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId, testRailProjectName, sectionName, sectionSlug, launchId, testRunId, publishedCases, jiraKey, appSlug, body?.routeProfile as Record<string, unknown> | undefined);
     }
 
     if (!result.ok) {
@@ -129,6 +141,7 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
       return sendJson(res, statusCode, { ok: false, errorCode: result.errorCode, error: result.error, message: result.message });
     }
 
+    rememberActiveScenarios(result.jobId, stories as any);
     console.log(`[runs] provider response jobId=${result.jobId} status=${result.status} issueKey=${result.issueKey ?? '—'}`);
     return sendJson(res, 200, {
       ok: true,
@@ -240,11 +253,19 @@ router.get('/:jobId/logs', async (req: Request, res: Response) => {
     let aborted = false;
     req.on('close', () => { aborted = true; });
 
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done || aborted) break;
-      res.write(value);
+      sseBuffer += decoder.decode(value, { stream: true });
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop() ?? '';
+      res.write(lines.map((line) => enrichSseLine(line, String(req.params.jobId))).join('\n') + '\n');
     }
+
+    sseBuffer += decoder.decode();
+    if (sseBuffer) res.write(enrichSseLine(sseBuffer, String(req.params.jobId)));
 
     if (!aborted) res.end();
   } catch (err: any) {
@@ -408,6 +429,9 @@ router.get('/:jobId', async (req: Request, res: Response) => {
     const bodyText = await upstreamRes.text();
     let parsed: any;
     try { parsed = JSON.parse(bodyText); } catch { parsed = null; }
+    if (parsed && typeof parsed === 'object') {
+      parsed.activeScenario = resolveActiveScenario(String(req.params.jobId), parsed);
+    }
     return sendJson(res, upstreamRes.status, parsed ?? { ok: false, error: 'Invalid JSON from provider' });
   } catch (err: any) {
     return sendJson(res, 502, { ok: false, error: 'Provider proxy error', errorCode: 'RUN_PROVIDER_ERROR', message: err?.message ?? '' });

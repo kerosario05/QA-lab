@@ -23,6 +23,10 @@ import {
   shouldShowDefectChecklistButton,
   shouldResetDocumentStateForJob,
   withStableTerminalTimestamp,
+  getCompactScenarioSteps,
+  getScenarioStepState,
+  normalizeCaseStartedScenario,
+  resolveActiveScenarioUpdate,
 } from './state';
 import type { ActiveRun } from '../../types';
 
@@ -43,6 +47,35 @@ const baseRun: ActiveRun = {
 };
 
 describe('LiveExecution state', () => {
+  it('mapea case_started a activeScenario y limpia case_finished sin afectar logs normales', () => {
+    const started = resolveActiveScenarioUpdate({
+      type: 'case_started',
+      caseId: 'PREVIEW-002',
+      title: 'Escenario activo',
+      index: 2,
+      total: 6,
+    });
+    expect(started).toEqual({ id: 'PREVIEW-002', title: 'Escenario activo', index: 2, total: 6, steps: [] });
+    expect(normalizeCaseStartedScenario({ type: 'case_started', caseId: 'PREVIEW-002', title: 'Escenario activo', index: 2, total: 6 })).not.toBeNull();
+    expect(resolveActiveScenarioUpdate({ type: 'case_finished', caseId: 'PREVIEW-002' })).toBeNull();
+    expect(resolveActiveScenarioUpdate({ message: 'log normal' })).toBeUndefined();
+  });
+
+  it('preserva activeScenario proveniente de polling', () => {
+    const activeScenario = { id: 'PREVIEW-001', title: 'Polling', index: 1, total: 2, steps: [] };
+    expect(resolveActiveScenarioUpdate({ activeScenario })).toEqual(activeScenario);
+  });
+
+  it('compacta pasos en orden, limita a cinco y conserva estados neutros sin resultados', () => {
+    expect(getCompactScenarioSteps(['1. Uno', '2. Dos', '3. Tres', '4. Cuatro', '5. Cinco', '6. Seis'])).toEqual({
+      steps: ['Uno', 'Dos', 'Tres', 'Cuatro', 'Cinco'],
+      remaining: 1,
+    });
+    expect(getScenarioStepState(undefined, 0)).toBe('pending');
+    expect(getScenarioStepState([{ status: 'passed' }], 0)).toBe('completed');
+    expect(getScenarioStepState([{ status: 'running' }], 0)).toBe('running');
+  });
+
   it('status failed + summary parcial muestra counters correctos', () => {
     const metrics = computeLiveExecutionMetrics(baseRun, {
       status: 'failed',

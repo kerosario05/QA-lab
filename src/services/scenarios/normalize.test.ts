@@ -2,6 +2,29 @@ import { describe, it, expect } from 'vitest';
 import { normalizeScenarioPreviewResponse } from './normalize';
 
 describe('normalizeScenarioPreviewResponse', () => {
+  it('preserves the structured top-level routeProfile and scenario transport field', () => {
+    const routeProfile = {
+      source: 'app-config',
+      appSlug: 'bsc',
+      route: { path: '/login', method: 'GET' },
+    };
+    const result = normalizeScenarioPreviewResponse({
+      routeProfile,
+      scenarios: [
+        {
+          sourceIssueKey: 'AA-88',
+          title: 'Login test',
+          routeProfile,
+          steps: ['Open login'],
+          preconditions: [],
+        },
+      ],
+    });
+
+    expect(result.routeProfile).toBe(routeProfile);
+    expect(result.stories[0].scenarios[0].routeProfile).toBe(routeProfile);
+  });
+
   it('supports { stories: [...] } shape', () => {
     const input = {
       stories: [

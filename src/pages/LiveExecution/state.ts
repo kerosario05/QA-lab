@@ -38,6 +38,7 @@ export type LiveExecutionStatusLike = {
   passRate?: number | null;
   currentTest?: string;
   currentCase?: string;
+  activeScenario?: ActiveScenarioLike | null;
   errorMessage?: string;
   startedAt?: string;
   completedAt?: string;
@@ -53,6 +54,76 @@ export type LiveExecutionStatusLike = {
   summaryDocumentReady?: boolean;
   summary?: LiveExecutionSummaryLike;
 };
+
+export type ActiveScenarioLike = {
+  id: string;
+  title: string;
+  index: number;
+  total: number;
+  steps: string[];
+  preconditions?: string[];
+  expectedResult?: string | null;
+  stepResults?: Array<{ status?: string; state?: string }>;
+};
+
+export function normalizeCaseStartedScenario(value: unknown): ActiveScenarioLike | null {
+  if (!value || typeof value !== 'object') return null;
+  const event = value as Record<string, unknown>;
+  if (event.type !== 'case_started') return null;
+
+  const id = typeof event.caseId === 'string' ? event.caseId.trim() : '';
+  const title = typeof event.title === 'string' ? event.title : '';
+  if (!id || !title) return null;
+
+  return {
+    id,
+    title,
+    index: typeof event.index === 'number' && Number.isFinite(event.index) ? event.index : 0,
+    total: typeof event.total === 'number' && Number.isFinite(event.total) ? event.total : 0,
+    steps: Array.isArray(event.steps)
+      ? event.steps.filter((step): step is string => typeof step === 'string')
+      : [],
+  };
+}
+
+export function resolveActiveScenarioUpdate(value: unknown): ActiveScenarioLike | null | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const event = value as Record<string, unknown>;
+  if (event.type === 'case_started') return normalizeCaseStartedScenario(value);
+  if (event.type === 'case_finished') return null;
+  if (Object.prototype.hasOwnProperty.call(event, 'activeScenario')) {
+    return (event.activeScenario as ActiveScenarioLike | null | undefined) ?? null;
+  }
+  return undefined;
+}
+
+export function cleanActiveScenarioText(value: unknown): string {
+  return typeof value === 'string'
+    ? value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+    : '';
+}
+
+export function stripStepPrefix(value: string): string {
+  return value.replace(/^\s*\d+\s*(?:[.)]|[-:])\s*/, '').trim();
+}
+
+export function getCompactScenarioSteps(steps: string[], maxVisible = 5): { steps: string[]; remaining: number } {
+  const normalized = steps.map(cleanActiveScenarioText).map(stripStepPrefix).filter(Boolean);
+  return {
+    steps: normalized.slice(0, maxVisible),
+    remaining: Math.max(0, normalized.length - maxVisible),
+  };
+}
+
+export function getScenarioStepState(
+  stepResults: ActiveScenarioLike['stepResults'],
+  index: number,
+): 'completed' | 'running' | 'pending' {
+  const raw = String(stepResults?.[index]?.status ?? stepResults?.[index]?.state ?? '').toLowerCase();
+  if (['passed', 'pass', 'completed', 'complete', 'success', 'ok'].includes(raw)) return 'completed';
+  if (['running', 'started', 'in_progress', 'executing'].includes(raw)) return 'running';
+  return 'pending';
+}
 
 export type LiveExecutionMetrics = {
   total: number;

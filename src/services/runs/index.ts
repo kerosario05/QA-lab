@@ -14,6 +14,7 @@ export interface PublishedCaseEntry {
 
 export interface RunPayload {
   appSlug?: string;
+  routeProfile?: Record<string, unknown>;
   projectId: number;
   suiteId: number;
   sectionId?: number;
@@ -54,6 +55,16 @@ export interface RunStatusData {
   skipped?: number;
   passRate?: number | null;
   currentTest?: string;
+  currentCaseId?: string;
+  currentCaseTitle?: string;
+  activeScenario?: {
+    id: string;
+    title: string;
+    steps: string[];
+    index: number;
+    total: number;
+    stepResults?: Array<{ status?: string; state?: string }>;
+  } | null;
   startedAt?: string;
   completedAt?: string;
   finishedAt?: string;
@@ -235,7 +246,11 @@ function streamLogs(jobId: string, cb: StreamCallbacks): () => void {
               const data = JSON.parse(payload);
               const evt  = currentEvent || 'message';
 
-              if (evt === 'log') {
+              // Lifecycle events can arrive on the log SSE channel. Keep their
+              // structured payload so consumers can update execution state.
+              if (data && typeof data === 'object' && (data.type === 'case_started' || data.type === 'case_finished')) {
+                cb.onStatus(normalizeRunData(data) as RunStatusData);
+              } else if (evt === 'log') {
                 const entry = toRunLogEntry(data);
                 if (entry) cb.onLog(entry);
               } else if (evt === 'status') {

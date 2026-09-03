@@ -77,4 +77,33 @@ describe('requestScenarioPreviewRun appSlug propagation', () => {
     expect(capturedBody.scenarios[0].appSlug).toBe('project-a');
     expect(capturedBody.appSlug).toBe('project-a');
   });
+
+  it('forwards structured routeProfile at the provider top level', async () => {
+    let capturedBody: any = null;
+    const routeProfile = { appSlug: 'project-a', route: { path: '/login' } };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url: any, init?: any) => {
+      capturedBody = JSON.parse(init?.body ?? '{}');
+      return new Response(JSON.stringify({ ok: true, jobId: 'job-route-profile', status: 'running', scenarioCount: 1 }), { status: 200 });
+    });
+
+    await requestScenarioPreviewRun(
+      [makeStory()] as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'project-a',
+      routeProfile,
+    );
+
+    expect(capturedBody.routeProfile).toEqual(routeProfile);
+    expect(typeof capturedBody.routeProfile).toBe('object');
+    expect(capturedBody.scenarios[0].routeProfile).toBe('');
+  });
 });
