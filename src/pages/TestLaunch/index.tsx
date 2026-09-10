@@ -17,7 +17,7 @@ import { newmanProxy } from '../../services/newman';
 import type { NewmanRunPayload, NewmanCollection } from '../../services/newman';
 import { mobileProxy } from '../../services/mobile';
 import type {
-  EmulatorStatus, AppiumStatus, MobileScenario, MobileRejectedScenario, MobileLaunchExecutionResponse,
+  EmulatorStatus, AppiumStatus, MobileScenario, MobileRejectedScenario,
   MobileScenarioGenerationIssueProgress, MobileScenarioGenerationStatusResponse,
 } from '../../services/mobile';
 import type { ActiveRun, TestRailProject, JiraProject, JiraSprint } from '../../types';
@@ -231,11 +231,9 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   // Web: generic dataRequirements values keyed by scenarioKey -> { requirementKey: value }
   const [webDataValues, setWebDataValues] = useState<Record<string, Record<string, string | boolean>>>({});
 
-  const [mobilePublishResult, setMobilePublishResult] = useState<MobileLaunchExecutionResponse | null>(null);
   const [mobilePublishing, setMobilePublishing] = useState(false);
   const [mobilePublishError, setMobilePublishError] = useState<string | null>(null);
-  const [mobileExecuting, setMobileExecuting] = useState(false);
-  const [mobileExecuteError, setMobileExecuteError] = useState<string | null>(null);
+  const [mobileLaunchPhase, setMobileLaunchPhase] = useState<string | null>(null);
   const mobileGenerationPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mobileGenerationPollTokenRef = useRef(0);
   // Marks that mobile scenario state was restored from localStorage for the current
@@ -986,78 +984,181 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     setSelectedMobileScenarioIds([]);
   }, [config.automationProject, config.jiraProject]);
 
-  const handlePublishMobileToTestRail = () => {
-    const selected = visibleMobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
-    if (selected.length === 0 || !selectedSection || !config.testRailProject) return;
+  // Botón único "Ejecutar": publica → (si hace falta) aprende ruta → regenera → publica de
+  // nuevo → ejecuta → navega a la pantalla de ejecución. Equivalente mobile del flujo web.
+  const handleLaunchMobile = async () => {
+    const initialSelected = visibleMobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
+    if (initialSelected.length === 0 || !selectedSection || !config.testRailProject) {
+      setMobilePublishError('Selecciona escenarios, sección y proyecto TestRail antes de ejecutar.');
+      return;
+    }
+    const appSlug = config.automationProject;
+    const section = selectedSection;
+    const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+    const publishScenarios = (scs: typeof initialSelected) => mobileProxy.publishToTestRail({
+      appSlug,
+      projectId: Number(config.testRailProject),
+      testrailSectionId: section.id,
+      suiteId: trSuiteId ?? undefined,
+      jiraKey: scs[0]?.sourceIssueKey,
+      publishStrategy: 'always_create',
+      scenarios: scs,
+    });
 
     setMobilePublishing(true);
     setMobilePublishError(null);
-    mobileProxy.publishToTestRail({
-      appSlug: config.automationProject,
-      projectId: Number(config.testRailProject),
-      testrailSectionId: selectedSection.id,
-      suiteId: trSuiteId ?? undefined,
-      jiraKey: selected[0]?.sourceIssueKey,
-      publishStrategy: 'always_create',
-      scenarios: selected,
-    })
-      .then(result => setMobilePublishResult(result))
-      .catch(e => setMobilePublishError(e.message))
-      .finally(() => setMobilePublishing(false));
-  };
+    try {
+      let scenariosToLaunch = initialSelected;
 
-  const handleExecuteMobileRun = () => {
-    if (!mobilePublishResult) return;
-    const selected = visibleMobileScenarios.filter(s => selectedMobileScenarioIds.includes(s.scenarioId));
+      // 1) Publicar
+      setMobileLaunchPhase('Publicando en TestRail…');
+      let publish = await publishScenarios(scenariosToLaunch);
 
-    // Only send overrides that differ from the field's original example/default.
-    const dataOverrides: Record<string, Record<number, string>> = {};
-    for (const s of selected) {
-      const edited = mobileDataValues[s.scenarioId];
-      if (!edited) continue;
-      for (const f of s.requiredData ?? []) {
-        const val = edited[f.stepIndex];
-        if (typeof val === 'string' && val.length > 0) {
-          if (!dataOverrides[s.scenarioId]) dataOverrides[s.scenarioId] = {};
-          dataOverrides[s.scenarioId][f.stepIndex] = val;
+      // 2) Si requieren aprendizaje de ruta → aprender → regenerar → re-publicar
+      if (publish.status === 'requires_route_learning' || !publish.launchId) {
+        setMobileLaunchPhase('Resolviendo configuración del proyecto…');
+        const cfg = await mobileProxy.getProjectAppConfig(appSlug);
+        const mc = cfg?.mobileConfig ?? null;
+        const appPackage = mc?.packageName?.trim();
+        const apkPath = mc?.apkPath?.trim();
+        if (!appPackage && !apkPath) {
+          throw new Error('El proyecto no tiene APK ni package configurado. Configúralo en Configuración.');
+        }
+        setMobileLaunchPhase('Aprendiendo ruta en el emulador…');
+        // Contexto de la HU para la capa interpretativa (IA) del walk + flowId para persistir el flujo.
+        const rlScenarios = publish.routeLearningScenarios ?? [];
+        const primaryIssueKey = rlScenarios[0]?.sourceIssueKey ?? scenariosToLaunch[0]?.sourceIssueKey;
+        const huSummary = scenariosToLaunch.find(s => s.sourceIssueKey === primaryIssueKey)?.sourceIssueSummary
+          ?? scenariosToLaunch[0]?.sourceIssueSummary;
+        const huIntent = rlScenarios.map(s => s.title).filter(Boolean).slice(0, 6).join('; ');
+        const flowId = primaryIssueKey ? primaryIssueKey.toLowerCase() : undefined;
+        // Datos que el usuario ingresó en el UI (o los valores de ejemplo) para que el walk
+        // cruce los formularios con datos reales — ej. la cédula — en vez de que la IA los invente.
+        const learnScreenData: Array<{ match: string; value?: string; selectFirst?: string }> = [];
+        const seenFields = new Set<string>();
+        for (const s of scenariosToLaunch) {
+          for (const f of s.requiredData ?? []) {
+            const label = (f.label ?? '').trim();
+            if (!label || seenFields.has(label.toLowerCase())) continue;
+            const v = mobileDataValues[s.scenarioId]?.[f.stepIndex] ?? f.defaultValue ?? f.exampleValue;
+            if (!v) continue;
+            seenFields.add(label.toLowerCase());
+            learnScreenData.push(f.kind === 'select' ? { match: label, selectFirst: v } : { match: label, value: v });
+          }
+        }
+        const learn = await mobileProxy.startRouteLearning({
+          appSlug,
+          ...(appPackage ? { appPackage } : { apkPath: apkPath! }),
+          ...(flowId && primaryIssueKey ? { flowId, triggerKeywords: [primaryIssueKey] } : {}),
+          ...(learnScreenData.length > 0 ? { screenData: learnScreenData } : {}),
+          huContext: {
+            issueKey: primaryIssueKey,
+            summary: huSummary,
+            intent: huIntent || huSummary,
+          },
+        });
+        if (!learn.jobId) throw new Error('El aprendizaje de ruta no devolvió jobId.');
+        let learnStatus = (learn.status ?? '').toLowerCase();
+        while (!['done', 'failed', 'cancelled'].includes(learnStatus)) {
+          await sleep(3000);
+          const st = await mobileProxy.getRouteLearningStatus(learn.jobId);
+          learnStatus = (st.status ?? '').toLowerCase();
+          setMobileLaunchPhase(`Aprendiendo ruta… (${learnStatus || 'en curso'})`);
+          if (learnStatus === 'failed' || learnStatus === 'cancelled') {
+            throw new Error(st.error ?? st.message ?? `El aprendizaje de ruta terminó en ${learnStatus}.`);
+          }
+        }
+
+        // Regenerar las HUs afectadas para que se materialicen con la ruta aprendida.
+        if (!config.jiraProject) throw new Error('Falta el proyecto Jira para regenerar los escenarios.');
+        const issueKeys = Array.from(new Set(
+          (publish.routeLearningScenarios ?? scenariosToLaunch).map((s: any) => s.sourceIssueKey).filter(Boolean),
+        )) as string[];
+        setMobileLaunchPhase('Regenerando escenarios…');
+        const sprintId = activeSprint?.id;
+        const gen = await mobileProxy.startScenarioGeneration({
+          projectKey: config.jiraProject,
+          status: config.status,
+          maxResults: 50,
+          appSlug,
+          selectedIssueKeys: issueKeys,
+          ...(sprintId ? { sprintId } : { activeSprint: true }),
+        });
+        let genStatus = gen.status;
+        while (!['completed', 'failed', 'cancelled'].includes(genStatus)) {
+          await sleep(3000);
+          const st = await mobileProxy.getScenarioGenerationStatus(gen.generationJobId);
+          genStatus = st.status;
+          setMobileLaunchPhase(`Regenerando escenarios… (${genStatus})`);
+          if (st.status === 'failed' || st.status === 'cancelled') {
+            throw new Error(st.error?.message ?? `La regeneración terminó en ${st.status}.`);
+          }
+        }
+        const genResult = await mobileProxy.getScenarioGenerationStatus(gen.generationJobId);
+        applyMobileScenarioGenerationResult(genResult);
+        const regenerated = (genResult.result?.scenarios ?? []).filter(s => issueKeys.includes(s.sourceIssueKey));
+        if (regenerated.length === 0) throw new Error('La regeneración no devolvió escenarios para las HUs.');
+        scenariosToLaunch = regenerated;
+
+        setMobileLaunchPhase('Publicando de nuevo…');
+        publish = await publishScenarios(scenariosToLaunch);
+        if (publish.status === 'requires_route_learning' || !publish.launchId) {
+          throw new Error('Tras aprender la ruta y regenerar, los escenarios siguen requiriendo aprendizaje. El flujo puede necesitar más pasos (más pantallas o autenticación).');
         }
       }
-    }
 
-    setMobileExecuting(true);
-    setMobileExecuteError(null);
-    mobileProxy.executeRun({
-      launchId: mobilePublishResult.launchId,
-      testRunId: mobilePublishResult.testRunId,
-      publishedCases: mobilePublishResult.publishedCases,
-      appSlug: config.automationProject,
-      scenarios: selected.map(s => ({ scenarioId: s.scenarioId, title: s.title, steps: s.steps, requiredData: s.requiredData })),
-      ...(Object.keys(dataOverrides).length > 0 ? { dataOverrides } : {}),
-    })
-      .then(result => {
-        // El backend mobile ya devuelve issueKey/checklistUrl (con ?runId=<mobileRunId>),
-        // así que los propagamos para abrir el checklist filtrado por esa ejecución.
-        const mobileIssueKey = result.issueKey ?? selected[0]?.sourceIssueKey;
-        const newRun: ActiveRun = {
-          id: result.jobId,
-          jobId: result.jobId,
-          project: 'App Conversacional',
-          triggered: 'Carlos M.',
-          startedAt: 'Hace 0m',
-          progress: 0,
-          total: selected.length,
-          completed: 0, passed: 0, failed: 0,
-          currentTest: '',
-          eta: '—',
-          status: result.status,
-          runType: 'mobile',
-          issueKey: mobileIssueKey,
-          checklistUrl: result.checklistUrl,
-        };
-        onLaunch(newRun);
-      })
-      .catch(e => setMobileExecuteError(e.message))
-      .finally(() => setMobileExecuting(false));
+      if (!publish.launchId || publish.testRunId == null) {
+        throw new Error('La publicación no devolvió launchId/testRunId.');
+      }
+
+      // 3) Ejecutar
+      setMobileLaunchPhase('Enviando a ejecución…');
+      const dataOverrides: Record<string, Record<number, string>> = {};
+      for (const s of scenariosToLaunch) {
+        const edited = mobileDataValues[s.scenarioId];
+        if (!edited) continue;
+        for (const f of s.requiredData ?? []) {
+          const val = edited[f.stepIndex];
+          if (typeof val === 'string' && val.length > 0) {
+            if (!dataOverrides[s.scenarioId]) dataOverrides[s.scenarioId] = {};
+            dataOverrides[s.scenarioId][f.stepIndex] = val;
+          }
+        }
+      }
+      const result = await mobileProxy.executeRun({
+        launchId: publish.launchId,
+        testRunId: publish.testRunId,
+        publishedCases: publish.publishedCases,
+        appSlug,
+        scenarios: scenariosToLaunch.map(s => ({ scenarioId: s.scenarioId, title: s.title, steps: s.steps, requiredData: s.requiredData })),
+        ...(Object.keys(dataOverrides).length > 0 ? { dataOverrides } : {}),
+      });
+
+      // 4) Navegar a la pantalla de ejecución
+      const newRun: ActiveRun = {
+        id: result.jobId,
+        jobId: result.jobId,
+        project: 'App Conversacional',
+        triggered: 'Carlos M.',
+        startedAt: 'Hace 0m',
+        progress: 0,
+        total: scenariosToLaunch.length,
+        completed: 0, passed: 0, failed: 0,
+        currentTest: '',
+        eta: '—',
+        status: result.status,
+        runType: 'mobile',
+        issueKey: result.issueKey ?? scenariosToLaunch[0]?.sourceIssueKey,
+        checklistUrl: result.checklistUrl,
+      };
+      onLaunch(newRun);
+    } catch (e: any) {
+      setMobilePublishError(e?.message ?? 'Error al ejecutar la prueba mobile.');
+    } finally {
+      setMobilePublishing(false);
+      setMobileLaunchPhase(null);
+    }
   };
 
   const handleStep2Advance = () => {
@@ -2880,40 +2981,20 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
               </div>
             </div>
 
-            <button onClick={handlePublishMobileToTestRail}
+            <button onClick={handleLaunchMobile}
               disabled={mobilePublishing || !selectedSection || !config.testRailProject || selectedMobileScenarioIds.length === 0}
-              className="mb-7 bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-5 py-2.5 rounded-full transition flex items-center gap-1.5">
-              {mobilePublishing ? <Loader2 size={13} className="animate-spin" /> : null} Publicar en TestRail
+              className="mb-4 bg-gradient-to-r from-[#48A157] to-[#357a42] hover:from-[#5EC470] hover:to-[#48A157] disabled:from-[#BABEC3] disabled:to-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5 shadow-lg shadow-[#48A157]/30 group">
+              {mobilePublishing
+                ? <><Loader2 size={13} className="animate-spin" /> Ejecutando…</>
+                : <><Rocket size={13} className="group-hover:rotate-12 transition" /> Ejecutar</>}
             </button>
+
+            {mobilePublishing && mobileLaunchPhase && (
+              <div className="flex items-center gap-1.5 mb-4 text-[12px] text-[#58646D]"><Loader2 size={12} className="animate-spin" /> {mobileLaunchPhase}</div>
+            )}
 
             {mobilePublishError && (
               <div className="flex items-center gap-1.5 mb-5 text-[12px] text-[#E63946]"><AlertCircle size={13} /> {mobilePublishError}</div>
-            )}
-
-            {mobilePublishResult && (
-              <div className="bg-[#FAFAF7] rounded-2xl p-5 mb-7 space-y-3">
-                <div className="flex items-center justify-between py-2 border-b border-[#F4F1EA]">
-                  <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Test Run creado</span>
-                  <span className="text-[13px] font-semibold text-[#1a1f2e]">#{mobilePublishResult.testRunId}</span>
-                </div>
-                <div className="space-y-1.5">
-                  {mobilePublishResult.publishedCases.map(pc => (
-                    <div key={pc.launchScenarioId} className="flex items-center justify-between text-[12px]">
-                      <span className="text-[#58646D]">{pc.title}</span>
-                      <span className="font-mono text-[#8B999D]">C{pc.caseId}</span>
-                    </div>
-                  ))}
-                </div>
-
-                {mobileExecuteError && (
-                  <div className="flex items-center gap-1.5 text-[12px] text-[#E63946]"><AlertCircle size={13} /> {mobileExecuteError}</div>
-                )}
-
-                <button onClick={handleExecuteMobileRun} disabled={mobileExecuting}
-                  className="w-full bg-gradient-to-r from-[#48A157] to-[#357a42] hover:from-[#5EC470] hover:to-[#48A157] disabled:from-[#BABEC3] disabled:to-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center justify-center gap-1.5 shadow-lg shadow-[#48A157]/30 group">
-                  {mobileExecuting ? <><Loader2 size={13} className="animate-spin" /> Enviando a ejecución...</> : <><Rocket size={13} className="group-hover:rotate-12 transition" /> Ejecutar en emulador</>}
-                </button>
-              </div>
             )}
           </BentoCard>
         )}
