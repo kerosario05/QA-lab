@@ -202,6 +202,25 @@ describe('validateAndBuildLaunchPayload', () => {
     }
   });
 
+  it('propagates explicit full rediscovery without enabling it by default', () => {
+    const base: LaunchSelection = {
+      selectedMcpScenarios: [makeMcpScenario({ caseId: 38133 })],
+      selectedTrCaseIds: [],
+    };
+    const normal = validateAndBuildLaunchPayload(base);
+    const forced = validateAndBuildLaunchPayload({ ...base, forceRediscovery: true });
+
+    expect((normal.payload as any).forceRediscovery).toBe(false);
+    expect((forced.payload as any)).toMatchObject({
+      forceRediscovery: true,
+      overwrite: true,
+      rerunActive: true,
+      autoPromote: true,
+      autoPom: true,
+      contextOnly: false,
+    });
+  });
+
   it('preserves readiness fields for executable preview scenarios', () => {
     const selection: LaunchSelection = {
       selectedMcpScenarios: [makeMcpScenario({

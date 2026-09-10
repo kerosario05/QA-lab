@@ -314,6 +314,10 @@ export interface LaunchExecutionPayload {
     stepRequirementRefs?: unknown[];
   }>;
   existingTestRailCaseIds?: number[];
+  forceRediscovery?: boolean;
+  overwrite?: boolean;
+  contextOnly?: boolean;
+  runtimeEntriesByCase?: Record<string, Array<{ key: string; value: string; source?: string; sensitive?: boolean }>>;
   publishStrategy?: 'always_create' | 'use_existing';
 }
 

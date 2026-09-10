@@ -16,6 +16,7 @@ export interface LaunchSelection {
   sourceMode?: 'jira' | 'testrail' | 'both';
   targetAppName?: string;
   sectionName?: string;
+  forceRediscovery?: boolean;
   routeProfile?: {
     name: string;
     entry: Array<{ businessLabel: string; visibleLabel: string }>;
@@ -132,6 +133,8 @@ export function validateAndBuildLaunchPayload(selection: LaunchSelection): Launc
       autoPromote: true,
       autoPom: true,
       rerunActive: true,
+      forceRediscovery: selection.forceRediscovery === true,
+      contextOnly: false,
     };
 
     return { ok: true, mode: 'discovery-batch', payload };
@@ -185,6 +188,8 @@ export function validateAndBuildLaunchPayload(selection: LaunchSelection): Launc
         autoPromote: true,
         autoPom: true,
         rerunActive: true,
+        forceRediscovery: selection.forceRediscovery === true,
+        contextOnly: false,
       },
     };
 

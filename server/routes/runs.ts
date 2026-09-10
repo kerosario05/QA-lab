@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getRunProviderConfig, requestDiscoveryBatch, requestScenarioPreviewRun, rememberActiveScenarios, resolveActiveScenario } from '../runs-provider';
+import type { DataContextEntry } from '../runs-provider';
 import { resolveTestRailProjectName, shouldMigrateAppConfig, normalizeAppSlug } from '../app-config-service';
 import { TestRailClient } from '../testrail-client';
 
@@ -47,6 +48,11 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
   const appSlug = typeof body?.appSlug === 'string' ? body.appSlug : undefined;
   const sectionName = body?.sectionName as string | undefined;
   const sectionSlug = body?.sectionSlug as string | undefined;
+  const forceRediscovery = body?.forceRediscovery === true;
+  const contextOnly = body?.contextOnly === true;
+  const runtimeEntriesByCase = body?.runtimeEntriesByCase && typeof body.runtimeEntriesByCase === 'object' && !Array.isArray(body.runtimeEntriesByCase)
+    ? body.runtimeEntriesByCase as Record<string, DataContextEntry[]>
+    : undefined;
 
   const hasStoriesWithScenarios = stories.some(s => Array.isArray(s.scenarios) && (s.scenarios as unknown[]).length > 0);
   const hasCaseIds = existingCaseIds.length > 0;
@@ -112,15 +118,21 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
               sectionName,
               sectionSlug,
               executePromotedSpecs: true,
+              forceRediscovery,
               launchId,
               testRunId,
-              jiraKey,
+               jiraKey,
+               contextOnly,
+               runtimeEntriesByCase,
               publishedCases,
             }
           : {
               appSlug,
               sectionName,
-              sectionSlug,
+               sectionSlug,
+               forceRediscovery,
+               contextOnly,
+               runtimeEntriesByCase,
             },
       );
     } else {
@@ -166,6 +178,9 @@ router.post('/launch-execution', async (req: Request, res: Response) => {
 
   const body = req.body as Record<string, unknown>;
   const scenarios = Array.isArray(body.selectedScenarios) ? body.selectedScenarios : [];
+  const requestHasContextOnly = Object.prototype.hasOwnProperty.call(body, 'contextOnly');
+  const requestContextOnly = body.contextOnly;
+  console.log(`[context-only-trace] boundary=frontend_proxy requestHasField=${requestHasContextOnly} requestValue=${requestContextOnly === undefined ? 'undefined' : requestContextOnly} forwardedHasField=${requestHasContextOnly} forwardedValue=${requestContextOnly === undefined ? 'undefined' : requestContextOnly}`);
   console.log(`[launch] proxy launch-execution request scenarios=${scenarios.length} sectionId=${body.sectionId ?? body.testrailSectionId ?? "(none)"}`);
 
   const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/launch-execution`;

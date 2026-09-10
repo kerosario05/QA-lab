@@ -21,14 +21,15 @@ describe('sections cases client', () => {
       cases: [{ id: 1, title: 'Caso 1' }, { id: 2, title: 'Caso 2' }],
     }), { status: 200 })) as any;
 
-    const result = await trSectionsProxy.getCases(4903, 56, 1731);
+    const result = await trSectionsProxy.getCases(4903, 56, 1731, undefined, 'local-project-1');
 
     expect(result.ok).toBe(true);
     expect(result.cases).toHaveLength(2);
     expect(result.count).toBe(2);
     expect(result.sectionId).toBe(4903);
     expect(globalThis.fetch).toHaveBeenCalled();
-    expect((globalThis.fetch as any).mock.calls[0][0]).toContain('includeSubsections=true');
+    expect((globalThis.fetch as any).mock.calls[0][0]).toContain('projectId=56');
+    expect((globalThis.fetch as any).mock.calls[0][0]).toContain('localProjectId=local-project-1');
   });
 
   it('returns empty cases list when backend sends no cases', async () => {

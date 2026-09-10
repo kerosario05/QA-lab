@@ -232,6 +232,28 @@ describe('runs router — provider configured', () => {
     expect(lastDiscoveryBatchPayload?.executePromotedSpecs).toBeUndefined();
   });
 
+  it('forwards contextOnly to the second discovery-batch request', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const runtimeEntriesByCase = {
+      '100': [{ key: 'auth.username', value: 'redacted-fixture', source: 'test', sensitive: true }],
+    };
+    const res = await fetch(api('/api/runs/from-scenarios'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...casePayload,
+        appSlug: 'app-a',
+        contextOnly: true,
+        runtimeEntriesByCase,
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(lastDiscoveryBatchPayload?.contextOnly).toBe(true);
+    expect(lastDiscoveryBatchPayload?.appSlug).toBe('app-a');
+    expect(lastDiscoveryBatchPayload?.caseIds).toEqual([100, 200]);
+    expect(lastDiscoveryBatchPayload?.runtimeEntriesByCase).toEqual(runtimeEntriesByCase);
+  });
+
   it('uses executePromotedSpecs for launch metadata and merges published caseIds', async () => {
     process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
     const res = await fetch(api('/api/runs/from-scenarios'), {

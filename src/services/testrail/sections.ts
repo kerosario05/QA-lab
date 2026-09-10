@@ -121,8 +121,9 @@ export const trSectionsProxy = {
     projectId: number,
     suiteId: number,
     includeSubsections?: boolean,
+    localProjectId?: string,
   ): Promise<SectionCasesResponse> => {
-    const key = `cases:${projectId}:${suiteId}:${sectionId}:${includeSubsections ?? true}`;
+    const key = `cases:${projectId}:${suiteId}:${sectionId}:${includeSubsections ?? true}:${localProjectId ?? ''}`;
 
     const cached = casesCache.get(key);
     if (cached && isFresh(key, casesCache)) {
@@ -150,7 +151,8 @@ export const trSectionsProxy = {
     }
 
     const qs = `includeSubsections=${includeSubsections !== false}`;
-    const url = `${PROXY}/api/testrail/sections/${sectionId}/cases?projectId=${projectId}&suiteId=${suiteId}&${qs}`;
+    const localProjectParam = localProjectId ? `&localProjectId=${encodeURIComponent(localProjectId)}` : '';
+    const url = `${PROXY}/api/testrail/sections/${sectionId}/cases?projectId=${projectId}&suiteId=${suiteId}&${qs}${localProjectParam}`;
 
     try {
       const res = await fetch(url);

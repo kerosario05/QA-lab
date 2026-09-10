@@ -69,14 +69,24 @@ export function resolveActiveScenario(jobId: string, status: Record<string, unkn
   return stepResults ? { ...active, stepResults: stepResults as ActiveScenario['stepResults'] } : active;
 }
 
+export interface DataContextEntry {
+  key: string;
+  value: string;
+  source: string;
+  sensitive: boolean;
+}
+
 export interface DiscoveryBatchRequestOptions {
   appSlug?: string;
   sectionName?: string;
   sectionSlug?: string;
   executePromotedSpecs?: boolean;
+  forceRediscovery?: boolean;
   launchId?: string;
   testRunId?: number;
   jiraKey?: string;
+  contextOnly?: boolean;
+  runtimeEntriesByCase?: Record<string, DataContextEntry[]>;
   publishedCases?: Array<{
     scenarioId: string;
     caseId: number;
@@ -86,6 +96,23 @@ export interface DiscoveryBatchRequestOptions {
     launchScenarioId?: string;
     executionScenarioId?: string;
   }>;
+}
+
+function normalizeRuntimeEntriesByCase(
+  entriesByCase: Record<string, DataContextEntry[]> | undefined,
+): Record<string, DataContextEntry[]> | undefined {
+  if (!entriesByCase || typeof entriesByCase !== 'object' || Array.isArray(entriesByCase)) return undefined;
+  const normalized = Object.fromEntries(
+    Object.entries(entriesByCase)
+      .map(([caseId, entries]) => [
+        caseId,
+        Array.isArray(entries)
+          ? entries.filter((entry) => typeof entry?.key === 'string' && entry.key.trim() !== '' && typeof entry?.value === 'string' && entry.value.trim() !== '')
+          : [],
+      ])
+      .filter(([, entries]) => entries.length > 0),
+  ) as Record<string, DataContextEntry[]>;
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 export interface McpScenarioInput {
@@ -225,11 +252,19 @@ export async function requestDiscoveryBatch(
   }
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}${config.endpointDiscovery}`;
+  const runtimeEntriesByCase = normalizeRuntimeEntriesByCase(options?.runtimeEntriesByCase);
   const body: Record<string, unknown> = {
     caseIds,
     appSlug: options?.appSlug || undefined,
     sectionName: options?.sectionName || sectionName || undefined,
     sectionSlug: options?.sectionSlug || undefined,
+    ...(options?.forceRediscovery === true
+      ? { contextOnly: false }
+      : options?.contextOnly === true
+        ? { contextOnly: true }
+        : {}),
+    forceRediscovery: options?.forceRediscovery === true,
+    runtimeEntriesByCase,
     overwrite: true,
     autoPromote: true,
     autoPom: true,

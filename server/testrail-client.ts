@@ -198,6 +198,52 @@ export interface NormalizedCasesResponse {
   rawShape: string;
 }
 
+export type InputRequirement = {
+  key: string;
+  label?: string;
+  controlType?: string;
+  required?: boolean;
+  sensitive?: boolean;
+  allowedValues?: string[];
+};
+
+export function parseInputRequirements(value: unknown): InputRequirement[] {
+  if (typeof value !== 'string') return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const result: InputRequirement[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.key !== 'string' || record.key.trim() === '') continue;
+    const requirement: InputRequirement = { key: record.key.trim() };
+    if (typeof record.label === 'string') requirement.label = record.label;
+    if (typeof record.controlType === 'string') requirement.controlType = record.controlType;
+    if (typeof record.required === 'boolean') requirement.required = record.required;
+    if (typeof record.sensitive === 'boolean') requirement.sensitive = record.sensitive;
+    if (Array.isArray(record.allowedValues) && record.allowedValues.every((v) => typeof v === 'string')) {
+      requirement.allowedValues = record.allowedValues;
+    }
+    result.push(requirement);
+  }
+  return result;
+}
+
+function attachInputRequirements(caseObj: unknown): unknown {
+  if (!caseObj || typeof caseObj !== 'object' || Array.isArray(caseObj)) return caseObj;
+  const record = caseObj as Record<string, unknown>;
+  const raw = record.custom_input_requirements_json;
+  if (raw === undefined) return caseObj;
+  return { ...record, inputRequirements: parseInputRequirements(raw) };
+}
+
 export function normalizeTestRailCasesResponse(response: unknown): NormalizedCasesResponse {
   const rawShape = Array.isArray(response)
     ? 'array'
@@ -206,7 +252,7 @@ export function normalizeTestRailCasesResponse(response: unknown): NormalizedCas
       : typeof response;
 
   if (Array.isArray(response)) {
-    return { cases: response, count: response.length, rawShape };
+    return { cases: response.map(attachInputRequirements), count: response.length, rawShape };
   }
 
   if (response && typeof response === 'object') {
@@ -214,7 +260,7 @@ export function normalizeTestRailCasesResponse(response: unknown): NormalizedCas
     const cases = obj.cases ?? obj.data ?? [];
     const count = typeof obj.size === 'number' ? obj.size : (Array.isArray(cases) ? cases.length : 0);
     return {
-      cases: Array.isArray(cases) ? cases : [],
+      cases: Array.isArray(cases) ? cases.map(attachInputRequirements) : [],
       count,
       rawShape,
     };

@@ -49,6 +49,42 @@ export interface TRCase {
   custom_steps: string | null;
   custom_expected: string | null;
   custom_preconds: string | null;
+  normalizedScenario?: unknown;
+  inputRequirements?: Array<{
+    key: string;
+    label?: string;
+    displayLabel?: string;
+    technicalLabel?: string;
+    semanticField?: string;
+    entityDisplayName?: string;
+    controlType?: string;
+    required?: boolean;
+    sensitive?: boolean;
+    allowedValues?: string[];
+    semanticType?: string;
+    datasetIdentity?: string;
+    datasetOrdinal?: number;
+    value?: string | number | boolean;
+    source?: string;
+    generated?: boolean;
+    verified?: boolean;
+    editable?: boolean;
+    fieldCapability?: {
+      kind: 'text' | 'password' | 'number' | 'email' | 'tel' | 'date' | 'datetime' | 'select' | 'checkbox' | 'radio' | 'file' | 'unknown';
+      allowedValues?: string[];
+      optionSource?: 'contract' | 'runtime_observed' | 'unknown';
+      constraints?: { min?: number; max?: number; minLength?: number; maxLength?: number; pattern?: string; format?: string };
+    };
+    inputRole?: 'scenario' | 'supporting';
+    valuePolicy?: 'scenario_controlled' | 'safe_synthetic' | 'trusted_required' | 'unresolved';
+    scenarioDataPolicy?: string;
+    provenance?: string;
+    inputUsage?: Array<'action' | 'assertion' | 'expected' | string>;
+  }>;
+  unresolvedPlaceholders?: string[];
+  conflicts?: unknown[];
+  runtimeTransformStatus?: 'success' | 'error';
+  runtimeTransformErrorCode?: string;
 }
 
 export interface TRMilestone {

@@ -9,6 +9,7 @@ import newmanRouter from './routes/newman';
 import checklistRouter from './routes/checklist';
 import mobileRouter from './routes/mobile';
 import executionsRouter from './routes/executions';
+import runtimeInputsRouter from './routes/runtime-inputs';
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -86,6 +87,7 @@ app.use('/api/runs', runsRouter);
 app.use('/api/newman', newmanRouter);
 app.use('/api/mobile', mobileRouter);
 app.use('/api/executions', executionsRouter);
+app.use(runtimeInputsRouter);
 app.use(checklistRouter);
 
 app.get('/api/health', (_req, res) => {

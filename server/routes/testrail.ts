@@ -1,11 +1,44 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { TestRailClient, normalizeTestRailCasesResponse } from '../testrail-client';
+import { TestRailClient } from '../testrail-client';
 import { TestRailCacheService } from '../testrail-cache';
 
 const router = Router();
 const client = new TestRailClient();
 const cache = new TestRailCacheService();
+
+type AutomationEngineSectionCasesResponse = {
+  ok?: boolean;
+  sectionId?: number;
+  projectId?: number;
+  suiteId?: number;
+  count?: number;
+  cases: any[];
+  [key: string]: unknown;
+};
+
+type SectionCasesFetcher = (url: string) => Promise<Response>;
+
+export async function fetchAutomationEngineSectionCases(input: {
+  baseUrl: string;
+  sectionId: number;
+  projectId: number;
+  suiteId: number;
+  localProjectId?: string;
+  fetcher?: SectionCasesFetcher;
+}): Promise<AutomationEngineSectionCasesResponse> {
+  const baseUrl = input.baseUrl.replace(/\/+$/, "");
+  if (!baseUrl) throw new Error("Automation Engine base URL is not configured");
+  const localProjectParam = input.localProjectId ? `&localProjectId=${encodeURIComponent(input.localProjectId)}` : '';
+  const url = `${baseUrl}/api/testrail/sections/${input.sectionId}/cases?projectId=${input.projectId}&suiteId=${input.suiteId}${localProjectParam}`;
+  const response = await (input.fetcher ?? fetch)(url);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`Automation Engine section cases failed: ${response.status}`);
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as AutomationEngineSectionCasesResponse).cases)) {
+    throw new Error("Automation Engine section cases response is invalid");
+  }
+  return payload as AutomationEngineSectionCasesResponse;
+}
 
 function sendError(res: Response, status: number, errorMsg: string, extra?: Record<string, unknown>): void {
   res.status(status).json({ ok: false, error: errorMsg, ...extra });
@@ -218,6 +251,7 @@ router.get('/sections/:sectionId/cases', async (req: Request, res: Response) => 
   const sectionId = parseInt(String(req.params.sectionId), 10);
   const projectId = parseInt(getQueryParam(req.query.projectId) ?? '', 10);
   const suiteId = parseInt(getQueryParam(req.query.suiteId) ?? '', 10);
+  const localProjectId = getQueryParam(req.query.localProjectId);
   logRequest('section-cases', { sectionId, projectId, suiteId });
 
   if (isNaN(sectionId)) { sendError(res, 400, 'sectionId is required'); return; }
@@ -226,17 +260,28 @@ router.get('/sections/:sectionId/cases', async (req: Request, res: Response) => 
 
   try {
     const result = await cache.getOrFetch(
-      'section-cases', [projectId, suiteId, sectionId],
-      () => client.getCases(projectId, { suiteId, sectionId }),
+      'section-cases', [projectId, suiteId, sectionId, localProjectId ?? ''],
+      () => fetchAutomationEngineSectionCases({
+        baseUrl: process.env.SCENARIO_PREVIEW_BASE_URL ?? '',
+        sectionId,
+        projectId,
+        suiteId,
+        localProjectId,
+      }),
     );
 
-    const normalized = normalizeTestRailCasesResponse(result.data);
-    const cases = normalized.cases;
+    const upstream = result.data;
+    const cases = upstream.cases;
 
     const response: Record<string, unknown> = {
-      ok: true, sectionId, projectId, suiteId,
+      ...upstream,
+      ok: upstream.ok ?? true,
+      sectionId: upstream.sectionId ?? sectionId,
+      projectId: upstream.projectId ?? projectId,
+      suiteId: upstream.suiteId ?? suiteId,
       includeSubsections: getQueryParam(req.query.includeSubsections) !== 'false',
-      count: cases.length, cases,
+      count: upstream.count ?? cases.length,
+      cases,
     };
 
     if (result.stale) {
