@@ -100,6 +100,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const [includeQaCredentialsInTestRail, setIncludeQaCredentialsInTestRail] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [dataOverrides, setDataOverrides] = useState<Record<string, Record<number, string>>>({});
+  const [datasetOverrides, setDatasetOverrides] = useState<Record<string, string>>({});
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState<string | null>(null);
 
@@ -133,6 +134,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   useEffect(() => {
     setSelected(Object.fromEntries(session.scenarios.map((s) => [s.scenarioId, true])));
     setDataOverrides({});
+    setDatasetOverrides({});
     setPublishResult(null);
   }, [session.scenarios]);
 
@@ -487,6 +489,27 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 <span>{session.semanticModel.semanticComponents.length} componentes</span>
                 <span>{session.semanticModel.technicalObservations.length} observaciones técnicas</span>
               </div>
+              {session.semanticModel.datasets.length > 0 && (
+                <div className="mt-2 border-t border-[#E3EAF2] pt-2">
+                  <div className="text-[10px] uppercase tracking-[0.1em] text-[#58646D] mb-1.5">Datos utilizados en esta grabación</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {session.semanticModel.datasets
+                      .filter((dataset) => dataset.valueRole !== 'runtime_derived_oracle')
+                      .map((dataset) => (
+                        <label key={dataset.valueKey} className="block">
+                          <span className="text-[10px] text-[#8B999D]">{dataset.semanticField}{dataset.sensitive ? ' · QA sensible' : ''}</span>
+                          <input
+                            type={dataset.sensitive ? 'password' : 'text'}
+                            value={datasetOverrides[dataset.valueKey] ?? dataset.value ?? ''}
+                            onChange={(e) => setDatasetOverrides((previous) => ({ ...previous, [dataset.valueKey]: e.target.value }))}
+                            placeholder={dataset.sensitive ? (dataset.value ? '••••••••' : 'No se guardó') : 'Sin valor confirmado'}
+                            className="mt-0.5 w-full px-2 py-1 rounded border border-[#D9E2EC] bg-white text-[11px] outline-none focus:border-[#104B99]"
+                          />
+                        </label>
+                      ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
