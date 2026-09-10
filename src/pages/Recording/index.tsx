@@ -648,6 +648,14 @@ function ScenarioCard({
                 Derivado
               </span>
             )}
+            {scenario.provenance === 'observed' && (
+              <span
+                title="Escenario respaldado directamente por la sesión grabada"
+                className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#EAF5FF] text-[#2877A8]"
+              >
+                Observado
+              </span>
+            )}
             {scenario.scope === 'segment' && (
               <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#EEF2F8] text-[#58646D]">
                 Bloque
