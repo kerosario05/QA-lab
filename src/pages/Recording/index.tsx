@@ -18,7 +18,7 @@ import { useRecordingExecution, type RecordingProjectDetail } from './useRecordi
 import { useTestRailDestination } from './useTestRailDestination';
 import { useWebRecordingReplay } from './useWebRecordingReplay';
 import { recordingsApi } from '../../services/recordings';
-import type { RecordedScenario, RecordingSummary } from '../../services/recordings/types';
+import type { RecordedScenario, RecordedScenarioStep, RecordingSummary } from '../../services/recordings/types';
 import type { ActiveRun } from '../../types';
 
 /**
@@ -113,6 +113,17 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const suggestionScenarios = primaryScenario
     ? session.scenarios.filter((scenario) => scenario.scenarioId !== primaryScenario.scenarioId)
     : [];
+  const currentDatasetValues = useMemo(
+    () => ({
+      ...Object.fromEntries((session.semanticModel?.datasets ?? []).map((dataset) => [dataset.valueKey, dataset.value])),
+      ...datasetOverrides,
+    }),
+    [session.semanticModel, datasetOverrides],
+  );
+  const sensitiveDatasetKeys = useMemo(
+    () => new Set((session.semanticModel?.datasets ?? []).filter((dataset) => dataset.sensitive).map((dataset) => dataset.valueKey)),
+    [session.semanticModel],
+  );
 
   useEffect(() => {
     fetchRecordingProjects()
@@ -156,6 +167,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         projectSlug,
         selectedScenarios.map((s) => s.scenarioId),
         testRail.destination,
+        Object.fromEntries(Object.entries(currentDatasetValues).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
       );
       const created = res.created?.length ?? 0;
       const failed = res.failed?.length ?? 0;
@@ -453,6 +465,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
       {/* ── Step 3: scenarios ───────────────────────────────────────── */}
       {session.scenarios.length > 0 && session.phase !== 'recording' && (
         <section className="bg-white rounded-2xl border border-[#E8EBEC] p-5">
+          <TestRailDestinationPicker testRail={testRail} />
           <div className="flex items-center justify-between gap-2 mb-4">
             <div className="flex items-center gap-2">
               <span className="w-5 h-5 rounded-full bg-[#1a1f2e] text-white text-[10px] font-semibold flex items-center justify-center">
@@ -547,8 +560,6 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             </div>
           )}
 
-          <TestRailDestinationPicker testRail={testRail} />
-
           {publishResult && (
             <div className="mb-3 text-[12px] text-[#58646D] bg-[#FAFAF7] rounded-lg px-3 py-2">{publishResult}</div>
           )}
@@ -570,6 +581,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 checked={Boolean(selected[primaryScenario.scenarioId])}
                 onToggle={() => setSelected((prev) => ({ ...prev, [primaryScenario.scenarioId]: !prev[primaryScenario.scenarioId] }))}
                 overrides={dataOverrides[primaryScenario.scenarioId] ?? {}}
+                datasetValues={currentDatasetValues}
+                sensitiveDatasetKeys={sensitiveDatasetKeys}
+                allowSensitiveMaterialization={session.semanticModel?.recordingDataPolicy.persistQaCredentials === true}
                 onOverride={(stepIndex, value) =>
                   setDataOverrides((prev) => ({
                     ...prev,
@@ -589,6 +603,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   checked={Boolean(selected[s.scenarioId])}
                   onToggle={() => setSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
                   overrides={dataOverrides[s.scenarioId] ?? {}}
+                  datasetValues={currentDatasetValues}
+                  sensitiveDatasetKeys={sensitiveDatasetKeys}
+                  allowSensitiveMaterialization={session.semanticModel?.recordingDataPolicy.persistQaCredentials === true}
                   onOverride={(stepIndex, value) =>
                     setDataOverrides((prev) => ({
                       ...prev,
@@ -711,14 +728,30 @@ function ScenarioCard({
   onToggle,
   overrides,
   onOverride,
+  datasetValues,
+  sensitiveDatasetKeys,
+  allowSensitiveMaterialization,
 }: {
   scenario: RecordedScenario;
   checked: boolean;
   onToggle: () => void;
   overrides: Record<number, string>;
   onOverride: (stepIndex: number, value: string) => void;
+  datasetValues: Record<string, string | undefined>;
+  sensitiveDatasetKeys: Set<string>;
+  allowSensitiveMaterialization: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const renderStep = (step: RecordedScenarioStep) => {
+    const value = step.valueKey ? datasetValues[step.valueKey] : undefined;
+    const sensitive = step.sensitive === true || Boolean(step.valueKey && sensitiveDatasetKeys.has(step.valueKey));
+    if (sensitive && !allowSensitiveMaterialization) return step.stepTemplate ?? step.content;
+    if (step.valueKey && value !== undefined) {
+      const template = step.stepTemplate ?? step.content;
+      return template.split(`[${step.valueKey}]`).join(JSON.stringify(value));
+    }
+    return step.renderedStep ?? step.content;
+  };
   return (
     <div className={cn('rounded-xl border transition', checked ? 'border-[#104B99]/40 bg-[#FBFCFE]' : 'border-[#E8EBEC]')}>
       <div className="flex items-start gap-3 p-3.5">
@@ -731,33 +764,24 @@ function ScenarioCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[13px] font-medium text-[#1a1f2e]">{scenario.title}</span>
-            <span
-              className={cn(
-                'text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded',
-                scenario.kind === 'negative' ? 'bg-[#FDF3E7] text-[#C2872F]' : 'bg-[#F3F9F4] text-[#48A157]',
-              )}
-            >
-              {scenario.kind === 'negative' ? 'Negativo' : 'Camino feliz'}
-            </span>
+            {scenario.provenance === 'observed' && (
+              <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#EAF5FF] text-[#2877A8]">
+                OBSERVADO
+              </span>
+            )}
+            {scenario.provenance === 'derived' && scenario.suggestionCategory !== 'AI_PROPOSED' && (
+              <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#F4F1EA] text-[#8A7B5C]">
+                DERIVADO
+              </span>
+            )}
+            {scenario.suggestionCategory === 'AI_PROPOSED' && (
+              <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#F3EEFF] text-[#7656A6]">
+                IA
+              </span>
+            )}
             {scenario.testRailCaseId && (
               <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#EEF2F8] text-[#104B99]">
                 TR C{scenario.testRailCaseId}
-              </span>
-            )}
-            {scenario.provenance === 'derived' && (
-              <span
-                title="La grabación no recorrió este caso: se publica, pero no se ejecuta automáticamente"
-                className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#F4F1EA] text-[#8A7B5C]"
-              >
-                Derivado
-              </span>
-            )}
-            {scenario.provenance === 'observed' && (
-              <span
-                title="Escenario respaldado directamente por la sesión grabada"
-                className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#EAF5FF] text-[#2877A8]"
-              >
-                Observado
               </span>
             )}
             {scenario.scope === 'segment' && (
@@ -767,7 +791,7 @@ function ScenarioCard({
             )}
             {scenario.hasUncertainSteps && (
               <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#FDF0EF] text-[#B4463C]">
-                Revisar locators
+                REQUIERE REVISIÓN
               </span>
             )}
           </div>
@@ -788,7 +812,7 @@ function ScenarioCard({
               <li key={i} className="text-[11.5px]">
                 <div className="text-[#1a1f2e]">
                   <span className="text-[#8B999D] mr-1.5">{i + 1}.</span>
-                  {step.content}
+                  {renderStep(step)}
                 </div>
                 <div className="text-[#48A157] mt-0.5">→ {step.expected}</div>
               </li>

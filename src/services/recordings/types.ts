@@ -53,6 +53,10 @@ export interface RecordingLive {
 
 export interface RecordedScenarioStep {
   content: string;
+  renderedStep?: string;
+  stepTemplate?: string;
+  valueKey?: string;
+  sensitive?: boolean;
   expected: string;
 }
 
@@ -102,6 +106,7 @@ export interface RecordedScenario {
   /** True when a step rests on an approximate hit test rather than a real locator. */
   hasUncertainSteps: boolean;
   primary?: boolean;
+  status?: 'IN_PROGRESS' | 'COMPLETED';
   goalRelevanceScore?: number;
   goalRelevanceReasons?: string[];
   suggestionCategory?: 'DERIVED_ALTERNATIVE' | 'DERIVED_VALIDATION' | 'AI_PROPOSED';

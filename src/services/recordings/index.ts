@@ -90,10 +90,11 @@ export const recordingsApi = {
     projectSlug: string,
     scenarioIds?: string[],
     destination?: { sectionId?: string; projectId?: string; suiteId?: string },
+    datasetValues?: Record<string, string>,
   ) =>
     request<TestRailPublishResult>(`/api/recordings/${encodeURIComponent(recordingId)}/testrail`, {
       method: 'POST',
-      body: JSON.stringify({ projectSlug, scenarioIds, ...destination }),
+      body: JSON.stringify({ projectSlug, scenarioIds, datasetValues, ...destination }),
     }),
 
   /**
