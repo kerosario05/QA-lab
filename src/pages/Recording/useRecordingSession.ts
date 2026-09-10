@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { recordingsApi } from '../../services/recordings';
-import type { RecordedScenario, RecordingLive, RecordingSummary, SemanticRecordingModel } from '../../services/recordings/types';
+import type { RecordedScenario, RecordingDataPolicy, RecordingLive, RecordingSummary, SemanticRecordingModel } from '../../services/recordings/types';
 
 /**
  * Drives one recording from start to derived scenarios.
@@ -74,13 +74,13 @@ export function useRecordingSession(projectSlug: string) {
   useEffect(() => stopPolling, [stopPolling]);
 
   const start = useCallback(
-    async (label?: string) => {
+    async (recordingGoal?: string, recordingDataPolicy?: Partial<RecordingDataPolicy>) => {
       setError(null);
       setPhase('starting');
       setScenarios([]);
       setNarrative('');
       try {
-        const res = await recordingsApi.start(projectSlug, label);
+        const res = await recordingsApi.start(projectSlug, recordingGoal, recordingDataPolicy);
         setRecordingId(res.recordingId);
         setSummary(res.summary);
         setPhase('recording');

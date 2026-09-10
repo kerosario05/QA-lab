@@ -4,6 +4,7 @@ import type {
   RecordingLive,
   RecordingSummary,
   TestRailPublishResult,
+  RecordingDataPolicy,
 } from './types';
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? '';
@@ -32,10 +33,10 @@ export const recordingsApi = {
       `/api/recordings?projectSlug=${encodeURIComponent(projectSlug)}`,
     ),
 
-  start: (projectSlug: string, label?: string) =>
+  start: (projectSlug: string, recordingGoal?: string, recordingDataPolicy?: Partial<RecordingDataPolicy>) =>
     request<{ recordingId: string; jobId: string; summary: RecordingSummary }>('/api/recordings/start', {
       method: 'POST',
-      body: JSON.stringify({ projectSlug, label }),
+      body: JSON.stringify({ projectSlug, label: recordingGoal, recordingGoal, recordingDataPolicy }),
     }),
 
   status: (recordingId: string, projectSlug: string) =>

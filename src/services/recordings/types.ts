@@ -8,6 +8,19 @@ export type RecordingStatus =
   | 'derived'
   | 'failed';
 
+export interface RecordingDataPolicy {
+  persistRecordedValues: boolean;
+  persistQaCredentials: boolean;
+  includeQaCredentialsInTestRail: boolean;
+}
+
+export interface RecordingGoal {
+  declaredGoal?: string;
+  normalizedGoal?: string;
+  provenance: 'USER_DECLARED' | 'LEGACY_LABEL';
+  needsReview: boolean;
+}
+
 export interface RecordingSummary {
   recordingId: string;
   projectSlug: string;
@@ -23,6 +36,7 @@ export interface RecordingSummary {
   actionCount: number;
   hasNarrative: boolean;
   scenarioCount: number;
+  recordingGoal?: string;
   errorMessage?: string;
 }
 
@@ -44,6 +58,8 @@ export interface RecordedDataField {
   stepIndex: number;
   exampleValue?: string;
   sensitive: boolean;
+  valueRole?: 'action_input' | 'secure_input' | 'runtime_derived_oracle';
+  source?: 'RECORDED_CONFIRMED' | 'secure' | 'OBSERVED';
 }
 
 /** The identifier one executable step will act on. */
@@ -81,6 +97,16 @@ export interface RecordedScenario {
   sourceRecordingId: string;
   /** True when a step rests on an approximate hit test rather than a real locator. */
   hasUncertainSteps: boolean;
+  primary?: boolean;
+  goalRelevanceScore?: number;
+  goalRelevanceReasons?: string[];
+  suggestionCategory?: 'DERIVED_ALTERNATIVE' | 'DERIVED_VALIDATION' | 'AI_PROPOSED';
+  confidence?: number;
+  rationale?: string;
+  traceBacked?: boolean;
+  containsUnexecutedActions?: boolean;
+  functionalReadiness?: boolean;
+  technicalReadiness?: boolean;
   /** Present once the scenario has been published as a TestRail case. */
   testRailCaseId?: number;
 }
@@ -97,12 +123,23 @@ export interface SemanticRecordingModel {
   recordingId: string;
   projectSlug: string;
   platform: RecordingPlatform;
+  recordingGoal?: RecordingGoal;
+  recordingDataPolicy: RecordingDataPolicy;
+  primaryScenario?: {
+    scenarioId: string;
+    title: string;
+    provenance: 'OBSERVED';
+    sourceEventRefs: string[];
+    traceBacked: true;
+    containsUnexecutedActions: false;
+    needsReview: boolean;
+  };
   semanticScreens: Array<{ screenIdentity: string; title?: string; classification: string }>;
   semanticComponents: Array<{ componentId: string; componentType: string; compoundField?: boolean }>;
   semanticEvents: Array<{ eventRef: string; action: string; provenance: string }>;
   datasets: Array<{ valueKey: string; semanticField: string; valueRole: string; value?: string; sensitive: boolean; verified: boolean }>;
   technicalObservations: Array<{ observationId: string; status: string; componentType: string; locatorCandidates: Array<{ strategy: string; value: string }> }>;
-  scenarioSuggestions: Array<{ suggestionId: string; title: string; provenance: string; needsReview: boolean }>;
+  scenarioSuggestions: Array<{ suggestionId: string; title: string; provenance: string; needsReview: boolean; goalRelevanceScore?: number; goalRelevanceReasons?: string[] }>;
 }
 
 export interface TestRailPublishResult {

@@ -96,6 +96,8 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const [projectSlug, setProjectSlug] = useState('');
   const [projectDetail, setProjectDetail] = useState<RecordingProjectDetail | null>(null);
   const [label, setLabel] = useState('');
+  const [persistQaCredentials, setPersistQaCredentials] = useState(false);
+  const [includeQaCredentialsInTestRail, setIncludeQaCredentialsInTestRail] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [dataOverrides, setDataOverrides] = useState<Record<string, Record<number, string>>>({});
   const [publishing, setPublishing] = useState(false);
@@ -106,6 +108,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const testRail = useTestRailDestination(projectDetail?.testRail);
   const replay = useWebRecordingReplay();
   const project = projects.find((p) => p.slug === projectSlug);
+  const primaryScenario = session.scenarios.find((scenario) => scenario.primary) ?? session.scenarios[0];
+  const suggestionScenarios = primaryScenario
+    ? session.scenarios.filter((scenario) => scenario.scenarioId !== primaryScenario.scenarioId)
+    : [];
 
   useEffect(() => {
     fetchRecordingProjects()
@@ -308,11 +314,38 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               placeholder="Ej. Registro de usuario nuevo"
               className="w-full px-3 py-2 rounded-lg border border-[#E8EBEC] text-[13px] outline-none focus:border-[#104B99] disabled:bg-[#FAFAF7]"
             />
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-[#58646D]">
+              <label className="inline-flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={persistQaCredentials}
+                  onChange={(e) => {
+                    setPersistQaCredentials(e.target.checked);
+                    if (!e.target.checked) setIncludeQaCredentialsInTestRail(false);
+                  }}
+                  disabled={isRecording}
+                />
+                Conservar credenciales QA grabadas
+              </label>
+              <label className="inline-flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={includeQaCredentialsInTestRail}
+                  onChange={(e) => setIncludeQaCredentialsInTestRail(e.target.checked)}
+                  disabled={isRecording || !persistQaCredentials}
+                />
+                Incluirlas en preview TestRail
+              </label>
+            </div>
           </div>
 
           {!isRecording ? (
             <button
-              onClick={() => session.start(label.trim() || undefined)}
+              onClick={() => session.start(label.trim() || undefined, {
+                persistRecordedValues: true,
+                persistQaCredentials,
+                includeQaCredentialsInTestRail,
+              })}
               disabled={!projectSlug || busy}
               className="bg-[#48A157] hover:bg-[#3d8a4a] disabled:opacity-50 text-white text-[12px] font-semibold px-4 py-2.5 rounded-full flex items-center gap-1.5 transition"
             >
@@ -449,6 +482,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 Base semántica lista para revisión
               </div>
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                <span>Objetivo: {session.semanticModel.recordingGoal?.declaredGoal ?? session.summary?.recordingGoal ?? 'no declarado'}</span>
                 <span>{session.semanticModel.datasets.length} datos confirmados</span>
                 <span>{session.semanticModel.semanticComponents.length} componentes</span>
                 <span>{session.semanticModel.technicalObservations.length} observaciones técnicas</span>
@@ -478,23 +512,43 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             <div className="mb-3 text-[12px] text-[#58646D] bg-[#FAFAF7] rounded-lg px-3 py-2">{execution.notice}</div>
           )}
 
-          <div className="space-y-2.5">
-            {session.scenarios.map((s) => (
+          {primaryScenario && (
+            <div className="mb-4">
+              <div className="text-[11px] uppercase tracking-[0.12em] text-[#104B99] font-semibold mb-2">Escenario principal · observado</div>
               <ScenarioCard
-                key={s.scenarioId}
-                scenario={s}
-                checked={Boolean(selected[s.scenarioId])}
-                onToggle={() => setSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
-                overrides={dataOverrides[s.scenarioId] ?? {}}
+                scenario={primaryScenario}
+                checked={Boolean(selected[primaryScenario.scenarioId])}
+                onToggle={() => setSelected((prev) => ({ ...prev, [primaryScenario.scenarioId]: !prev[primaryScenario.scenarioId] }))}
+                overrides={dataOverrides[primaryScenario.scenarioId] ?? {}}
                 onOverride={(stepIndex, value) =>
                   setDataOverrides((prev) => ({
                     ...prev,
-                    [s.scenarioId]: { ...(prev[s.scenarioId] ?? {}), [stepIndex]: value },
+                    [primaryScenario.scenarioId]: { ...(prev[primaryScenario.scenarioId] ?? {}), [stepIndex]: value },
                   }))
                 }
               />
-            ))}
-          </div>
+            </div>
+          )}
+          {suggestionScenarios.length > 0 && (
+            <div className="space-y-2.5">
+              <div className="text-[11px] uppercase tracking-[0.12em] text-[#58646D] font-semibold">Sugerencias</div>
+              {suggestionScenarios.map((s) => (
+                <ScenarioCard
+                  key={s.scenarioId}
+                  scenario={s}
+                  checked={Boolean(selected[s.scenarioId])}
+                  onToggle={() => setSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
+                  overrides={dataOverrides[s.scenarioId] ?? {}}
+                  onOverride={(stepIndex, value) =>
+                    setDataOverrides((prev) => ({
+                      ...prev,
+                      [s.scenarioId]: { ...(prev[s.scenarioId] ?? {}), [stepIndex]: value },
+                    }))
+                  }
+                />
+              ))}
+            </div>
+          )}
 
           {session.narrative && (
             <details className="mt-4 group">
