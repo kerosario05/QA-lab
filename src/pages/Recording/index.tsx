@@ -388,6 +388,33 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               No se guarda video. Se capturan las acciones y las pantallas; el material visual se usa solo para
               generar los escenarios y se elimina al terminar.
             </p>
+            {session.semanticModel && (
+              <div className="mt-3 rounded-lg border border-[#E3EAF2] bg-white/70 p-3">
+                <div className="text-[10px] uppercase tracking-[0.1em] text-[#104B99] font-semibold">Objetivo</div>
+                <div className="text-[12px] font-medium text-[#1a1f2e] mt-1">
+                  {session.semanticModel.recordingGoal?.declaredGoal ?? session.summary?.recordingGoal ?? 'No declarado'}
+                </div>
+                <div className="text-[10px] uppercase tracking-[0.1em] text-[#104B99] font-semibold mt-3">Escenario principal · observado · en progreso</div>
+                <div className="text-[12px] text-[#1a1f2e] mt-1">{session.scenarios[0]?.title ?? session.semanticModel.primaryScenario?.title ?? 'Recorrido observado'}</div>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[#58646D]">
+                  <span>{session.scenarios[0]?.testRailSteps.length ?? session.semanticModel.semanticEvents.length} pasos capturados</span>
+                  <span>{session.semanticModel.datasets.length} datos confirmados</span>
+                  <span>{session.semanticModel.technicalObservations.length} observaciones técnicas</span>
+                  <span>Sugerencias relevantes: {session.semanticModel.scenarioSuggestions.length}</span>
+                </div>
+                {session.scenarios.slice(1).length > 0 && (
+                  <div className="mt-2 space-y-1.5">
+                    <div className="text-[10px] uppercase tracking-[0.1em] text-[#58646D] font-semibold">Sugerencias durante el recorrido</div>
+                    {session.scenarios.slice(1).map((suggestion) => (
+                      <div key={suggestion.scenarioId} className="rounded border border-[#E3EAF2] bg-white px-2 py-1.5 text-[11px] text-[#1a1f2e]">
+                        <div className="font-medium">{suggestion.title}</div>
+                        <div className="text-[10px] text-[#58646D]">{suggestion.suggestionCategory ?? 'DERIVED_ALTERNATIVE'} · relevancia {Math.round((suggestion.goalRelevanceScore ?? 0) * 100)}% · {suggestion.testRailSteps.length} pasos</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -424,7 +451,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
       </section>
 
       {/* ── Step 3: scenarios ───────────────────────────────────────── */}
-      {session.scenarios.length > 0 && (
+      {session.scenarios.length > 0 && session.phase !== 'recording' && (
         <section className="bg-white rounded-2xl border border-[#E8EBEC] p-5">
           <div className="flex items-center justify-between gap-2 mb-4">
             <div className="flex items-center gap-2">

@@ -45,6 +45,10 @@ export interface RecordingLive {
   events: number;
   screens: number;
   currentScreen: string;
+  semanticRefreshCount?: number;
+  noiseRefreshSkipped?: number;
+  semanticModel?: SemanticRecordingModel;
+  scenarios?: RecordedScenario[];
 }
 
 export interface RecordedScenarioStep {
@@ -133,6 +137,7 @@ export interface SemanticRecordingModel {
     traceBacked: true;
     containsUnexecutedActions: false;
     needsReview: boolean;
+    status?: 'IN_PROGRESS' | 'COMPLETED';
   };
   semanticScreens: Array<{ screenIdentity: string; title?: string; classification: string }>;
   semanticComponents: Array<{ componentId: string; componentType: string; compoundField?: boolean }>;

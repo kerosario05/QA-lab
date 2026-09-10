@@ -91,6 +91,8 @@ export function useRecordingSession(projectSlug: string) {
             if (status.active) {
               setLive(status.live ?? null);
               setSummary(status.summary);
+              setScenarios(status.scenarios ?? status.live?.scenarios ?? []);
+              setSemanticModel(status.semanticModel ?? status.live?.semanticModel ?? null);
             }
           } catch {
             // A transient poll failure must not kill an in-progress walkthrough.

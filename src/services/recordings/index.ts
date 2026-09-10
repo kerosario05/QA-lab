@@ -40,7 +40,7 @@ export const recordingsApi = {
     }),
 
   status: (recordingId: string, projectSlug: string) =>
-    request<{ active: boolean; summary: RecordingSummary; live?: RecordingLive }>(
+    request<{ active: boolean; summary: RecordingSummary; live?: RecordingLive; scenarios?: RecordedScenario[]; semanticModel?: import('./types').SemanticRecordingModel }>(
       `/api/recordings/${encodeURIComponent(recordingId)}?projectSlug=${encodeURIComponent(projectSlug)}`,
     ),
 
