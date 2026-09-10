@@ -4,6 +4,7 @@ import {
   startEmulator, getEmulatorStatus, stopEmulator, getAppiumStatus,
   requestMobileScenarioPreview, requestMobileScenarioGeneration, getMobileScenarioGenerationStatus,
   requestMobileLaunchExecution, requestMobileRunExecute,
+  requestMobileRouteLearning, getMobileRouteLearningStatus,
 } from '../mobile-provider';
 import type { MobileProviderResponse } from '../mobile-provider';
 
@@ -176,6 +177,31 @@ router.post('/runs/execute', async (req: Request, res: Response) => {
   console.log(`[mobile] runs/execute request launchId=${body?.launchId} testRunId=${body?.testRunId} scenarios=${scenarios.length}`);
   const result = await requestMobileRunExecute(body);
   forward(res, result, 202);
+});
+
+// ── Route learning ──────────────────────────────────────────────────────
+
+router.post('/route-learning', async (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown>;
+
+  if (typeof body?.appSlug !== 'string' || !body.appSlug.trim()) {
+    sendJson(res, 400, { ok: false, error: 'appSlug is required', errorCode: 'MISSING_APP_SLUG' });
+    return;
+  }
+
+  console.log(`[mobile] route-learning request appSlug=${body.appSlug} flowId=${body?.flowId ?? '—'} stopBeforeSubmit=${body?.stopBeforeSubmit ?? '—'}`);
+  const result = await requestMobileRouteLearning(body);
+  forward(res, result, 202);
+});
+
+router.get('/route-learning/:jobId', async (req: Request, res: Response) => {
+  const jobId = String(req.params.jobId ?? '').trim();
+  if (!jobId) {
+    sendJson(res, 400, { ok: false, error: 'jobId is required', errorCode: 'MISSING_JOB_ID' });
+    return;
+  }
+  const result = await getMobileRouteLearningStatus(jobId);
+  forward(res, result);
 });
 
 export default router;

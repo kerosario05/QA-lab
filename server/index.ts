@@ -10,6 +10,7 @@ import checklistRouter from './routes/checklist';
 import mobileRouter from './routes/mobile';
 import executionsRouter from './routes/executions';
 import runtimeInputsRouter from './routes/runtime-inputs';
+import recordingsRouter from './routes/recordings';
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -88,6 +89,7 @@ app.use('/api/newman', newmanRouter);
 app.use('/api/mobile', mobileRouter);
 app.use('/api/executions', executionsRouter);
 app.use(runtimeInputsRouter);
+app.use('/api/recordings', recordingsRouter);
 app.use(checklistRouter);
 
 app.get('/api/health', (_req, res) => {
@@ -96,7 +98,7 @@ app.get('/api/health', (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`[qa-lab-server] API listening on http://localhost:${PORT}`);
-  console.log(`[qa-lab-server] routes: /api/testrail/*, /api/jira/*, /api/scenarios/*, /api/runs/*, /api/newman/*, /api/mobile/*, /api/executions/*, /api/checklists/*`);
+  console.log(`[qa-lab-server] routes: /api/testrail/*, /api/jira/*, /api/scenarios/*, /api/runs/*, /api/newman/*, /api/mobile/*, /api/executions/*, /api/recordings/*, /api/checklists/*`);
   const railEnv = { url: !!process.env.TESTRAIL_URL, email: !!process.env.TESTRAIL_EMAIL, key: !!process.env.TESTRAIL_API_KEY };
   console.log(`[qa-lab-server] TESTRAIL_URL=${railEnv.url} TESTRAIL_EMAIL=${railEnv.email} TESTRAIL_API_KEY=${railEnv.key}`);
 });

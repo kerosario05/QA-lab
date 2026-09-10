@@ -5,6 +5,8 @@ import type {
   MobileScenarioGenerationStartResponse, MobileScenarioGenerationStatusResponse,
   MobileLaunchExecutionParams, MobileLaunchExecutionResponse,
   MobileRunExecuteParams, MobileRunExecuteResponse,
+  MobileRouteLearningParams, MobileRouteLearningStartResponse, MobileRouteLearningStatusResponse,
+  MobileProjectConfigResponse,
 } from './types';
 
 export const mobileProxy = {
@@ -34,6 +36,15 @@ export const mobileProxy = {
 
   executeRun: (params: MobileRunExecuteParams): Promise<MobileRunExecuteResponse> =>
     mobileRequest('/api/mobile/runs/execute', { method: 'POST', body: JSON.stringify(params) }),
+
+  startRouteLearning: (params: MobileRouteLearningParams): Promise<MobileRouteLearningStartResponse> =>
+    mobileRequest('/api/mobile/route-learning', { method: 'POST', body: JSON.stringify(params) }),
+
+  getRouteLearningStatus: (jobId: string): Promise<MobileRouteLearningStatusResponse> =>
+    mobileRequest(`/api/mobile/route-learning/${encodeURIComponent(jobId)}`, { method: 'GET' }),
+
+  getProjectAppConfig: (appSlug: string): Promise<MobileProjectConfigResponse> =>
+    mobileRequest(`/api/projects/${encodeURIComponent(appSlug)}`, { method: 'GET' }),
 };
 
 export * from './types';

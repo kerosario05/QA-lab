@@ -1,4 +1,4 @@
-import { LayoutGrid, Rocket, History, Settings, Sparkles } from 'lucide-react';
+import { LayoutGrid, Rocket, History, Settings, Sparkles, Video } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 
 interface SidebarProps {
@@ -9,6 +9,7 @@ interface SidebarProps {
 const items = [
   { id: 'dashboard', label: 'Panorama', icon: LayoutGrid },
   { id: 'execute', label: 'Lanzar pruebas', icon: Rocket },
+  { id: 'grabacion', label: 'Grabación', icon: Video },
   { id: 'ejecuciones', label: 'Ejecuciones', icon: History },
   { id: 'configuracion', label: 'Configuración', icon: Settings },
 ];

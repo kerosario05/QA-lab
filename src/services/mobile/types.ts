@@ -158,12 +158,86 @@ export interface MobileLaunchExecutionParams {
   scenarios: MobileScenario[];
 }
 
+export interface MobileRouteLearningScenario {
+  scenarioId: string;
+  sourceIssueKey?: string;
+  title: string;
+  requiresRouteLearning?: boolean;
+  locatorExecutionBacked?: boolean;
+}
+
+export interface MobileHuContext {
+  issueKey?: string;
+  summary?: string;
+  intent?: string;
+  acceptanceCriteria?: string;
+}
+
+/** Dato que el walk puede escribir/seleccionar para cruzar un formulario. */
+export interface MobileLearnerFieldData {
+  /** Substring de la etiqueta del campo, para emparejarlo en pantalla. */
+  match: string;
+  /** Texto a escribir (campos de texto). */
+  value?: string;
+  /** Opción a tocar antes de escribir (campos de selección, ej. "Cédula"). */
+  selectFirst?: string;
+}
+
+export interface MobileRouteLearningParams {
+  appSlug: string;
+  apkPath?: string;
+  appPackage?: string;
+  flowId?: string;
+  flowDescription?: string;
+  triggerKeywords?: string[];
+  maxScreens?: number;
+  /** Rehúsa pulsar controles que confirman el flujo. Default true en el motor. */
+  stopBeforeSubmit?: boolean;
+  /** Datos que ingresó el usuario en el UI para cruzar formularios (ej. la cédula). */
+  screenData?: MobileLearnerFieldData[];
+  /** Contexto de la HU: habilita la capa interpretativa (IA) del walk en el motor. */
+  huContext?: MobileHuContext;
+}
+
+export interface MobileRouteLearningStartResponse {
+  ok: boolean;
+  jobId: string;
+  status: string;
+  mode?: string;
+  appSlug?: string;
+  flowId?: string | null;
+  stopBeforeSubmit?: boolean;
+}
+
+export interface MobileRouteLearningStatusResponse {
+  ok: boolean;
+  jobId?: string;
+  /** queued | running | done | failed | cancelled */
+  status: string;
+  result?: unknown;
+  error?: string;
+  message?: string;
+}
+
+/** Respuesta de GET /api/projects/:slug — usada para resolver el APK/package del proyecto. */
+export interface MobileProjectConfigResponse {
+  project?: { slug?: string; name?: string; projectType?: number };
+  mobileConfig?: { apkPath?: string; packageName?: string; mainActivity?: string } | null;
+  webConfig?: unknown;
+}
+
 export interface MobileLaunchExecutionResponse {
   ok: boolean;
-  launchId: string;
-  testRunId: number;
+  /** null cuando el motor no publicó nada (p.ej. status === 'requires_route_learning'). */
+  launchId: string | null;
+  testRunId?: number;
   publishedCases: MobilePublishedCase[];
   manifestPath?: string;
+  /** Estado del motor: 'requires_route_learning' cuando los escenarios aún no son ejecutables. */
+  status?: string;
+  /** Escenarios que necesitan aprendizaje de ruta antes de poder publicarse/ejecutarse. */
+  routeLearningScenarios?: MobileRouteLearningScenario[];
+  message?: string;
 }
 
 export interface MobileRunExecuteParams {

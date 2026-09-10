@@ -164,3 +164,25 @@ export function requestMobileRunExecute(payload: Record<string, unknown>): Promi
     'MOBILE_RUNS_NOT_CONFIGURED',
   );
 }
+
+// ── Route learning ────────────────────────────────────────────────────────
+
+/** Inicia el aprendizaje de ruta (job asíncrono). Devuelve { jobId, status, ... }. */
+export function requestMobileRouteLearning(payload: Record<string, unknown>): Promise<MobileProviderResponse> {
+  return callMobileEndpoint(
+    'mobile-route-learning',
+    '/api/mobile/route-learning',
+    { method: 'POST', headers: jsonHeaders, body: JSON.stringify(payload) },
+    'MOBILE_ROUTE_LEARNING_NOT_CONFIGURED',
+  );
+}
+
+/** Estado del job de aprendizaje de ruta. El motor lo expone en /api/runs/:jobId. */
+export function getMobileRouteLearningStatus(jobId: string): Promise<MobileProviderResponse> {
+  return callMobileEndpoint(
+    'mobile-route-learning-status',
+    `/api/runs/${encodeURIComponent(jobId)}`,
+    { method: 'GET' },
+    'MOBILE_ROUTE_LEARNING_NOT_CONFIGURED',
+  );
+}

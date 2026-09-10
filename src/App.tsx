@@ -5,6 +5,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { Topbar } from './components/layout/Topbar';
 import { DashboardView } from './pages/Dashboard';
 import { TestLaunch } from './pages/TestLaunch';
+import { Recording } from './pages/Recording';
 import { LiveExecutionScreen } from './pages/LiveExecution';
 import { ExecutionClosure } from './pages/ExecutionClosure';
 import DefectChecklist from './pages/DefectChecklist';
@@ -83,6 +84,7 @@ export default function App() {
     close: 'Cierre de ejecución',
     dashboard: 'Buenos días, Carlos',
     execute: 'Lanzar pruebas',
+    grabacion: 'Grabación de recorridos',
     ejecuciones: 'Ejecuciones',
     checklist: 'Checklist de defectos',
     configuracion: 'Configuración',
@@ -93,6 +95,7 @@ export default function App() {
     close: 'Revisa fallos, reporta bugs y firma el cierre',
     dashboard: 'Aquí está el pulso de tus pruebas automatizadas hoy',
     execute: 'Configura una nueva ejecución en 4 pasos',
+    grabacion: 'Graba un recorrido real y deriva escenarios ejecutables',
     ejecuciones: 'Resumen de corridas y resultados',
     checklist: 'Defectos detectados en la ejecución',
     configuracion: 'Administración de proyectos de automatización.',
@@ -149,6 +152,9 @@ export default function App() {
           )}
           {view === 'execute' && (
             <TestLaunch onLaunch={handleLaunch} />
+          )}
+          {view === 'grabacion' && (
+            <Recording onLaunch={handleLaunch} />
           )}
           {view === 'live' && (
             <LiveExecutionScreen
