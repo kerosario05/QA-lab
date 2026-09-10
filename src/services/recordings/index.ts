@@ -71,6 +71,11 @@ export const recordingsApi = {
       `/api/recordings/${encodeURIComponent(recordingId)}/trace?projectSlug=${encodeURIComponent(projectSlug)}`,
     ),
 
+  semantic: (recordingId: string, projectSlug: string) =>
+    request<{ model: import('./types').SemanticRecordingModel }>(
+      `/api/recordings/${encodeURIComponent(recordingId)}/semantic?projectSlug=${encodeURIComponent(projectSlug)}`,
+    ),
+
   /**
    * Publishes the selected scenarios as TestRail cases.
    *

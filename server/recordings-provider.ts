@@ -154,6 +154,14 @@ export function getRecordingTrace(recordingId: string, projectSlug: string): Pro
   );
 }
 
+export function getSemanticRecording(recordingId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-semantic',
+    `/api/recordings/${encodeURIComponent(recordingId)}/semantic?projectSlug=${encodeURIComponent(projectSlug)}`,
+    { method: 'GET' },
+  );
+}
+
 export function publishToTestRail(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
   return callRecordingEndpoint(
     'recordings-testrail',

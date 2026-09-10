@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { recordingsApi } from '../../services/recordings';
-import type { RecordedScenario, RecordingLive, RecordingSummary } from '../../services/recordings/types';
+import type { RecordedScenario, RecordingLive, RecordingSummary, SemanticRecordingModel } from '../../services/recordings/types';
 
 /**
  * Drives one recording from start to derived scenarios.
@@ -29,6 +29,7 @@ export function useRecordingSession(projectSlug: string) {
   const [live, setLive] = useState<RecordingLive | null>(null);
   const [scenarios, setScenarios] = useState<RecordedScenario[]>([]);
   const [narrative, setNarrative] = useState<string>('');
+  const [semanticModel, setSemanticModel] = useState<SemanticRecordingModel | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<RecordingSummary[]>([]);
 
@@ -66,6 +67,7 @@ export function useRecordingSession(projectSlug: string) {
     setLive(null);
     setScenarios([]);
     setNarrative('');
+    setSemanticModel(null);
     setError(null);
   }, [projectSlug, stopPolling]);
 
@@ -126,6 +128,7 @@ export function useRecordingSession(projectSlug: string) {
         const res = await recordingsApi.derive(recordingId, projectSlug, title);
         setScenarios(res.scenarios ?? []);
         setNarrative(res.narrative ?? '');
+        setSemanticModel(res.semanticModel ?? null);
         setSummary(res.summary);
         setPhase('derived');
         void refreshHistory();
@@ -143,12 +146,14 @@ export function useRecordingSession(projectSlug: string) {
       setError(null);
       setRecordingId(id);
       try {
-        const [scenarioRes, traceRes] = await Promise.all([
+        const [scenarioRes, traceRes, semanticRes] = await Promise.all([
           recordingsApi.scenarios(id, projectSlug),
           recordingsApi.trace(id, projectSlug).catch(() => ({ trace: {} as { narrative?: string } })),
+          recordingsApi.semantic(id, projectSlug).catch(() => ({ model: null })),
         ]);
         setScenarios(scenarioRes.scenarios ?? []);
         setNarrative(traceRes.trace?.narrative ?? '');
+        setSemanticModel((semanticRes.model as SemanticRecordingModel | null) ?? null);
         const found = history.find((h) => h.recordingId === id) ?? null;
         setSummary(found);
         setPhase(scenarioRes.scenarios?.length ? 'derived' : 'stopped');
@@ -185,6 +190,7 @@ export function useRecordingSession(projectSlug: string) {
     scenarios,
     setScenarios,
     narrative,
+    semanticModel,
     error,
     setError,
     history,

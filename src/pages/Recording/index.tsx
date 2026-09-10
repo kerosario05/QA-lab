@@ -442,6 +442,20 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             </div>
           </div>
 
+          {session.semanticModel && (
+            <div className="mb-3 rounded-lg bg-[#F6F9FC] border border-[#E3EAF2] px-3 py-2 text-[11px] text-[#58646D]">
+              <div className="flex items-center gap-2 font-medium text-[#1a1f2e]">
+                <CheckCircle2 size={13} className="text-[#48A157]" />
+                Base semántica lista para revisión
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                <span>{session.semanticModel.datasets.length} datos confirmados</span>
+                <span>{session.semanticModel.semanticComponents.length} componentes</span>
+                <span>{session.semanticModel.technicalObservations.length} observaciones técnicas</span>
+              </div>
+            </div>
+          )}
+
           {replay.error && (
             <div className="mb-3 flex items-start gap-2 text-[12px] text-[#B4463C]">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />

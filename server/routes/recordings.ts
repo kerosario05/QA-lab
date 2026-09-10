@@ -9,6 +9,7 @@ import {
   getRecordingScenarios,
   saveRecordingScenarios,
   getRecordingTrace,
+  getSemanticRecording,
   publishToTestRail,
   executeRecording,
   deleteRecording,
@@ -107,6 +108,12 @@ router.get('/:recordingId/trace', async (req: Request, res: Response) => {
   const projectSlug = requireProjectSlug(req, res);
   if (!projectSlug) return;
   forward(res, await getRecordingTrace(String(req.params.recordingId), projectSlug));
+});
+
+router.get('/:recordingId/semantic', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await getSemanticRecording(String(req.params.recordingId), projectSlug));
 });
 
 router.post('/:recordingId/testrail', async (req: Request, res: Response) => {

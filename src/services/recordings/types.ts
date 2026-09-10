@@ -89,6 +89,20 @@ export interface DeriveResult {
   summary: RecordingSummary;
   scenarios: RecordedScenario[];
   narrative: string;
+  semanticModel?: SemanticRecordingModel;
+}
+
+export interface SemanticRecordingModel {
+  version: string;
+  recordingId: string;
+  projectSlug: string;
+  platform: RecordingPlatform;
+  semanticScreens: Array<{ screenIdentity: string; title?: string; classification: string }>;
+  semanticComponents: Array<{ componentId: string; componentType: string; compoundField?: boolean }>;
+  semanticEvents: Array<{ eventRef: string; action: string; provenance: string }>;
+  datasets: Array<{ valueKey: string; semanticField: string; valueRole: string; value?: string; sensitive: boolean; verified: boolean }>;
+  technicalObservations: Array<{ observationId: string; status: string; componentType: string; locatorCandidates: Array<{ strategy: string; value: string }> }>;
+  scenarioSuggestions: Array<{ suggestionId: string; title: string; provenance: string; needsReview: boolean }>;
 }
 
 export interface TestRailPublishResult {
