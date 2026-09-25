@@ -8,6 +8,7 @@ import {
   deriveScenarios,
   getRecordingScenarios,
   saveRecordingScenarios,
+  updateRecordingScenarioValue,
   getRecordingTrace,
   getSemanticRecording,
   publishToTestRail,
@@ -21,6 +22,12 @@ const router = Router();
 console.log('[recordings] route registered');
 
 function sendJson(res: Response, status: number, body: Record<string, unknown>): void {
+  // A recording's scenarios/trace/semantic/status are mutable state that changes underneath the
+  // same URL (derive(), scenario-value edits, a new recording reusing history). Express's default
+  // ETag would let the browser revalidate and get back a bodyless 304 -- which the client's fetch
+  // wrapper cannot distinguish from "no data", causing the Escenarios section to intermittently
+  // fail to (re)populate on a historical recording. These responses must never be cached/revalidated.
+  res.set('Cache-Control', 'no-store');
   res.status(status).json(body);
 }
 
@@ -110,6 +117,12 @@ router.get('/:recordingId/trace', async (req: Request, res: Response) => {
   forward(res, await getRecordingTrace(String(req.params.recordingId), projectSlug));
 });
 
+router.put('/:recordingId/scenario-value', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await updateRecordingScenarioValue(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
+});
+
 router.get('/:recordingId/semantic', async (req: Request, res: Response) => {
   const projectSlug = requireProjectSlug(req, res);
   if (!projectSlug) return;
@@ -131,7 +144,10 @@ router.post('/:recordingId/execute', async (req: Request, res: Response) => {
   if (!projectSlug) return;
   const scenarioIds = (req.body as any)?.scenarioIds;
   console.log(
-    `[recordings] web replay recordingId=${String(req.params.recordingId)} scenarios=${Array.isArray(scenarioIds) ? scenarioIds.length : 'all'}`,
+    `[recordings] web replay recordingId=${String(req.params.recordingId)} receivedScenarioIds=${JSON.stringify(Array.isArray(scenarioIds) ? scenarioIds : [])} receivedCount=${Array.isArray(scenarioIds) ? scenarioIds.length : 'all'}`,
+  );
+  console.log(
+    `[recordings] web replay recordingId=${String(req.params.recordingId)} forwardedScenarioIds=${JSON.stringify(Array.isArray(scenarioIds) ? scenarioIds : [])} forwardedCount=${Array.isArray(scenarioIds) ? scenarioIds.length : 'all'}`,
   );
   // 202: the engine answers with a job id, not with the outcome of the replay.
   forward(res, await executeRecording(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }), 202);

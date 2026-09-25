@@ -10,6 +10,7 @@ import {
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
 import { runsProxy } from '../../services/runs';
+import { flushScenarioValueWrites } from '../../services/recordings/scenario-value-flush';
 import type { ActiveRun } from '../../types';
 import {
   computeLiveExecutionElapsedMs,
@@ -143,6 +144,18 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     if (!run?.jobId || rerunning) return;
     setRerunning(true);
     try {
+      if (run.recordingId) {
+        const flush = await flushScenarioValueWrites(run.recordingId, run.scenarioIds);
+        if (flush.persistFailedCount > 0) {
+          console.error('[scenario-value-flush]', {
+            dirtyKeyCount: flush.dirtyKeyCount,
+            persistSucceededCount: flush.persistSucceededCount,
+            persistFailedCount: flush.persistFailedCount,
+            rerunBlocked: true,
+          });
+          return;
+        }
+      }
       const result = await runsProxy.rerun(run.jobId, 'all', issueKey || undefined, checklistUrl || undefined);
       if (result?.jobId) {
         // Preserve issueKey/checklistUrl from rerun response or current state

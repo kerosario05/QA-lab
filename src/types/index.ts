@@ -27,6 +27,8 @@ export interface Execution {
 export interface ActiveRun {
   id: string;
   jobId?: string;
+  recordingId?: string;
+  scenarioIds?: string[];
   project: string;
   triggered: string;
   startedAt: string;

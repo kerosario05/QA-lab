@@ -82,6 +82,7 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
   const [slug, setSlug] = useState('');
   const [slugEdited, setSlugEdited] = useState(false);
   const [baseUrl, setBaseUrl] = useState('');
+  const [ignoreHTTPSErrors, setIgnoreHTTPSErrors] = useState(false);
   const [auth, setAuth] = useState('no_login');
   const [username, setUsername] = useState('');
   const [passwordSecretRef, setPasswordSecretRef] = useState('');
@@ -125,6 +126,7 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
         setType(p.projectType === 2 ? 'mobile' : 'web');
         if (p.projectType === 1 && data.webConfig) {
           setBaseUrl(data.webConfig.baseUrl || '');
+          setIgnoreHTTPSErrors(data.webConfig.ignoreHTTPSErrors === true);
           const mode = data.webConfig.loginMode;
           setAuth(mode === 1 ? 'password' : mode === 3 ? 'manual' : 'no_login');
           setUsername(data.webConfig.username || '');
@@ -258,6 +260,7 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
         if (type === 'web') {
           payload.baseUrl = baseUrl;
           payload.loginMode = AUTH_TO_LOGIN_MODE[auth] ?? 2;
+          payload.ignoreHTTPSErrors = ignoreHTTPSErrors;
           if (auth === 'password') { payload.username = username; payload.passwordSecretRef = passwordSecretRef; }
         } else {
           payload.apkPath = apkPath;
@@ -284,7 +287,7 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
       } else {
         // Create mode: POST
         if (type === 'web') {
-          const payload: any = { name, slug, baseUrl, loginMode: AUTH_TO_LOGIN_MODE[auth] ?? 2 };
+          const payload: any = { name, slug, baseUrl, loginMode: AUTH_TO_LOGIN_MODE[auth] ?? 2, ignoreHTTPSErrors };
           if (auth === 'password') { payload.username = username; payload.passwordSecretRef = passwordSecretRef; }
           const res = await apiRequest<{ project: ProjectListItem }>('/api/projects/web', { method: 'POST', body: JSON.stringify(payload) });
           resultSlug = res.project.slug;
@@ -387,6 +390,13 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
                 <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://app.example.com" className={inputCls('baseUrl')} />
                 {fieldErrors.baseUrl && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {fieldErrors.baseUrl}</div>}
               </div>
+              <label className="flex items-start gap-2 rounded-xl border border-[#E8EBEC] bg-[#FAFAF7] px-3 py-2.5 cursor-pointer">
+                <input type="checkbox" checked={ignoreHTTPSErrors} onChange={(e) => setIgnoreHTTPSErrors(e.target.checked)} className="mt-0.5 rounded" />
+                <span>
+                  <span className="block text-[12px] font-medium text-[#58646D]">Permitir certificados HTTPS internos no confiables</span>
+                  <span className="block mt-0.5 text-[10px] text-[#8B999D]">Se aplica únicamente a este proyecto durante Recording/Discovery.</span>
+                </span>
+              </label>
               <div>
                 <label className={LABEL_CLS}>Tipo de autenticación</label>
                 <select value={auth} onChange={(e) => setAuth(e.target.value)} className={SELECT_CLS}>

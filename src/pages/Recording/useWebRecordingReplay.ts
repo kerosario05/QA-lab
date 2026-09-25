@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
-import { recordingsApi } from '../../services/recordings';
-import type { RecordedScenario } from '../../services/recordings/types';
+import { recordingsApi, type RecordingTestRailDestination } from '../../services/recordings';
+import type { RecordedScenario, RecordingReplayAdmission, RecordingScenarioRejection } from '../../services/recordings/types';
 
 /**
  * Starts the replay of a recorded web walkthrough.
@@ -16,9 +16,13 @@ import type { RecordedScenario } from '../../services/recordings/types';
  * that here would give the same run two places to be watched and two ways to disagree.
  */
 
-export interface WebReplayLaunch {
-  jobId: string;
-  scenarioCount: number;
+export interface WebReplayLaunch extends Partial<RecordingReplayAdmission> {
+  /** Absent when every selected scenario resolved to the reuse-existing fast path. */
+  jobId?: string;
+  scenarioCount?: number;
+  rejectedScenarios?: RecordingScenarioRejection[];
+  executionMode?: string;
+  fastPath?: Array<{ scenarioId: string; caseId: number; specPath: string; status: 'passed' | 'failed' | 'skipped'; error?: string }>;
 }
 
 export function useWebRecordingReplay() {
@@ -31,15 +35,22 @@ export function useWebRecordingReplay() {
       recordingId: string,
       scenarios: RecordedScenario[],
       dataOverrides: Record<string, Record<number, string>>,
+      datasetValues: Record<string, string | undefined>,
+      // Structured boolean only — the caller (the button handler) decides this, never a
+      // label or scenario title inspected here.
+      generateSpec?: boolean,
+      // Structured TestRail destination. When present, this single call carries the whole
+      // "Ejecutar Automatización" intent — the backend resolves reuse/publish/generate per
+      // scenario itself; this hook stops composing a separate publish call in front of it.
+      testRailDestination?: RecordingTestRailDestination,
     ): Promise<WebReplayLaunch | null> => {
       setError(null);
 
-      // A derived scenario carries steps but describes a state the recording never reached.
-      // Running it would assert something nobody established.
-      const runnable = scenarios.filter((s) => s.provenance !== 'derived');
-      if (runnable.length === 0) {
+      // Provenance alone is not a replay gate. The page applies the execution-readiness
+      // projection and the Recording endpoint validates the same contract server-side.
+      if (scenarios.length === 0) {
         setError(
-          'Ninguno de los escenarios seleccionados se puede reproducir: son derivados y la grabación nunca los recorrió.',
+          'No hay escenarios seleccionados para reproducir.',
         );
         return null;
       }
@@ -49,10 +60,26 @@ export function useWebRecordingReplay() {
         const launch = await recordingsApi.execute(
           recordingId,
           projectSlug,
-          runnable.map((s) => s.scenarioId),
+          scenarios.map((s) => s.scenarioId),
           dataOverrides,
+          Object.fromEntries(Object.entries(datasetValues).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+          generateSpec,
+          testRailDestination,
         );
-        return { jobId: launch.jobId, scenarioCount: launch.scenarioCount ?? runnable.length };
+        return {
+          jobId: launch.jobId,
+          scenarioCount: launch.scenarioCount ?? scenarios.length,
+          requestedCount: launch.requestedCount,
+          eligibleCount: launch.eligibleCount,
+          acceptedCount: launch.acceptedCount,
+          requestedRejectedCount: launch.requestedRejectedCount,
+          requestedRejectedScenarioIds: launch.requestedRejectedScenarioIds,
+          requestedRejectedScenarios: launch.requestedRejectedScenarios,
+          nonRequestedRejectedCandidates: launch.nonRequestedRejectedCandidates,
+          rejectedScenarios: launch.rejectedScenarios,
+          executionMode: launch.executionMode,
+          fastPath: launch.fastPath,
+        };
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         return null;

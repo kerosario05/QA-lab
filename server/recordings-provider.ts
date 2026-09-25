@@ -40,6 +40,8 @@ async function callRecordingEndpoint(
   }
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}${path}`;
+  const requestBytes = typeof init.body === 'string' ? Buffer.byteLength(init.body, 'utf8') : 0;
+  console.log(`[${logTag}] request method=${init.method ?? 'GET'} path=${path} payloadBytes=${requestBytes}`);
   const controller = new AbortController();
   const effectiveTimeout = timeoutMs ?? config.timeoutMs;
   const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
@@ -79,7 +81,15 @@ async function callRecordingEndpoint(
       };
     }
     const errMsg = err?.message ?? 'Unknown provider error';
-    console.log(`[${logTag}] error code=PROVIDER_ERROR message=${errMsg.slice(0, 200)}`);
+    // Node's `fetch` wraps every transport-level failure (ECONNREFUSED, socket reset, DNS
+    // failure, ...) behind the same generic "fetch failed" message -- the actual cause lives on
+    // `err.cause` and was previously discarded entirely, leaving no way to tell "backend is
+    // down" apart from "backend is slow" apart from any other transport failure. Logged only
+    // (dev diagnostics), never included in the response body sent to the browser -- it can
+    // carry a host/port, never a credential or request payload.
+    const cause = err?.cause;
+    const causeInfo = cause ? ` cause=${cause.code ?? cause.name ?? 'unknown'} causeMessage=${String(cause.message ?? cause).slice(0, 200)}` : '';
+    console.log(`[${logTag}] error code=PROVIDER_ERROR message=${errMsg.slice(0, 200)}${causeInfo}`);
     return { ok: false, errorCode: 'PROVIDER_ERROR', error: 'Provider request failed', message: errMsg };
   }
 }
@@ -151,6 +161,14 @@ export function getRecordingTrace(recordingId: string, projectSlug: string): Pro
     'recordings-trace',
     `/api/recordings/${encodeURIComponent(recordingId)}/trace?projectSlug=${encodeURIComponent(projectSlug)}`,
     { method: 'GET' },
+  );
+}
+
+export function updateRecordingScenarioValue(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-scenario-value',
+    `/api/recordings/${encodeURIComponent(recordingId)}/scenario-value`,
+    { method: 'PUT', headers: jsonHeaders, body: JSON.stringify(payload) },
   );
 }
 

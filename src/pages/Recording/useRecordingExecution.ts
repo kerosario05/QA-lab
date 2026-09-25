@@ -38,7 +38,7 @@ export interface ExecutionLaunch {
 /** Recorded scenarios become MobileScenario without inventing anything the trace lacked. */
 export function toMobileScenarios(scenarios: RecordedScenario[]): MobileScenario[] {
   return scenarios
-    .filter((s) => s.mobileSteps.length > 0 && s.provenance !== 'derived')
+    .filter((s) => s.mobileSteps.length > 0 && (s.readiness?.executionReadiness === true || (!s.readiness && s.provenance !== 'derived')))
     .map((s) => ({
       scenarioId: s.scenarioId,
       sourceIssueKey: `REC-${s.sourceRecordingId.slice(0, 8).toUpperCase()}`,

@@ -14,11 +14,13 @@ import recordingsRouter from './routes/recordings';
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
+const JSON_LIMIT = process.env.QA_LAB_JSON_LIMIT ?? '1mb';
 
 app.use(cors({ origin: true, credentials: true }));
 // Only parse content types that are actually JSON. Never parse multipart, form-encoded,
 // text/plain, etc. as JSON — that corrupts the body and breaks proxy forwarding.
 app.use(express.json({
+  limit: JSON_LIMIT,
   type: (req: any) => {
     const ct = (req.headers['content-type'] || '').toLowerCase();
     if (ct.startsWith('application/json') || ct.includes('application/')) {
@@ -27,6 +29,15 @@ app.use(express.json({
     return false;
   }
 }));
+
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err?.type === 'entity.too.large' || err?.status === 413) {
+    console.warn(`[qa-lab-transport] 413 method=${req.method} path=${req.path} contentType=${req.headers['content-type'] ?? ''} contentLength=${req.headers['content-length'] ?? 'unknown'} configuredJsonLimit=${JSON_LIMIT}`);
+    res.status(413).json({ ok: false, errorCode: 'PAYLOAD_TOO_LARGE', message: 'No se pudo guardar la actualización de Recording porque la solicitud excedió el límite permitido.' });
+    return;
+  }
+  next(err);
+});
 
 async function proxyProjects(req: any, res: any) {
   const base = (process.env.SCENARIO_PREVIEW_BASE_URL || '').replace(/\/+$/, '');
