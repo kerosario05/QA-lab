@@ -1,4 +1,4 @@
-import type { Story } from '../scenarios';
+import type { McpRouteProfile, McpScenario, Story } from '../scenarios';
 
 const PROXY = import.meta.env.VITE_API_URL ?? '';
 
@@ -391,3 +391,37 @@ export const runsProxy = {
 
   streamLogs,
 };
+
+// ---------------------------------------------------------------------------
+// Payloads de lanzamiento (ver validateAndBuildLaunchPayload en launch-validator)
+// ---------------------------------------------------------------------------
+
+export interface LaunchOptions {
+  overwrite?: boolean;
+  autoPromote?: boolean;
+  autoPom?: boolean;
+  rerunActive?: boolean;
+}
+
+/** Lanzamiento de casos que ya existen en TestRail (tienen caseId). */
+export interface DiscoveryBatchPayload extends LaunchOptions {
+  caseIds: number[];
+  appSlug: string;
+  sectionName?: string;
+}
+
+/** Lanzamiento de escenarios generados que todavía no existen en TestRail. */
+export interface ScenarioPreviewPayload {
+  appSlug: string;
+  targetAppSlug: string;
+  targetAppName?: string;
+  sectionName?: string;
+  routeProfile?: McpRouteProfile;
+  source?: {
+    projectKey: string;
+    sprintId?: number;
+    status?: string;
+  };
+  scenarios: Array<Partial<McpScenario>>;
+  options?: LaunchOptions;
+}

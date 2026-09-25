@@ -68,7 +68,7 @@ const mapLevel = (level?: string): DisplayLog['type'] => {
   return 'info';
 };
 
-export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution, onOpenChecklist }: LiveExecutionScreenProps) {
+export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution }: LiveExecutionScreenProps) {
   const [progress,        setProgress]        = useState(run?.progress ?? 0);
   const [total,           setTotal]           = useState(run?.total ?? 0);
   const [requested,       setRequested]       = useState(run?.total ?? 0);

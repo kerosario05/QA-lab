@@ -1,6 +1,9 @@
 import './env';
 import express from 'express';
 import cors from 'cors';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import testrailRouter from './routes/testrail';
 import jiraRouter from './routes/jira';
 import scenariosRouter from './routes/scenarios';
@@ -10,11 +13,15 @@ import checklistRouter from './routes/checklist';
 import mobileRouter from './routes/mobile';
 import executionsRouter from './routes/executions';
 import recordingsRouter from './routes/recordings';
+import { captureRequestAuth } from './engine-auth';
+import { identityRouter } from './routes/identity';
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
 app.use(cors({ origin: true, credentials: true }));
+// Makes the browser's bearer token visible to every engine call made downstream.
+app.use(captureRequestAuth());
 // Only parse content types that are actually JSON. Never parse multipart, form-encoded,
 // text/plain, etc. as JSON — that corrupts the body and breaks proxy forwarding.
 app.use(express.json({
@@ -77,6 +84,9 @@ async function proxyProjects(req: any, res: any) {
 }
 
 // /api/projects → automation engine (SQL-backed multi-project storage)
+// Identity (login, users, roles) proxied verbatim to the engine.
+app.use(identityRouter);
+
 app.all('/api/projects', async (req, res) => proxyProjects(req, res));
 app.all('/api/projects/*splat', async (req, res) => proxyProjects(req, res));
 
@@ -93,6 +103,46 @@ app.use(checklistRouter);
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'qa-lab-backend', timestamp: Date.now() });
 });
+
+/**
+ * Sirve el front compilado desde este mismo proceso.
+ *
+ * Evita depender de un proxy inverso: con el estático y la API en el mismo
+ * origen no hace falta IIS con ARR para unirlos, y de paso desaparece el CORS
+ * entre navegador y API.
+ *
+ * Se monta al final, después de todas las rutas /api, para no taparlas. Sin
+ * carpeta dist el servidor sigue funcionando solo como API — que es el caso en
+ * desarrollo, donde Vite sirve el front por su cuenta.
+ */
+// Este proyecto es ESM, donde no existe __dirname. Resolver desde import.meta
+// ata la ruta al archivo y no al directorio de trabajo, que como servicio de
+// Windows puede ser cualquiera.
+const serverDir = path.dirname(fileURLToPath(import.meta.url));
+const distDir = path.resolve(serverDir, '..', 'dist');
+if (fs.existsSync(path.join(distDir, 'index.html'))) {
+  app.use(
+    express.static(distDir, {
+      // index.html nunca se cachea: si no, tras desplegar el navegador seguiría
+      // pidiendo los assets de la versión anterior. Los assets sí, llevan hash.
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('index.html')) res.setHeader('Cache-Control', 'no-cache');
+        else res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      },
+    }),
+  );
+
+  // Aplicación de una sola página: cualquier ruta que no sea un archivo real ni
+  // /api se resuelve con index.html, para que recargar en /checklist/AA-123 no
+  // devuelva 404.
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+
+  console.log(`[qa-lab-server] front servido desde ${distDir}`);
+} else {
+  console.log(`[qa-lab-server] sin dist/: solo API (en desarrollo lo sirve Vite)`);
+}
 
 app.listen(PORT, () => {
   console.log(`[qa-lab-server] API listening on http://localhost:${PORT}`);

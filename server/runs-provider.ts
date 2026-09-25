@@ -1,4 +1,5 @@
-import type { Story, StoryScenario } from '../src/services/scenarios/types';
+import type { Story } from '../src/services/scenarios/types';
+import { engineHeaders } from './engine-auth';
 
 export interface RunProviderConfig {
   baseUrl: string;
@@ -117,7 +118,7 @@ async function fetchProvider(url: string, body: unknown, timeoutMs: number): Pro
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(body),
       signal: controller.signal,
     });

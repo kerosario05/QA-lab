@@ -1,4 +1,5 @@
 import { getScenarioPreviewConfig } from './scenario-preview-provider';
+import { engineHeaders } from './engine-auth';
 
 export interface ExecutionsProviderResponse {
   ok: boolean;
@@ -21,7 +22,12 @@ async function callExecutionsEndpoint(logTag: string, path: string): Promise<Exe
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
 
   try {
-    const res = await fetch(url, { method: 'GET', signal: controller.signal });
+    const res = await fetch(url, {
+      method: 'GET',
+      // Carry the caller's session through to the engine.
+      headers: engineHeaders(),
+      signal: controller.signal,
+    });
     clearTimeout(timeoutId);
 
     const rawBody = await res.text();

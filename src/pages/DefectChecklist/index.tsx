@@ -12,16 +12,6 @@ const stBadge: Record<string, string> = { pending_review: 'bg-blue-50 text-blue-
 const stLabel: Record<string, string> = { pending_review: 'Pendiente', accepted: 'Aceptado', rejected: 'Rechazado', fixed: 'Corregido' };
 const sevOrder: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
-function clean(text: string): string {
-  const lower = text.toLowerCase();
-  if (lower.includes('auth') || lower.includes('login') || lower.includes('otp')) return 'No se pudo completar el flujo de autenticación requerido.';
-  if (lower.includes('timeout')) return 'La pantalla o acción esperada tardó más de lo permitido.';
-  if (lower.includes('target_not_found') || lower.includes('element_not_found')) return 'No se encontró el elemento necesario para continuar.';
-  if (lower.includes('assertion_not_found') || lower.includes('assertion')) return 'No se pudo validar la información esperada en pantalla.';
-  const c = text.split('\n').filter(l => !/^\s*escenario:/i.test(l) && !/acci[óo]n sugerida/i.test(l) && !l.includes('dedupeKey') && !l.includes('::') && !/^\s*key:/i.test(l)).join('\n').trim();
-  return c || 'No se pudo completar la validación esperada durante la ejecución.';
-}
-
 function fmtDate(iso: string): string {
   try { return new Date(iso).toLocaleString('es-DO', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } as any); } catch { return iso; }
 }
@@ -191,16 +181,6 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
     } catch { /* ignore corrupt localStorage */ }
   }, [lsKey, issueKey]);
 
-  const persistLocalKey = useCallback((defectId: string, key: string, url: string) => {
-    try {
-      const raw = localStorage.getItem(lsKey);
-      const data = raw ? JSON.parse(raw) : {};
-      data[defectId] = { key, url, storedAt: new Date().toISOString() };
-      localStorage.setItem(lsKey, JSON.stringify(data));
-      console.log(`[defects:jira] localStorage stored defectId=${defectId} issueKey=${key} reason=persist_failed`);
-    } catch { /* ignore */ }
-  }, [lsKey]);
-
   const clearLocalKey = useCallback((defectId: string) => {
     try {
       const raw = localStorage.getItem(lsKey);
@@ -223,7 +203,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
   const [showAssigneeDropdown, setShowAssigneeDropdown] = useState(false);
   const [searchingUsers, setSearchingUsers] = useState(false);
   const assigneeRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const jiraProjectKey = import.meta.env.VITE_JIRA_PROJECT_KEY || '';
 

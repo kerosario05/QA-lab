@@ -87,7 +87,7 @@ function toSelectedGeneratedScenarios(selectedStories: Story[]): SelectedGenerat
       scenarioIndex++;
 selectedScenarios.push({
         ...scenario,
-        scenarioId: scenario.scenarioId,
+        scenarioId: scenario.scenarioId || `${story.jiraKey}-${scenarioIndex}`,
         title: scenario.title || `${story.jiraKey} Scenario ${scenarioIndex}`,
         steps: Array.isArray(scenario.custom_steps_separated)
           ? scenario.custom_steps_separated.map((step) => `${step.content}`)

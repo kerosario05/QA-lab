@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import {
-  listRecordings,
+  getRecordingCapabilities,listRecordings,
   startRecording,
   getRecordingStatus,
   stopRecording,
@@ -58,6 +58,11 @@ function requireProjectSlug(req: Request, res: Response): string | null {
   }
   return slug;
 }
+
+// Declared before "/:recordingId" so the literal path wins over the parameter.
+router.get('/capabilities', async (_req: Request, res: Response) => {
+  forward(res, await getRecordingCapabilities());
+});
 
 router.get('/', async (req: Request, res: Response) => {
   const projectSlug = requireProjectSlug(req, res);

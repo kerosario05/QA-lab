@@ -39,7 +39,7 @@ router.get('/projects', async (req: Request, res: Response) => {
       const enriched = await Promise.all(
         projects.map(async (p: any) => {
           try {
-            const suites = await client.getSuites(p.id);
+            const { suites } = await client.getSuites(p.id);
             const suitesWithCounts = await Promise.all(
               suites.map(async (s: any) => {
                 let caseCount = 0;

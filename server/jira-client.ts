@@ -97,6 +97,13 @@ export class JiraClient {
     throw lastError ?? new JiraClientError('Jira request failed', 0);
   }
 
+  /** Metadatos de creación de issues (tipos válidos y campos por tipo) de un proyecto. */
+  async getCreateMeta(projectKey: string): Promise<any> {
+    return this.request<any>(
+      `/rest/api/2/issue/createmeta?projectKeys=${encodeURIComponent(projectKey)}&expand=projects.issuetypes.fields`,
+    );
+  }
+
   async getProjects(): Promise<any[]> {
     const data = await this.request<any>('/rest/api/2/project');
     const projects = Array.isArray(data) ? data : (data?.values ?? data?.projects ?? []);
