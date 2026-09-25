@@ -12,6 +12,7 @@ function extractKeyFromText(text: string | undefined | null): string | undefined
 export function normalizeScenarioPreviewResponse(parsed: any): {
   stories: any[];
   routeProfile?: Record<string, unknown>;
+  sprint: { id: number; name: string } | null;
   totalScenarios: number;
   blockedScenarios: any[];
   adaptiveScenarios: any[];
@@ -21,6 +22,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
   const raw = parsed?.stories ?? parsed?.scenarios ?? [];
   const flatItems: any[] = Array.isArray(raw) ? raw : [];
   const blockedScenarios = Array.isArray(parsed?.blockedScenarios) ? parsed.blockedScenarios : [];
+  const sprint = parsed?.sprint && typeof parsed.sprint === 'object' ? parsed.sprint : null;
   const adaptiveScenarios = Array.isArray(parsed?.adaptiveScenarios) ? parsed.adaptiveScenarios : [];
   const rejected = Array.isArray(parsed?.rejected) ? parsed.rejected : [];
   const routeProfile = parsed?.routeProfile && typeof parsed.routeProfile === 'object'
@@ -76,7 +78,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
         };
 }) : story.scenarios,
     }));
-     return { stories, routeProfile, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
+    return { stories, routeProfile, sprint, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
   }
 
   // Group flat scenario items by jiraKey
@@ -153,5 +155,5 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
   const stories = Array.from(grouped.values());
   console.log('[scenario-normalize] output', { stories: stories.length, blockedScenarios: blockedScenarios.length, firstScenarios: stories[0]?.scenarios?.length });
 
-   return { stories, routeProfile, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
+  return { stories, routeProfile, sprint, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
 }

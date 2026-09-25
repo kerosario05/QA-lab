@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { engineHeaders } from '../engine-auth';
 
 const router = Router();
 const upstreamBase = () => (process.env.RUN_PROVIDER_BASE_URL || process.env.SCENARIO_PREVIEW_BASE_URL || '').replace(/\/+$/, '');
@@ -9,7 +10,27 @@ const upstreamBase = () => (process.env.RUN_PROVIDER_BASE_URL || process.env.SCE
 // ── Server-side fallback: persist Jira defect references when MCP runner PATCH fails ──
 const JIRA_REFS_PATH = path.join(process.cwd(), '.data', 'jira-defect-refs.json');
 
-function loadJiraRefs(): Record<string, { jiraIssueKey: string; jiraIssueUrl: string; jiraUploadedAt: string; jiraUploadStatus: string; jiraUploadError?: string }> {
+/** Referencia a un defecto subido a Jira, persistida localmente como fallback. */
+interface JiraDefectRef {
+  jiraIssueKey: string;
+  jiraIssueUrl: string;
+  jiraUploadedAt: string;
+  jiraUploadStatus: string;
+  jiraUploadError?: string;
+  issueKey?: string;
+  jobId?: string;
+  scenarioId?: string;
+  executionScenarioId?: string;
+  id?: string;
+}
+
+/** Forma parcial de la respuesta del engine; solo se consume `defects`. */
+interface ChecklistUpstreamResponse {
+  defects?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+function loadJiraRefs(): Record<string, JiraDefectRef> {
   try {
     if (fs.existsSync(JIRA_REFS_PATH)) {
       return JSON.parse(fs.readFileSync(JIRA_REFS_PATH, 'utf-8'));
@@ -32,7 +53,7 @@ function serveLocalJiraRefs(issueKey: string, jobId?: string, scenarioIds?: stri
 
   // Filter by jobId if provided — strict match only
   if (jobId) {
-    entries = entries.filter(([, v]) => String((v as any).jobId ?? '') === jobId);
+    entries = entries.filter(([, v]) => String(v.jobId ?? '') === jobId);
   }
 
   // Filter by scenarioIds if provided
@@ -40,7 +61,7 @@ function serveLocalJiraRefs(issueKey: string, jobId?: string, scenarioIds?: stri
     const sidSet = new Set(scenarioIds.map(s => s.trim()).filter(Boolean));
     if (sidSet.size > 0) {
       entries = entries.filter(([k, v]) => {
-        const ref = v as Record<string, unknown>;
+        const ref = v;
         const keyId = k.slice(prefix.length);
         const candidates = [keyId, ref.scenarioId, ref.executionScenarioId, ref.id]
           .map(c => String(c ?? '').trim())
@@ -55,7 +76,7 @@ function serveLocalJiraRefs(issueKey: string, jobId?: string, scenarioIds?: stri
 
   return entries.map(([k, v]) => {
     const did = k.slice(prefix.length);
-    const extra = typeof v === 'object' && v !== null ? v as Record<string, unknown> : {};
+    const extra: Partial<JiraDefectRef> = typeof v === 'object' && v !== null ? v : {};
     return {
       id: did,
       scenarioId: extra.scenarioId ?? did,
@@ -77,7 +98,7 @@ async function proxy(req: Request, res: Response, path: string, method: string) 
   if (!base) return res.status(500).json({ ok: false, error: 'MCP backend URL not configured' });
   const url = `${base}${path}`;
   try {
-    const opts: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
+    const opts: RequestInit = { method, headers: { 'Content-Type': 'application/json', ...engineHeaders() } };
     if (method !== 'GET' && method !== 'HEAD') opts.body = JSON.stringify(req.body);
     const upstream = await fetch(url, opts);
     const body = await upstream.text();
@@ -100,7 +121,7 @@ router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
   if (req.query.scenarioIds) params.set('scenarioIds', String(req.query.scenarioIds));
   const encoded = params.toString();
   const qs = encoded ? `?${encoded}` : '';
-  const issueKey = req.params.issueKey;
+  const issueKey = String(req.params.issueKey);
   const queryJobId = req.query.jobId ? String(req.query.jobId) : undefined;
   const queryRunId = req.query.runId ? String(req.query.runId) : undefined;
   const queryScenarioIds = req.query.scenarioIds
@@ -121,8 +142,8 @@ router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
   }
   try {
     const url = `${base}/api/checklists/${encodeURIComponent(issueKey)}${qs}`;
-    const upstream = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
-    const data = await upstream.json().catch(() => null);
+    const upstream = await fetch(url, { headers: { 'Content-Type': 'application/json', ...engineHeaders() } });
+    const data = await upstream.json().catch(() => null) as ChecklistUpstreamResponse | null;
     if (!upstream.ok || !data) {
       // Upstream failed — serve from local Jira refs
       const localDefects = serveLocalJiraRefs(issueKey, queryJobId, queryScenarioIds);
@@ -155,7 +176,8 @@ router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
 });
 router.post('/api/checklists/:issueKey/defects', (req, res) => proxy(req, res, `/api/checklists/${encodeURIComponent(req.params.issueKey)}/defects`, 'POST'));
 router.patch('/api/checklists/:issueKey/defects/:defectId', async (req: Request, res: Response) => {
-  const { issueKey, defectId } = req.params;
+  const issueKey = String(req.params.issueKey);
+  const defectId = String(req.params.defectId);
   const bodyKeys = Object.keys(req.body ?? {});
   const jiraFields = bodyKeys.filter(k => k.startsWith('jira'));
   const hasNonJiraFields = bodyKeys.some(k => !k.startsWith('jira') && k !== 'status' && k !== 'jobId' && k !== 'scenarioId');

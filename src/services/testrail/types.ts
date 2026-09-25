@@ -26,6 +26,8 @@ export interface TRSection {
   suite_id: number;
   parent_id: number | null;
   name: string;
+  /** Nombre jerárquico ("Padre > Hijo") que agrega el normalizador de secciones. */
+  displayName?: string | null;
   description: string | null;
   depth: number;
   display_order: number;

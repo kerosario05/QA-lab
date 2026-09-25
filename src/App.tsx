@@ -12,9 +12,59 @@ import DefectChecklist from './pages/DefectChecklist';
 import { parseChecklistRoute } from './pages/DefectChecklist/route';
 import { Ejecuciones } from './pages/Ejecuciones';
 import { Configuracion } from './pages/Configuracion';
+import { Usuarios } from './pages/Usuarios';
+import { Login } from './pages/Login';
+import { ChangePassword } from './pages/ChangePassword';
+import { useAuth } from './auth/AuthContext';
 import type { ActiveRun, View } from './types';
+import type { PermissionKey } from './auth/types';
 
+/**
+ * Authentication gate.
+ *
+ * Nothing of the app renders until the identity is settled: a stored token is
+ * re-validated on boot, and a pending password change takes over the whole
+ * screen — the engine's token is scoped so that nothing else would work anyway.
+ */
 export default function App() {
+  const { status } = useAuth();
+
+  if (status === 'loading') return <BootSplash />;
+  if (status === 'anonymous') return <Login />;
+  if (status === 'must-change-password') return <ChangePassword />;
+  return <Workspace />;
+}
+
+function BootSplash() {
+  return (
+    <div className="h-screen flex items-center justify-center" style={{ background: C.canvas }}>
+      <div className="flex items-center gap-2.5">
+        <div className="relative w-9 h-9 animate-pulse">
+          <div className="absolute inset-0 rounded-[10px] rotate-6" style={{ background: C.green }} />
+          <div
+            className="absolute inset-0 rounded-[10px] -rotate-3 flex items-center justify-center text-white font-bold text-[14px]"
+            style={{ background: C.blue, letterSpacing: '-0.03em' }}
+          >
+            Q
+          </div>
+        </div>
+        <span className="text-[13px] text-[#8B999D]">Cargando QA Lab…</span>
+      </div>
+    </div>
+  );
+}
+
+/** Fallback landing views, in the order a user without `dashboard.view` should try. */
+const LANDING_ORDER: { id: View; permissions: PermissionKey[] }[] = [
+  { id: 'ejecuciones', permissions: ['executions.view'] },
+  { id: 'execute', permissions: ['tests.launch'] },
+  { id: 'grabacion', permissions: ['recordings.view', 'recordings.create'] },
+  { id: 'configuracion', permissions: ['projects.view'] },
+  { id: 'usuarios', permissions: ['admin.users', 'admin.roles'] },
+];
+
+function Workspace() {
+  const { canAny } = useAuth();
   const [view, setView] = useState<View>('dashboard');
   const [liveRun, setLiveRun] = useState<ActiveRun | null>(null);
   const [closingExecution, setClosingExecution] = useState<any>(null);
@@ -33,6 +83,14 @@ export default function App() {
       console.log(`[checklist-route] pathname=${location.pathname} identity=${route.checklistIdentity} jobId=${route.jobId ?? 'none'} matched=true`);
     }
   }, []);
+
+  // Land on something the user can actually open: a viewer without
+  // `dashboard.view` would otherwise stare at an empty Panorama.
+  useEffect(() => {
+    if (view !== 'dashboard' || canAny('dashboard.view')) return;
+    const fallback = LANDING_ORDER.find(candidate => canAny(...candidate.permissions));
+    if (fallback) setView(fallback.id);
+  }, [view, canAny]);
 
   const handleLaunch = (run: ActiveRun) => {
     setLiveRun(run);
@@ -88,6 +146,7 @@ export default function App() {
     ejecuciones: 'Ejecuciones',
     checklist: 'Checklist de defectos',
     configuracion: 'Configuración',
+    usuarios: 'Usuarios y roles',
   };
 
   const subtitles: Record<string, string> = {
@@ -99,6 +158,7 @@ export default function App() {
     ejecuciones: 'Resumen de corridas y resultados',
     checklist: 'Defectos detectados en la ejecución',
     configuracion: 'Administración de proyectos de automatización.',
+    usuarios: 'Gestiona accesos, roles y permisos por proyecto',
   };
 
   return (
@@ -180,6 +240,9 @@ export default function App() {
           )}
           {(view as string) === 'configuracion' && (
             <Configuracion />
+          )}
+          {(view as string) === 'usuarios' && (
+            <Usuarios />
           )}
         </div>
       </main>

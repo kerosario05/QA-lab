@@ -12,9 +12,11 @@ import { jiraProjectsProxy } from '../../services/jira';
 import { scenariosProxy, normalizeScenarioPreviewResponse } from '../../services/scenarios';
 import type { Story, BlockedScenario } from '../../services/scenarios';
 import { runsProxy } from '../../services/runs';
-import type { RunPayload } from '../../services/runs';
 import { newmanProxy } from '../../services/newman';
 import type { NewmanRunPayload, NewmanCollection } from '../../services/newman';
+
+/** Forma cruda del backend usada solo por las trazas [scenario-id-trace]. */
+type RawTracedScenario = { title?: string; scenarioId?: string; id?: string; sourceIssueKey?: string };
 import { mobileProxy } from '../../services/mobile';
 import type {
   EmulatorStatus, AppiumStatus, MobileScenario, MobileRejectedScenario,
@@ -79,7 +81,7 @@ interface LaunchProjectApiItem {
   enabled: boolean;
 }
 
-const LAUNCH_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const LAUNCH_API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
 export function mapLaunchProject(p: LaunchProjectApiItem): LaunchProjectOption {
   return {
@@ -669,6 +671,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       ...(sprintId ? { sprintId } : { activeSprint: true }),
     })
       .then(data => {
+        const rawTrace = data as unknown as { stories?: Array<{ scenarios?: RawTracedScenario[] }>; scenarios?: RawTracedScenario[] };
         for (const _s of (data.stories ?? [])) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
         for (const _sc of (data.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'flat-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
         console.info('[scenario-preview-shape]', {
@@ -679,6 +682,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
           nestedDataKeys: Object.keys(data?.data ?? {}),
           nestedDataRouteProfileType: typeof data?.data?.routeProfile,
         });
+        for (const _s of (rawTrace.stories ?? [])) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
+        for (const _sc of (rawTrace.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'flat-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
         const normalized = normalizeScenarioPreviewResponse(data);
         for (const _s of normalized.stories) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_NORMALIZED=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
          setStories(normalized.stories);
@@ -1083,7 +1088,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     if (!persisted || (persisted.generationBatches?.length ?? 0) === 0) return; // nada que recuperar
     // Compatibilidad: mismo app/proyecto y, si ambos conocen sprint, mismo sprint.
     if (persisted.appSlug !== config.automationProject || persisted.projectKey !== config.jiraProject) return;
-    if (persisted.sprintId && activeSprint.id && persisted.sprintId !== activeSprint.id) return;
+    if (persisted.sprintId && activeSprint.id && persisted.sprintId !== String(activeSprint.id)) return;
     mobileHydratedRef.current = true;
     mobileRehydrationActiveRef.current = true;
     stopMobileGenerationPolling();
@@ -3152,7 +3157,7 @@ try {
                   <span className="text-[14px] font-semibold">No se pudieron generar los escenarios</span>
                 </div>
                 <p className="text-[12px] text-[#8B999D] mb-4">{mobileScenariosError}</p>
-                <button onClick={handleGenerateMobileScenarios} className="text-[12px] font-semibold text-[#104B99] hover:underline flex items-center gap-1.5">
+                <button onClick={() => handleGenerateMobileScenarios(missingMobileIssueKeys)} className="text-[12px] font-semibold text-[#104B99] hover:underline flex items-center gap-1.5">
                   <Loader2 size={12} /> Reintentar
                 </button>
               </div>

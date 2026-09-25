@@ -4,6 +4,7 @@ import { getRunProviderConfig, requestDiscoveryBatch, requestScenarioPreviewRun,
 import type { DataContextEntry } from '../runs-provider';
 import { resolveTestRailProjectName, shouldMigrateAppConfig, normalizeAppSlug } from '../app-config-service';
 import { TestRailClient } from '../testrail-client';
+import { engineHeaders } from '../engine-auth';
 
 const router = Router();
 
@@ -84,11 +85,8 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
     // Resolver nombre del proyecto TestRail para migración automática de perfil
     let testRailProjectName = body?.testRailProjectName as string | undefined;
     if (!testRailProjectName && projectId > 0) {
-      const trClient = new TestRailClient({
-        url: process.env.TESTRAIL_URL || '',
-        email: process.env.TESTRAIL_EMAIL || '',
-        apiKey: process.env.TESTRAIL_API_KEY || '',
-      });
+      // El constructor lee la config de las mismas env vars vía getTestRailConfig()
+      const trClient = new TestRailClient();
       testRailProjectName = await resolveTestRailProjectName(projectId, null, trClient).catch(() => null) ?? undefined;
     }
 
@@ -188,7 +186,7 @@ router.post('/launch-execution', async (req: Request, res: Response) => {
   try {
     const upstreamRes = await fetch(upstreamUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(body),
     });
 
@@ -220,7 +218,7 @@ router.post('/:jobId/rerun', async (req: Request, res: Response) => {
   try {
     const upstreamRes = await fetch(upstreamUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(req.body || { mode: 'all' }),
     });
     const bodyText = await upstreamRes.text();
@@ -355,7 +353,7 @@ router.get('/:jobId/evidence-docx/status', async (req: Request, res: Response) =
   const upstreamDocxUrl = `${baseUrl}/api/runs/${jobId}/evidence-docx`;
 
   try {
-    const statusProbe = await fetch(upstreamStatusUrl, { headers: { Accept: 'application/json' } });
+    const statusProbe = await fetch(upstreamStatusUrl, { headers: { Accept: 'application/json', ...engineHeaders() } });
     const rawBody = await statusProbe.text();
     let parsed: any = null;
     try { parsed = rawBody ? JSON.parse(rawBody) : null; } catch { parsed = null; }

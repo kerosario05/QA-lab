@@ -1,4 +1,4 @@
-import type { McpScenario } from '../scenarios/types';
+import type { McpRouteProfile, McpScenario } from '../scenarios/types';
 import type { DiscoveryBatchPayload, ScenarioPreviewPayload } from '../runs';
 
 export interface LaunchValidationResult {
@@ -17,16 +17,7 @@ export interface LaunchSelection {
   targetAppName?: string;
   sectionName?: string;
   forceRediscovery?: boolean;
-  routeProfile?: {
-    name: string;
-    entry: Array<{ businessLabel: string; visibleLabel: string }>;
-    aliases?: Record<string, string>;
-    intermediates?: Record<string, string[]>;
-    domainTerms?: Record<string, string>;
-    visibleControls?: string[];
-    representativeFixture?: Record<string, string>;
-    notes?: string[];
-  };
+  routeProfile?: McpRouteProfile;
   source?: {
     projectKey: string;
     sprintId?: number;

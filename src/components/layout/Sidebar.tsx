@@ -1,20 +1,46 @@
-import { LayoutGrid, Rocket, History, Settings, Sparkles, Video } from 'lucide-react';
+import { LayoutGrid, Rocket, History, Settings, Sparkles, Video, Users } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
+import { useAuth } from '../../auth/AuthContext';
+import { useRecordingCapability } from '../../services/capabilities';
+import type { PermissionKey } from '../../auth/types';
 
 interface SidebarProps {
   active: string;
   onChange: (v: string) => void;
 }
 
-const items = [
-  { id: 'dashboard', label: 'Panorama', icon: LayoutGrid },
-  { id: 'execute', label: 'Lanzar pruebas', icon: Rocket },
-  { id: 'grabacion', label: 'Grabación', icon: Video },
-  { id: 'ejecuciones', label: 'Ejecuciones', icon: History },
-  { id: 'configuracion', label: 'Configuración', icon: Settings },
+/**
+ * Navigation entries, each gated by the permissions its module needs.
+ *
+ * Hiding an entry the user cannot open is the honest counterpart to the API's
+ * 403 — not a replacement for it: the engine enforces the same permissions on
+ * every request.
+ */
+const items: { id: string; label: string; icon: typeof LayoutGrid; permissions: PermissionKey[] }[] = [
+  { id: 'dashboard', label: 'Panorama', icon: LayoutGrid, permissions: ['dashboard.view'] },
+  { id: 'execute', label: 'Lanzar pruebas', icon: Rocket, permissions: ['tests.launch'] },
+  { id: 'grabacion', label: 'Grabación', icon: Video, permissions: ['recordings.view', 'recordings.create'] },
+  { id: 'ejecuciones', label: 'Ejecuciones', icon: History, permissions: ['executions.view'] },
+  { id: 'configuracion', label: 'Configuración', icon: Settings, permissions: ['projects.view'] },
+  { id: 'usuarios', label: 'Usuarios', icon: Users, permissions: ['admin.users', 'admin.roles'] },
 ];
 
+function initials(fullName: string): string {
+  const parts = fullName.trim().split(/s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
 export function Sidebar({ active, onChange }: SidebarProps) {
+  const { canAny, user, roles } = useAuth();
+  const recording = useRecordingCapability();
+  // Two independent gates: what this user may do, and what this engine can do.
+  // A server engine cannot open the visible browser recording needs.
+  const visible = items.filter(
+    item => canAny(...item.permissions) && (item.id !== 'grabacion' || recording.enabled),
+  );
+
   return (
     <aside className="w-[240px] bg-white border-r border-[#E8EBEC] flex flex-col">
       <div className="px-5 py-5 flex items-center gap-2.5">
@@ -31,7 +57,7 @@ export function Sidebar({ active, onChange }: SidebarProps) {
       </div>
 
       <nav className="flex-1 px-3 pt-2 space-y-0.5">
-        {items.map(it => {
+        {visible.map(it => {
           const Icon = it.icon;
           const isActive = active === it.id;
           return (
@@ -61,10 +87,10 @@ export function Sidebar({ active, onChange }: SidebarProps) {
       </div>
 
       <div className="p-3 mx-3 mb-4 flex items-center gap-2.5">
-        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#104B99] to-[#48A157] flex items-center justify-center text-white text-[11px] font-semibold">CM</div>
+        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#104B99] to-[#48A157] flex items-center justify-center text-white text-[11px] font-semibold shrink-0">{initials(user?.fullName ?? '')}</div>
         <div className="flex-1 min-w-0">
-          <div className="text-[12px] font-semibold text-[#1a1f2e] truncate">Carlos Martínez</div>
-          <div className="text-[10px] text-[#8B999D]">QA Lead</div>
+          <div className="text-[12px] font-semibold text-[#1a1f2e] truncate">{user?.fullName ?? 'Invitado'}</div>
+          <div className="text-[10px] text-[#8B999D] truncate">{roles[0]?.name ?? 'Sin rol'}</div>
         </div>
       </div>
     </aside>

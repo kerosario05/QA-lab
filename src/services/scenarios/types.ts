@@ -32,6 +32,8 @@ export interface StoryScenario {
   executionReadiness?: string;
   semanticValidity?: string;
   automationType?: string;
+  /** Nombre del perfil de rutas; ver storiesToMcpScenarios en server/runs-provider.ts. */
+  routeProfile?: string;
   launchClassification?: "standard" | "adaptive" | "nonAutomatable";
   publicationClassification?: string;
   nonAutomatable?: boolean;
@@ -111,4 +113,106 @@ export interface BlockedScenario {
   appSlug: string;
   appProfilePath?: string;
   suggestedAction: string;
+}
+
+// ---------------------------------------------------------------------------
+// Forma MCP (plana). Distinta de StoryScenario, que es la forma TestRail:
+// aquí `steps` son strings sueltos y el resultado esperado es `expectedResult`.
+// ---------------------------------------------------------------------------
+
+export interface McpRouteProfile {
+  name: string;
+  entry: Array<{ businessLabel: string; visibleLabel: string }>;
+  aliases?: Record<string, string>;
+  intermediates?: Record<string, string[]>;
+  domainTerms?: Record<string, string>;
+  visibleControls?: string[];
+  representativeFixture?: Record<string, string>;
+  notes?: string[];
+}
+
+export interface ScenarioSourceTrace {
+  sourceMode: string;
+  jiraIssueKey: string;
+  jiraSummary: string;
+  testRailProjectId: number | null;
+  suiteId: number | null;
+  sectionId: number | null;
+  sectionName: string | null;
+  sourceCaseIds: string[];
+}
+
+export interface ScenarioValidation {
+  valid?: boolean;
+  errors?: string[];
+  warnings?: string[];
+}
+
+export interface McpScenario {
+  sourceIssueKey: string;
+  title: string;
+  steps?: string[];
+  preconditions?: string[];
+  expectedResult?: string;
+  scenarioId?: string;
+  caseId?: number;
+  type?: string;
+  database?: string;
+  isConverted?: number | boolean;
+  automationType?: string;
+  launchClassification?: "standard" | "adaptive" | "nonAutomatable";
+  setupStrategy?: string;
+  appSlug?: string;
+  targetAppSlug?: string;
+  targetAppName?: string;
+  /** Nombre del perfil de rutas, no el perfil en sí (ver McpRouteProfile). */
+  routeProfile?: string;
+  dataRequirements?: string;
+  nonExecutableCriteria?: string;
+  mcpExecutable?: boolean;
+  executionReadiness?: string;
+  semanticValidity?: string;
+  validation?: ScenarioValidation;
+  publicationClassification?: string;
+  nonAutomatable?: boolean;
+  metadata?: Record<string, unknown>;
+  targetScreen?: string;
+  actualChain?: unknown;
+  requiredChain?: unknown;
+  sourceTrace?: ScenarioSourceTrace;
+  generationSource?: ScenarioSourceTrace;
+}
+
+export interface McpPreviewResponse {
+  scenarios: McpScenario[];
+  stories?: Story[];
+  totalScenarios?: number;
+  cached?: boolean;
+  summary?: { generated?: number };
+  source?: { issuesFound?: unknown[] };
+  /** Campos presentes cuando la generación se resuelve de forma asíncrona. */
+  status?: string;
+  jobId?: string;
+  job?: { id?: string; status?: string } | null;
+}
+
+export type ScenarioReadinessStatus =
+  | "auto_executable"
+  | "needs_route_profile"
+  | "needs_test_data"
+  | "unsupported_or_manual"
+  | "too_ambiguous";
+
+export interface ScenarioReadinessItem {
+  sourceIssueKey: string;
+  title: string;
+  status: ScenarioReadinessStatus;
+  reasons: string[];
+  blockingSignals: string[];
+  recommendation: string;
+}
+
+export interface ScenarioReadinessSummary {
+  counts: Record<ScenarioReadinessStatus, number>;
+  items: ScenarioReadinessItem[];
 }

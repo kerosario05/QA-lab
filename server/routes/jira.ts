@@ -106,7 +106,7 @@ router.post('/issues/upload-defects', async (req: Request, res: Response) => {
   // Diagnostic: discover valid issue types for this project — abort if invalid
   let availableIssueTypes: string[] = [];
   try {
-    const meta = await client.request<any>(`/rest/api/2/issue/createmeta?projectKeys=${projectKey}&expand=projects.issuetypes.fields`);
+    const meta = await client.getCreateMeta(projectKey);
     availableIssueTypes = meta?.projects?.[0]?.issuetypes?.map((t: any) => t.name) ?? [];
     console.log(`[jira-api] createmeta projectKey=${projectKey} issueTypes=[${availableIssueTypes.join(', ')}]`);
   } catch (metaErr: any) {
@@ -131,7 +131,7 @@ router.post('/issues/upload-defects', async (req: Request, res: Response) => {
   const normField = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
   const fieldMappings: Record<string, { id: string; name: string; type: string } | undefined> = {};
   try {
-    const meta = await client.request<any>(`/rest/api/2/issue/createmeta?projectKeys=${projectKey}&expand=projects.issuetypes.fields`);
+    const meta = await client.getCreateMeta(projectKey);
     const issueTypeMeta = meta?.projects?.[0]?.issuetypes?.find((t: any) => t.name === issueType);
     const rawFields = (issueTypeMeta?.fields ?? {}) as Record<string, any>;
 

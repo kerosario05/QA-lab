@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom';
 import { AlertCircle, Boxes, Plus, FolderCog, Loader2, X, ChevronDown, Upload } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
+import { useAuth } from '../../auth/AuthContext';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
 export interface ProjectListItem {
   id: string;
@@ -120,7 +121,6 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
     ])
       .then(([data]) => {
         const p = data.project;
-        const cfg = data.mobileConfig || data.webConfig;
         setName(p.name || '');
         setSlug(p.slug || '');
         setType(p.projectType === 2 ? 'mobile' : 'web');
@@ -573,6 +573,12 @@ function DeleteProjectModal({ target, onClose, onDeleted }: { target: { slug: st
 }
 
 export function Configuracion() {
+  // The engine enforces these too; hiding the actions keeps the UI honest about
+  // what this user can actually do instead of failing after the click.
+  const { can } = useAuth();
+  const canCreate = can('projects.create');
+  const canEdit = can('projects.edit');
+  const canDelete = can('projects.delete');
   const [items, setItems] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -618,12 +624,14 @@ export function Configuracion() {
             <FolderCog size={16} className="text-[#104B99]" />
             <span className="text-[13px] font-semibold text-[#1a1f2e]">Proyectos</span>
           </div>
-          <button
-            onClick={() => { setShowNew(true); setNotice(null); }}
-            className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black px-4 py-2 rounded-full transition"
-          >
-            <Plus size={13} /> Nuevo proyecto
-          </button>
+          {canCreate && (
+            <button
+              onClick={() => { setShowNew(true); setNotice(null); }}
+              className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black px-4 py-2 rounded-full transition"
+            >
+              <Plus size={13} /> Nuevo proyecto
+            </button>
+          )}
         </div>
 
         {notice && (
@@ -679,18 +687,22 @@ export function Configuracion() {
                   <div className="text-[14px] font-medium text-[#1a1f2e] truncate">{p.name}</div>
                   <div className="text-[11px] text-[#8B999D] mt-0.5 font-mono">{p.slug}</div>
                 </div>
-                <button
-                  onClick={() => { setEditSlug(p.slug); setNotice(null); }}
-                  className="text-[12px] font-medium text-[#104B99] hover:text-[#104B99]/70 transition whitespace-nowrap"
-                >
-                  Editar
-                </button>
-                <button
-                  onClick={() => { setDeleteTarget({ slug: p.slug, name: p.name }); setNotice(null); }}
-                  className="text-[12px] font-medium text-[#E63946] hover:text-[#E63946]/70 transition whitespace-nowrap"
-                >
-                  Eliminar
-                </button>
+                {canEdit && (
+                  <button
+                    onClick={() => { setEditSlug(p.slug); setNotice(null); }}
+                    className="text-[12px] font-medium text-[#104B99] hover:text-[#104B99]/70 transition whitespace-nowrap"
+                  >
+                    Editar
+                  </button>
+                )}
+                {canDelete && (
+                  <button
+                    onClick={() => { setDeleteTarget({ slug: p.slug, name: p.name }); setNotice(null); }}
+                    className="text-[12px] font-medium text-[#E63946] hover:text-[#E63946]/70 transition whitespace-nowrap"
+                  >
+                    Eliminar
+                  </button>
+                )}
               </div>
             ))}
           </div>

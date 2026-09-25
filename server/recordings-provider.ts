@@ -1,4 +1,5 @@
 import { getScenarioPreviewConfig } from './scenario-preview-provider';
+import { engineHeaders } from './engine-auth';
 
 /**
  * Bridge to the automation engine's recording endpoints.
@@ -47,7 +48,12 @@ async function callRecordingEndpoint(
   const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
+    const res = await fetch(url, {
+      ...init,
+      // Carry the caller's session through to the engine.
+      headers: { ...(init.headers as Record<string, string> | undefined), ...engineHeaders() },
+      signal: controller.signal,
+    });
     clearTimeout(timeoutId);
 
     const rawBody = await res.text();
@@ -95,6 +101,18 @@ async function callRecordingEndpoint(
 }
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
+
+/**
+ * Whether the engine behind this BFF can record at all.
+ *
+ * A server engine runs headless and cannot open the visible browser a recording
+ * needs, so the UI asks this before offering the module.
+ */
+export function getRecordingCapabilities(): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint('recordings-capabilities', '/api/recordings/capabilities', {
+    method: 'GET',
+  });
+}
 
 export function listRecordings(projectSlug: string): Promise<RecordingsProviderResponse> {
   return callRecordingEndpoint(
