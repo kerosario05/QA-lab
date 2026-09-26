@@ -111,8 +111,13 @@ describe('TestRail input requirements loader', () => {
 
     await proxyCaseInputRequirements(request, response, fetcher);
 
+    // El segundo argumento dejó de ser opcional: con AUTH_ENABLED=true el motor rechaza
+    // la llamada sin sesión, y este proxy la hacía a secas. Se comprueba que las cabeceras
+    // viajan, no su contenido: quién pone el token es responsabilidad de `engineHeaders()`,
+    // que tiene su propia cobertura en `runs.auth-forwarding.test.ts`.
     expect(fetcher).toHaveBeenCalledWith(
       expect.stringMatching(/\/api\/projects\/project-a\/cases\/22\/input-requirements$/),
+      { headers: expect.any(Object) },
     );
     expect(json).toHaveBeenCalledWith({ inputRequirements: [] });
   });

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { engineHeaders } from '../engine-auth';
 
 type Fetcher = (url: string, init?: RequestInit) => Promise<globalThis.Response>;
 
@@ -18,7 +19,7 @@ export async function proxyScenarioAutofill(
   try {
     const upstream = await fetcher(`${base}/api/runtime-inputs/scenario-autofill`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(req.body ?? {}),
     });
     const text = await upstream.text();
@@ -44,7 +45,10 @@ export async function proxyCaseInputRequirements(
   if (!base) return res.status(503).json({ ok: false, errorCode: 'SCENARIO_PREVIEW_NOT_CONFIGURED', message: 'SCENARIO_PREVIEW_BASE_URL is not set' });
 
   try {
-    const upstream = await fetcher(`${base}/api/projects/${encodeURIComponent(projectSlug)}/cases/${encodeURIComponent(caseId)}/input-requirements`);
+    const upstream = await fetcher(
+      `${base}/api/projects/${encodeURIComponent(projectSlug)}/cases/${encodeURIComponent(caseId)}/input-requirements`,
+      { headers: engineHeaders() },
+    );
     const text = await upstream.text();
     let body: unknown;
     try { body = JSON.parse(text); } catch { body = { ok: false, error: text }; }
@@ -75,7 +79,7 @@ export async function proxySaveCaseInputRequirements(
   try {
     const upstream = await fetcher(`${base}/api/projects/${encodeURIComponent(projectSlug)}/cases/${encodeURIComponent(caseId)}/input-requirements`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify({ inputRequirements }),
     });
     const text = await upstream.text();

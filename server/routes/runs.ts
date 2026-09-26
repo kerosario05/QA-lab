@@ -243,7 +243,7 @@ router.get('/:jobId/logs', async (req: Request, res: Response) => {
   const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/logs`;
 
   try {
-    const upstreamRes = await fetch(upstreamUrl);
+    const upstreamRes = await fetch(upstreamUrl, { headers: engineHeaders() });
     if (!upstreamRes.ok) {
       const bodyText = await upstreamRes.text().catch(() => '');
       let parsed: any;
@@ -299,7 +299,7 @@ router.get('/:jobId/evidence-docx', async (req: Request, res: Response) => {
   const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/evidence-docx`;
 
   try {
-    const upstreamRes = await fetch(upstreamUrl);
+    const upstreamRes = await fetch(upstreamUrl, { headers: engineHeaders() });
 
     if (!upstreamRes.ok) {
       const bodyText = await upstreamRes.text().catch(() => '');
@@ -378,7 +378,7 @@ router.get('/:jobId/evidence-docx/status', async (req: Request, res: Response) =
     }
 
     // Backward-compatible fallback for providers that still don't expose /status.
-    const headProbe = await fetch(upstreamDocxUrl, { method: 'HEAD' });
+    const headProbe = await fetch(upstreamDocxUrl, { method: 'HEAD', headers: engineHeaders() });
     const statusCode = headProbe.status;
     if (statusCode === 200) {
       return sendJson(res, 200, {
@@ -438,7 +438,7 @@ router.get('/:jobId', async (req: Request, res: Response) => {
   const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}`;
 
   try {
-    const upstreamRes = await fetch(upstreamUrl);
+    const upstreamRes = await fetch(upstreamUrl, { headers: engineHeaders() });
     const bodyText = await upstreamRes.text();
     let parsed: any;
     try { parsed = JSON.parse(bodyText); } catch { parsed = null; }
