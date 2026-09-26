@@ -269,7 +269,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     // runtime will attempt live structural resolution) -- only surface this as a BLOCKING
     // reason when it is actually why the scenario isn't executable, never merely because
     // technical certification is honestly incomplete.
-    if (!readiness.technicalReadiness && !readiness.executionReadiness) reasons.push(`${scenario.title}: falta cobertura técnica para una acción ejecutable`);
+    //
+    // Read from `actionCoverageReadiness`, the per-action verdict alone, and never from
+    // `technicalReadiness`/`executionReadiness`: both of those also fold in the scenario-wide
+    // state sequence, so an incoherent transition used to raise THIS message as well as its own
+    // one below -- two reasons, one cause, and the coverage one simply untrue.
+    if (readiness.actionCoverageReadiness === false) reasons.push(`${scenario.title}: falta cobertura técnica para una acción ejecutable`);
     if (readiness.executionReadiness && !scenarioPersisted) reasons.push(`${scenario.title}: escenario pendiente de materialización`);
     if (scenario.stateSequenceValid === false) reasons.push(`${scenario.title}: secuencia de estados incompatible`);
     if (scenario.mutationDiagnostics?.rejectionReason === 'MUTATION_NO_EFFECT') reasons.push(`${scenario.title}: la variante no cambia el recorrido`);

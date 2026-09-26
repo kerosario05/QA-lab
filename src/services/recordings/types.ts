@@ -145,6 +145,16 @@ export interface RecordingReadiness {
    * technical target.
    */
   promotionReadiness?: boolean;
+  /**
+   * The per-action verdict ALONE: does every executable action carry either a certified
+   * technical target or a `runtime_resolution_required` carve-out.
+   *
+   * Deliberately separate from `executionReadiness`, which also folds in the scenario-wide
+   * state-sequence verdict. A single incoherent transition therefore made a scenario whose
+   * actions were ALL covered report missing technical coverage too -- one cause, two
+   * contradictory messages. Only this field may drive a missing-coverage message.
+   */
+  actionCoverageReadiness?: boolean;
   publicationReadiness: boolean;
   missingInputs: RuntimeInputRequirement[];
 }

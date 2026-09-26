@@ -140,7 +140,9 @@ export function resolveScenarioReadiness(scenario: RecordedScenario, values: Rea
   // execution attempt.
   const promotionReadiness = executionReadiness && technicalReadiness;
   const publicationContentReadiness = functionalReadiness && mutationEffectReadiness && scenario.testRailSteps.every((step) => Boolean(step.content?.trim()));
-  return { functionalReadiness, dataReadiness, technicalReadiness, oracleReadiness, reviewReadiness: oracleReadiness, publicationContentReadiness, executionReadiness, promotionReadiness, publicationReadiness: functionalReadiness && dataReadiness && publicationContentReadiness, missingInputs };
+  // Reported separately from `executionReadiness` so a scenario-wide state-sequence problem can
+  // never be surfaced as a per-action coverage problem as well -- see `actionCoverageReadiness`.
+  return { functionalReadiness, dataReadiness, technicalReadiness, oracleReadiness, reviewReadiness: oracleReadiness, publicationContentReadiness, executionReadiness, promotionReadiness, actionCoverageReadiness: canonicalExecutionActionReadiness, publicationReadiness: functionalReadiness && dataReadiness && publicationContentReadiness, missingInputs };
 }
 
 export function readinessBadge(readiness: RecordingReadiness): string {
