@@ -4,6 +4,7 @@ import type {
   RecordingLive,
   RecordingSummary,
   RecordingLifecycle,
+  RecordingDerivationProgress,
   RecordingReplayAdmission,
   RecordingScenarioRejection,
   TestRailPublishResult,
@@ -115,6 +116,21 @@ export const recordingsApi = {
       method: 'POST',
       body: JSON.stringify({ projectSlug, title }),
     }),
+
+  /**
+   * Starts step generation in the background. A current engine answers 202 with `derivation`;
+   * an engine without background generation answers with the full `DeriveResult` instead.
+   */
+  deriveAsync: (recordingId: string, projectSlug: string, title?: string) =>
+    request<{ derivation?: RecordingDerivationProgress } & Partial<DeriveResult>>(`/api/recordings/${encodeURIComponent(recordingId)}/derive`, {
+      method: 'POST',
+      body: JSON.stringify({ projectSlug, title, async: true }),
+    }),
+
+  derivation: (recordingId: string, projectSlug: string) =>
+    request<{ derivation: RecordingDerivationProgress }>(
+      `/api/recordings/${encodeURIComponent(recordingId)}/derivation?projectSlug=${encodeURIComponent(projectSlug)}`,
+    ),
 
   scenarios: (recordingId: string, projectSlug: string) =>
     request<{ scenarios: RecordedScenario[]; lifecycle?: RecordingLifecycle }>(

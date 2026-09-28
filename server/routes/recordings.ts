@@ -7,6 +7,7 @@ import {
   stopRecording,
   deriveScenarios,
   getRecordingScenarios,
+  getRecordingDerivation,
   saveRecordingScenarios,
   updateRecordingScenarioValue,
   getRecordingTrace,
@@ -102,6 +103,12 @@ router.post('/:recordingId/derive', async (req: Request, res: Response) => {
   if (!projectSlug) return;
   console.log(`[recordings] derive request recordingId=${String(req.params.recordingId)}`);
   forward(res, await deriveScenarios(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
+});
+
+router.get('/:recordingId/derivation', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await getRecordingDerivation(String(req.params.recordingId), projectSlug));
 });
 
 router.get('/:recordingId/scenarios', async (req: Request, res: Response) => {

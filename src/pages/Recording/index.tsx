@@ -21,6 +21,7 @@ import { flushScenarioValueWrites, stageScenarioValueWrite } from '../../service
 import type { RecordedScenario, RecordedScenarioStep, RecordingSummary } from '../../services/recordings/types';
 import type { ActiveRun } from '../../types';
 import { derivationFeedback } from './derivation-feedback';
+import { GenerationProgressIndicator } from './GenerationProgressIndicator';
 import { isQaOverridableRuntimeInput, missingInputLabel, readinessBadge, resolveScenarioReadiness, runtimeRequirementsForScenario } from './recording-readiness';
 
 /**
@@ -659,6 +660,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         {!isRecording && label.trim().length === 0 && projectSlug && (
           <p className="mt-2 text-[11px] text-[#B4463C]">Define el objetivo de la grabación para poder iniciar y generar escenarios.</p>
         )}
+        {session.phase === 'stopping' && session.generation?.kind === 'stopping' && (
+          <GenerationProgressIndicator progress={session.generation} testId="recording-stop-progress" />
+        )}
 
         {session.phase === 'recording' && (
           <div className="mt-4 rounded-xl border border-[#48A157]/30 bg-[#F3F9F4] p-4">
@@ -738,10 +742,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         )}
 
         {session.phase === 'deriving' && (
-          <div aria-live="polite" data-testid="scenario-generation-loading" className="mt-4 flex items-center gap-2 text-[12px] text-[#58646D]">
-            <Loader2 size={14} className="animate-spin" />
-            Generando escenarios…
-          </div>
+          <GenerationProgressIndicator
+            progress={session.generation?.kind === 'deriving' ? session.generation : null}
+            testId="scenario-generation-loading"
+          />
         )}
 
         {session.error && (

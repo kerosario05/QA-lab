@@ -166,6 +166,16 @@ export function getRecordingScenarios(recordingId: string, projectSlug: string):
   );
 }
 
+/** Progress of a background step generation (derive with `async: true`); cheap, polled every ~2s. */
+export function getRecordingDerivation(recordingId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-derivation',
+    `/api/recordings/${encodeURIComponent(recordingId)}/derivation?projectSlug=${encodeURIComponent(projectSlug)}`,
+    { method: 'GET' },
+    15_000,
+  );
+}
+
 export function saveRecordingScenarios(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
   return callRecordingEndpoint(
     'recordings-scenarios-save',

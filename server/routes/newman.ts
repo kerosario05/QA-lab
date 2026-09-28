@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { engineHeaders } from '../engine-auth';
 
 const router = Router();
 
@@ -8,7 +9,7 @@ const NEWMAN_BASE_URL = process.env.NEWMAN_API_URL ?? 'http://localhost:3002';
 // GET /api/newman/collections
 router.get('/collections', async (_req: Request, res: Response) => {
   try {
-    const upstream = await fetch(`${NEWMAN_BASE_URL}/api/newman/collections`);
+    const upstream = await fetch(`${NEWMAN_BASE_URL}/api/newman/collections`, { headers: engineHeaders() });
     const data = await upstream.json();
     res.status(upstream.status).json(data);
   } catch (err: any) {
@@ -22,7 +23,7 @@ router.post('/run', async (req: Request, res: Response) => {
   try {
     const upstream = await fetch(`${NEWMAN_BASE_URL}/api/newman/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(req.body),
     });
     const data = await upstream.json();
@@ -37,7 +38,7 @@ router.post('/run', async (req: Request, res: Response) => {
 router.get('/:jobId/report', async (req: Request, res: Response) => {
   const { jobId } = req.params;
   try {
-    const upstream = await fetch(`${NEWMAN_BASE_URL}/api/newman/${jobId}/report`);
+    const upstream = await fetch(`${NEWMAN_BASE_URL}/api/newman/${jobId}/report`, { headers: engineHeaders() });
     if (!upstream.ok) {
       res.status(upstream.status).json({ ok: false, error: 'Report not available' });
       return;

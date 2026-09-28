@@ -71,6 +71,26 @@ export interface RecordingLive {
   noiseRefreshSkipped?: number;
   semanticModel?: SemanticRecordingModel;
   scenarios?: RecordedScenario[];
+  /** True while Stop is finishing the captures still queued. */
+  stopping?: boolean;
+  /** Captures accepted but not yet processed -- what Stop is still waiting for. */
+  pendingCaptures?: number;
+}
+
+export type RecordingDerivationStage = 'normalizing' | 'building_steps' | 'ai_enrichment' | 'saving';
+
+/** Progress of a background step generation (`POST .../derive` with `async: true`). */
+export interface RecordingDerivationProgress {
+  recordingId: string;
+  status: 'idle' | 'deriving' | 'derived' | 'failed';
+  stage?: RecordingDerivationStage;
+  stageIndex?: number;
+  stageCount?: number;
+  actionCount?: number;
+  stepCount?: number;
+  scenarioCount?: number;
+  errorCode?: string;
+  errorMessage?: string;
 }
 
 export interface RecordedScenarioStep {
