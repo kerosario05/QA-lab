@@ -12,6 +12,20 @@ import type { ExecutionListItem, ExecutionSummary } from '../../services/executi
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+/** The badge before the title: the Jira key, or where the run came from when there is none. */
+export function originBadge(item: { source?: string; origin?: string; huKey?: string }): string {
+  if (item.source === 'recording' || item.origin === 'recording') return 'GRABACIÓN';
+  return item.huKey ?? 'TESTRAIL';
+}
+
+/** The run's title by origin: the story, the recording goal, or the TestRail section. */
+export function executionTitle(exec: Pick<ExecutionSummary, 'origin' | 'source' | 'hu' | 'recording' | 'testRail'>): string {
+  if (exec.origin === 'recording' || exec.source === 'recording') return exec.recording?.goal ? `Grabación: ${exec.recording.goal}` : 'Grabación';
+  if (exec.hu.title || exec.hu.key) return exec.hu.title || exec.hu.key!;
+  const section = exec.testRail.sectionName || (exec.testRail.sectionId != null ? `sección ${exec.testRail.sectionId}` : '');
+  return section ? `Ejecución desde TestRail · ${section}` : 'Ejecución desde TestRail';
+}
+
 function mapStatusToBadge(status?: string): string {
   if (!status) return 'running';
   if (status === 'completed') return 'success';
@@ -132,13 +146,13 @@ function ExecutionList({ onOpen }: { onOpen: (launchId: string) => void }) {
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2.5 mb-1">
-                <span className="text-[11px] font-mono font-bold text-[#104B99] bg-[#104B99]/8 px-2 py-0.5 rounded">{it.huKey ?? '—'}</span>
+                <span className="text-[11px] font-mono font-bold text-[#104B99] bg-[#104B99]/8 px-2 py-0.5 rounded">{originBadge(it)}</span>
                 <StatusBadge status={mapStatusToBadge(it.status)} />
               </div>
-              <div className="text-[14px] font-medium text-[#1a1f2e] truncate">{it.huTitle || it.huKey || 'Ejecución'}</div>
+              <div className="text-[14px] font-medium text-[#1a1f2e] truncate">{it.huTitle || it.huKey || 'Ejecución desde TestRail'}</div>
               <div className="flex items-center gap-3 mt-1 text-[11px] text-[#8B999D]">
                 <span className="inline-flex items-center gap-1"><Boxes size={11} /> {it.appSlug ?? '—'}</span>
-                <span className="inline-flex items-center gap-1"><Database size={11} /> Run {it.testRunId ?? '—'}</span>
+                {it.source !== 'recording' && <span className="inline-flex items-center gap-1"><Database size={11} /> Run {it.testRunId ?? '—'}</span>}
                 <span>{formatDate(it.createdAt)}</span>
               </div>
             </div>
@@ -231,11 +245,11 @@ function ExecutionDetail({ launchId, onBack }: { launchId: string; onBack: () =>
       <div className="flex items-start justify-between mb-5">
         <div>
           <div className="flex items-center gap-2.5 mb-1">
-            <span className="text-[12px] font-mono font-bold text-[#104B99] bg-[#104B99]/8 px-2 py-0.5 rounded">{exec.hu.key ?? '—'}</span>
+            <span className="text-[12px] font-mono font-bold text-[#104B99] bg-[#104B99]/8 px-2 py-0.5 rounded">{originBadge({ source: exec.source, origin: exec.origin, huKey: exec.hu.key })}</span>
             <StatusBadge status={mapStatusToBadge(exec.status)} />
           </div>
           <h2 className="text-[24px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-            {exec.hu.title || exec.hu.key || 'Ejecución'}
+            {executionTitle(exec)}
           </h2>
           <div className="text-[11px] text-[#8B999D] mt-1">{formatDate(exec.createdAt)}</div>
         </div>
@@ -254,20 +268,41 @@ function ExecutionDetail({ launchId, onBack }: { launchId: string; onBack: () =>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        {/* HU / Proyecto */}
+        {/* Origen / Proyecto: what the run was based on, never a TestRail field under a Jira label */}
         <BentoCard className="!p-5">
-          <SectionTitle icon={<FileText size={14} />} label="Historia de Usuario · Proyecto" />
-          <Row label="HU" value={exec.hu.key ?? '—'} mono />
-          <Row label="Título" value={exec.hu.title || '—'} />
-          <Row label="Proyecto (app)" value={exec.project.appSlug ?? '—'} mono />
+          {exec.origin === 'recording' || exec.source === 'recording' ? (
+            <>
+              <SectionTitle icon={<FileText size={14} />} label="Grabación · Proyecto" />
+              <Row label="Objetivo" value={exec.recording?.goal || '—'} />
+              <Row label="Grabación" value={(exec.recording?.id ?? exec.recordingId ?? '—').slice(0, 8)} mono />
+              <Row label="Proyecto QA Lab" value={exec.project.appSlug ?? '—'} mono />
+            </>
+          ) : exec.origin === 'testrail' || !exec.hu.key ? (
+            <>
+              <SectionTitle icon={<FileText size={14} />} label="Origen · Proyecto" />
+              <Row label="Origen" value="Casos de TestRail (sin historia de usuario de Jira)" />
+              <Row label="Proyecto QA Lab" value={exec.project.appSlug ?? '—'} mono />
+            </>
+          ) : (
+            <>
+              <SectionTitle icon={<FileText size={14} />} label="Historia de Usuario · Proyecto" />
+              <Row label="HU" value={exec.hu.key} mono />
+              <Row label="Título" value={exec.hu.title || '—'} />
+              <Row label="Proyecto QA Lab" value={exec.project.appSlug ?? '—'} mono />
+            </>
+          )}
         </BentoCard>
 
         {/* TestRail */}
         <BentoCard className="!p-5">
           <SectionTitle icon={<Database size={14} />} label="TestRail" />
+          {exec.testRail.projectId == null && exec.testRail.sectionId == null && exec.testRail.runId == null ? (
+            <div className="text-[12px] text-[#8B999D] py-2">No hay destino de TestRail registrado para esta ejecución.</div>
+          ) : (
+          <>
           <Row label="Proyecto" value={String(exec.testRail.projectId ?? '—')} mono />
           <Row label="Suite" value={String(exec.testRail.suiteId ?? '—')} mono />
-          <Row label="Sección" value={exec.testRail.sectionName || String(exec.testRail.sectionId ?? '—')} />
+          <Row label="Sección" value={exec.testRail.sectionName ? `${exec.testRail.sectionName}${exec.testRail.sectionId != null ? ` (${exec.testRail.sectionId})` : ''}` : String(exec.testRail.sectionId ?? '—')} />
           <div className="flex items-center justify-between py-2 border-b border-[#F4F1EA] last:border-b-0">
             <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Test Run</span>
             {exec.testRail.runUrl ? (
@@ -279,6 +314,8 @@ function ExecutionDetail({ launchId, onBack }: { launchId: string; onBack: () =>
               <span className="text-[13px] font-semibold text-[#1a1f2e]">#{exec.testRail.runId ?? '—'}</span>
             )}
           </div>
+          </>
+          )}
         </BentoCard>
 
         {/* Escenarios */}
@@ -352,7 +389,7 @@ function ExecutionDetail({ launchId, onBack }: { launchId: string; onBack: () =>
             <p className="text-[12px] text-[#58646D] leading-relaxed">
               {evidenceDisabled
                 ? 'La evidencia no está disponible para esta ejecución (corrida previa al cambio o sin job asociado).'
-                : 'Genera y descarga el documento .docx con la evidencia por paso de esta ejecución.'}
+                : 'Genera y descarga el documento PDF con la evidencia por paso de esta ejecución.'}
             </p>
             <button
               onClick={handleDownload}

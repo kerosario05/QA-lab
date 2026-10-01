@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -18,10 +18,18 @@ import { useTestRailDestination } from './useTestRailDestination';
 import { TestRailUploadScreen } from './TestRailUploadScreen';
 import { ApiError, recordingsApi } from '../../services/recordings';
 import { flushScenarioValueWrites, stageScenarioValueWrite } from '../../services/recordings/scenario-value-flush';
-import type { RecordedScenario, RecordedScenarioStep, RecordingSummary } from '../../services/recordings/types';
+import type { RecordedScenario, RecordedScenarioStep, RecordingSummary, ScenarioTitleReview } from '../../services/recordings/types';
 import type { ActiveRun } from '../../types';
-import { derivationFeedback } from './derivation-feedback';
+import { derivationChangesSummary, derivationFeedback } from './derivation-feedback';
+import { DiscardedSuggestions } from './DiscardedSuggestions';
+import { GoalCoverageNotice } from './GoalCoverageNotice';
+import { ReviewerContextPanel } from './ReviewerContextPanel';
 import { GenerationProgressIndicator } from './GenerationProgressIndicator';
+import { LiveBrowserView } from './LiveBrowserView';
+import { ScenarioTitle } from './ScenarioTitle';
+import { RecordedScenarioCatalog } from './RecordedScenarioCatalog';
+import { useScenarioTitleReview } from './useScenarioTitleReview';
+import { useRecordingCapability } from '../../services/capabilities';
 import { isQaOverridableRuntimeInput, missingInputLabel, readinessBadge, resolveScenarioReadiness, runtimeRequirementsForScenario } from './recording-readiness';
 
 /**
@@ -98,6 +106,8 @@ export function isExecutionSelectionBlocked(entries: Array<{ executionReadiness:
  * gate. `session.summary` is display-only stat data (action/screen counts, duration); it must
  * never decide whether the derive capability itself is offered.
  */
+const DEFAULT_LIVE_VIEWPORT = { width: 1280, height: 1024 };
+
 export function canShowScenarioGenerationPanel(phase: RecordingPhase): boolean {
   return phase === 'stopped' || phase === 'derived';
 }
@@ -159,6 +169,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const [projectSlug, setProjectSlug] = useState('');
   const [projectDetail, setProjectDetail] = useState<RecordingProjectDetail | null>(null);
   const [label, setLabel] = useState('');
+  const goalInputRef = useRef<HTMLInputElement>(null);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [executionSelected, setExecutionSelected] = useState<Record<string, boolean>>({});
   // Keyed by the STABLE scenarioId, never local component state: a scenario card can be
@@ -187,13 +198,23 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   } | null>(null);
 
   const session = useRecordingSession(projectSlug);
+  const recordingCapability = useRecordingCapability();
+  // "remote": the recording browser runs on the server and is streamed into this page.
+  const remoteRecording = recordingCapability.presentation === 'remote';
   const execution = useRecordingExecution();
   const testRail = useTestRailDestination(projectDetail?.testRail);
   const project = projects.find((p) => p.slug === projectSlug);
   const primaryScenario = session.scenarios.find((scenario) => scenario.primary) ?? session.scenarios[0];
-  const suggestionScenarios = primaryScenario
+  const otherScenarios = primaryScenario
     ? session.scenarios.filter((scenario) => scenario.scenarioId !== primaryScenario.scenarioId)
     : [];
+  // Observed branches of the walkthrough (one case per exploration) are not suggestions.
+  const subFlowScenarios = otherScenarios.filter((scenario) => scenario.scope === 'sub_flow');
+  // Kept discarded suggestions: shown apart, never mixed with what the recording observed.
+  const draftScenarios = otherScenarios.filter((scenario) => scenario.reviewDraft === true);
+  const suggestionScenarios = otherScenarios.filter((scenario) => scenario.scope !== 'sub_flow' && scenario.reviewDraft !== true);
+  const keptDraftTitles = useMemo(() => new Set(draftScenarios.map((scenario) => scenario.title)), [draftScenarios]);
+  const changesSummary = derivationChangesSummary(session.derivation?.changes);
   const selectedScenarios = useMemo(
     () => session.scenarios.filter((s) => selected[s.scenarioId]),
     [session.scenarios, selected],
@@ -265,6 +286,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   );
   const executionBlockReasons = useMemo(() => executionReadinessForSelection.flatMap(({ scenario, readiness, scenarioPersisted }) => {
     const reasons: string[] = [];
+    if (readiness.reviewDraft) return [`${scenario.title}: es un borrador sugerido, grábalo para poder ejecutarlo`];
     if (readiness.missingInputs.length > 0) reasons.push(`${scenario.title}: faltan ${readiness.missingInputs.length} datos`);
     // A `runtime_resolution_required` action already lets `executionReadiness` through (the
     // runtime will attempt live structural resolution) -- only surface this as a BLOCKING
@@ -364,6 +386,18 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const isRecording = session.phase === 'recording' || session.phase === 'starting';
   const busy = session.phase === 'starting' || session.phase === 'stopping' || session.phase === 'deriving';
 
+  const { setScenarios } = session;
+  const handleScenarioRenamed = useCallback((renamed: RecordedScenario) => {
+    setScenarios((prev) => prev.map((scenario) => scenario.scenarioId === renamed.scenarioId ? { ...scenario, title: renamed.title, titleEditedByUser: renamed.titleEditedByUser } : scenario));
+  }, [setScenarios]);
+  const titleReview = useScenarioTitleReview({
+    recordingId: session.recordingId,
+    projectSlug,
+    scenarios: session.scenarios,
+    enabled: !isRecording && session.phase !== 'stopping' && session.scenarios.length > 0,
+    onScenarioRenamed: handleScenarioRenamed,
+  });
+
   /**
    * "Reproducir y subir a TestRail".
    *
@@ -440,6 +474,24 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         valueKey,
         persist: () => persistScenarioValue(recordingId, scenarioId, valueKey, value),
       });
+    }
+  }
+
+  async function keepSuggestionDraft(candidateId: string): Promise<void> {
+    if (!session.recordingId) return;
+    const result = await recordingsApi.keepSuggestionDraft(session.recordingId, projectSlug, candidateId);
+    session.setScenarios([...session.scenarios, result.scenario]);
+  }
+
+  async function discardSuggestionDraft(scenarioId: string): Promise<void> {
+    if (!session.recordingId) return;
+    try {
+      await recordingsApi.discardSuggestionDraft(session.recordingId, projectSlug, scenarioId);
+      session.setScenarios(session.scenarios.filter((scenario) => scenario.scenarioId !== scenarioId));
+      setSelected((prev) => ({ ...prev, [scenarioId]: false }));
+      setExecutionSelected((prev) => ({ ...prev, [scenarioId]: false }));
+    } catch (error) {
+      setPublishResult(error instanceof Error ? error.message : 'No se pudo descartar el borrador.');
     }
   }
 
@@ -626,13 +678,14 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex-1 min-w-[240px]">
             <label className="block text-[10px] uppercase tracking-[0.12em] text-[#8B999D] mb-1.5">
-              ¿Qué vas a recorrer?
+              Objetivo del recorrido
             </label>
             <input
+              ref={goalInputRef}
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               disabled={isRecording}
-              placeholder="Ej. Registro de usuario nuevo"
+              placeholder="Ej. Consultar el balance de una cuenta de ahorro"
               className="w-full px-3 py-2 rounded-lg border border-[#E8EBEC] text-[13px] outline-none focus:border-[#104B99] disabled:bg-[#FAFAF7]"
             />
           </div>
@@ -660,6 +713,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         {!isRecording && label.trim().length === 0 && projectSlug && (
           <p className="mt-2 text-[11px] text-[#B4463C]">Define el objetivo de la grabación para poder iniciar y generar escenarios.</p>
         )}
+        {!isRecording && (
+          <p className="mt-2 text-[11px] text-[#8B999D]">El título de cada escenario se genera con las pantallas y opciones que recorras; el objetivo queda como descripción.</p>
+        )}
         {session.phase === 'stopping' && session.generation?.kind === 'stopping' && (
           <GenerationProgressIndicator progress={session.generation} testId="recording-stop-progress" />
         )}
@@ -669,10 +725,16 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             <div className="flex items-center gap-2 mb-3">
               <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse" />
               <span className="text-[12px] font-semibold text-[#1a1f2e]">
-                Grabando — {project?.type === 'mobile' ? 'usa la app en el emulador' : 'usa el navegador que se abrió'}
+                Grabando — {project?.type === 'mobile' ? 'usa la app en el emulador' : remoteRecording ? 'usa el navegador de abajo' : 'usa el navegador que se abrió'}
               </span>
             </div>
-            <div className="flex gap-4">
+            {remoteRecording && project?.type !== 'mobile' && session.recordingId && (
+              <LiveBrowserView
+                recordingId={session.recordingId}
+                viewport={recordingCapability.viewport ?? DEFAULT_LIVE_VIEWPORT}
+              />
+            )}
+            <div className="flex gap-4 mt-3">
               <Stat label="Eventos capturados" value={session.live?.events ?? 0} />
               <Stat label="Pantallas" value={session.live?.screens ?? 0} />
               <div className="flex-[2] min-w-[160px]">
@@ -718,6 +780,22 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
 
         {canShowScenarioGenerationPanel(session.phase) && (
           <div className="mt-4 rounded-xl border border-[#E8EBEC] bg-[#FAFAF7] p-4">
+            {session.recordingId && projectSlug && (
+              <GoalCoverageNotice
+                recordingId={session.recordingId}
+                projectSlug={projectSlug}
+                refreshKey={`${session.phase}:${session.derivation?.version ?? 0}`}
+                onRecordMissing={(goal) => {
+                  // A new recording with the same goal: the start button is right above.
+                  setLabel(goal);
+                  goalInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  goalInputRef.current?.focus();
+                }}
+              />
+            )}
+            {session.recordingId && projectSlug && session.scenarios.length > 0 && (
+              <ReviewerContextPanel recordingId={session.recordingId} projectSlug={projectSlug} scenarios={session.scenarios} />
+            )}
             {session.summary && (
               <div className="flex gap-4 mb-3">
                   <Stat label="Acciones funcionales" value={primaryScenario ? scenarioMetrics(primaryScenario).functionalActionCount : session.summary.actionCount} />
@@ -731,11 +809,20 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               className="bg-[#104B99] hover:bg-[#0d3d7d] text-white text-[12px] font-semibold px-4 py-2.5 rounded-full flex items-center gap-1.5 transition"
             >
               <Sparkles size={13} />
-              {session.phase === 'derived' ? 'Generar escenarios nuevamente' : 'Generar escenarios'}
+              {session.scenarios.length > 0 ? 'Regenerar escenarios' : 'Generar escenarios'}
             </button>
             {session.phase === 'derived' && session.derivation && (
-              <div aria-live="polite" data-testid="scenario-generation-result" className="mt-3 rounded-lg border border-[#CFE7D2] bg-[#F3F9F4] px-3 py-2 text-[11px] text-[#34773D]">
-                {derivationFeedback(session.derivation)} · versión {session.derivation.version}
+              <div
+                aria-live="polite"
+                data-testid="scenario-generation-result"
+                className={changesSummary?.unchanged
+                  ? 'mt-3 rounded-lg border border-[#F0D9A8] bg-[#FDF7EA] px-3 py-2 text-[12px] text-[#8A5A00]'
+                  : 'mt-3 rounded-lg border border-[#CFE7D2] bg-[#F3F9F4] px-3 py-2 text-[12px] text-[#34773D]'}
+              >
+                {changesSummary && <div className="font-semibold">{changesSummary.headline}</div>}
+                <div className={changesSummary ? 'mt-1 text-[11px]' : undefined}>
+                  {derivationFeedback(session.derivation)} · versión {session.derivation.version}
+                </div>
               </div>
             )}
           </div>
@@ -867,6 +954,8 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               <ScenarioCard
                 key={primaryScenario.scenarioId}
                 scenario={primaryScenario}
+                titleReview={titleReview.reviews[primaryScenario.scenarioId]}
+                onRename={(title) => titleReview.rename(primaryScenario.scenarioId, title)}
                 checked={Boolean(selected[primaryScenario.scenarioId])}
                 onToggle={() => setSelected((prev) => ({ ...prev, [primaryScenario.scenarioId]: !prev[primaryScenario.scenarioId] }))}
                 executionChecked={Boolean(executionSelected[primaryScenario.scenarioId])}
@@ -883,6 +972,33 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               />
             </div>
           )}
+          {subFlowScenarios.length > 0 && (
+            <div className="space-y-2.5 mb-4">
+              <div className="text-[11px] uppercase tracking-[0.12em] text-[#104B99] font-semibold">Sub-flujos observados · {subFlowScenarios.length}</div>
+              <p className="text-[11px] text-[#8B999D] -mt-1">Cada exploración del recorrido como un caso independiente.</p>
+              {subFlowScenarios.map((s) => (
+                <ScenarioCard
+                  key={s.scenarioId}
+                  scenario={s}
+                  titleReview={titleReview.reviews[s.scenarioId]}
+                  onRename={(title) => titleReview.rename(s.scenarioId, title)}
+                  checked={Boolean(selected[s.scenarioId])}
+                  onToggle={() => setSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
+                  executionChecked={Boolean(executionSelected[s.scenarioId])}
+                  onExecutionToggle={() => setExecutionSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
+                  active={activeScenario?.scenarioId === s.scenarioId}
+                  onActivate={() => setActiveScenarioId(s.scenarioId)}
+                  expanded={Boolean(expandedScenarioIds[s.scenarioId])}
+                  onToggleExpanded={() => setExpandedScenarioIds((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
+                  datasetValues={scenarioDatasetValues.get(s.scenarioId) ?? sharedDatasetValues}
+                  onDatasetValueChange={(valueKey, value) => handleDatasetValueChange(s.scenarioId, valueKey, value)}
+                  onDatasetBlur={(valueKey, value) => void handleDatasetBlur(s.scenarioId, valueKey, value)}
+                  sensitiveDatasetKeys={sensitiveDatasetKeys}
+                  allowSensitiveMaterialization={allowSensitiveMaterialization}
+                />
+              ))}
+            </div>
+          )}
           {suggestionScenarios.length > 0 && (
             <div className="space-y-2.5">
               <div className="text-[11px] uppercase tracking-[0.12em] text-[#58646D] font-semibold">Sugerencias</div>
@@ -890,6 +1006,8 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 <ScenarioCard
                   key={s.scenarioId}
                   scenario={s}
+                  titleReview={titleReview.reviews[s.scenarioId]}
+                  onRename={(title) => titleReview.rename(s.scenarioId, title)}
                   checked={Boolean(selected[s.scenarioId])}
                   onToggle={() => setSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
                   executionChecked={Boolean(executionSelected[s.scenarioId])}
@@ -908,6 +1026,50 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             </div>
           )}
 
+          {draftScenarios.length > 0 && (
+            <div className="mt-4 space-y-2.5">
+              <div className="text-[11px] uppercase tracking-[0.12em] text-[#8A5A00] font-semibold">Borradores guardados · {draftScenarios.length}</div>
+              <p className="text-[11px] text-[#8B999D] -mt-1">Ideas sugeridas que no se grabaron: no se ejecutan ni se publican hasta grabarlas.</p>
+              {draftScenarios.map((s) => (
+                <div key={s.scenarioId}>
+                  <ScenarioCard
+                    scenario={s}
+                    titleReview={titleReview.reviews[s.scenarioId]}
+                    onRename={(title) => titleReview.rename(s.scenarioId, title)}
+                    checked={Boolean(selected[s.scenarioId])}
+                    onToggle={() => setSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
+                    executionChecked={Boolean(executionSelected[s.scenarioId])}
+                    onExecutionToggle={() => setExecutionSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
+                    active={activeScenario?.scenarioId === s.scenarioId}
+                    onActivate={() => setActiveScenarioId(s.scenarioId)}
+                    expanded={Boolean(expandedScenarioIds[s.scenarioId])}
+                    onToggleExpanded={() => setExpandedScenarioIds((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
+                    datasetValues={scenarioDatasetValues.get(s.scenarioId) ?? sharedDatasetValues}
+                    onDatasetValueChange={(valueKey, value) => handleDatasetValueChange(s.scenarioId, valueKey, value)}
+                    onDatasetBlur={(valueKey, value) => void handleDatasetBlur(s.scenarioId, valueKey, value)}
+                    sensitiveDatasetKeys={sensitiveDatasetKeys}
+                    allowSensitiveMaterialization={allowSensitiveMaterialization}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void discardSuggestionDraft(s.scenarioId)}
+                    className="mt-1 text-[11px] font-medium text-[#B4463C] hover:underline"
+                  >
+                    Descartar borrador
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {session.phase === 'derived' && (
+            <DiscardedSuggestions
+              aiGeneration={session.semanticModel?.aiGeneration}
+              keptTitles={keptDraftTitles}
+              onKeep={keepSuggestionDraft}
+            />
+          )}
+
           {session.narrative && (
             <details className="mt-4 group">
               <summary className="text-[12px] font-medium text-[#104B99] cursor-pointer select-none">
@@ -919,6 +1081,11 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             </details>
           )}
         </section>
+      )}
+
+      {/* ── Scenario catalog ─────────────────────────────────────────── */}
+      {projectSlug && session.history.length > 0 && (
+        <RecordedScenarioCatalog projectSlug={projectSlug} projectName={projectDetail?.name ?? projectSlug} onLaunch={onLaunch} />
       )}
 
       {/* ── History ─────────────────────────────────────────────────── */}
@@ -1186,8 +1353,12 @@ export function ScenarioCard({
   onDatasetBlur,
   sensitiveDatasetKeys,
   allowSensitiveMaterialization,
+  titleReview,
+  onRename,
 }: {
   scenario: RecordedScenario;
+  titleReview?: ScenarioTitleReview;
+  onRename?: (title: string) => Promise<string | null>;
   checked: boolean;
   onToggle: () => void;
   executionChecked: boolean;
@@ -1236,7 +1407,7 @@ export function ScenarioCard({
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <button type="button" onClick={onActivate} className="text-[13px] font-medium text-[#1a1f2e] text-left">{scenario.title}</button>
+            <ScenarioTitle scenario={scenario} review={titleReview} onActivate={onActivate} onRename={onRename} />
             {scenario.provenance === 'observed' && (
               <span className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-[#EAF5FF] text-[#2877A8]">
                 OBSERVADO

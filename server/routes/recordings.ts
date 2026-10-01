@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import {
   getRecordingCapabilities,listRecordings,
+  getScenarioCatalog,
   startRecording,
   getRecordingStatus,
   stopRecording,
@@ -10,6 +11,13 @@ import {
   getRecordingDerivation,
   saveRecordingScenarios,
   updateRecordingScenarioValue,
+  renameRecordingScenario,
+  keepSuggestionDraft,
+  getGoalCoverage,
+  getReviewerContext,
+  updateReviewerContext,
+  updateRecordingGoal,
+  discardSuggestionDraft,
   getRecordingTrace,
   getSemanticRecording,
   publishToTestRail,
@@ -87,6 +95,13 @@ router.post('/start', async (req: Request, res: Response) => {
   forward(res, await startRecording({ ...body, projectSlug }), 202);
 });
 
+// Declared before "/:recordingId" so the literal path wins.
+router.get('/scenario-catalog', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await getScenarioCatalog(projectSlug));
+});
+
 router.get('/:recordingId', async (req: Request, res: Response) => {
   const projectSlug = requireProjectSlug(req, res);
   if (!projectSlug) return;
@@ -133,6 +148,48 @@ router.put('/:recordingId/scenario-value', async (req: Request, res: Response) =
   const projectSlug = requireProjectSlug(req, res);
   if (!projectSlug) return;
   forward(res, await updateRecordingScenarioValue(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
+});
+
+router.put('/:recordingId/scenario-title', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await renameRecordingScenario(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
+});
+
+router.get('/:recordingId/context', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await getReviewerContext(String(req.params.recordingId), projectSlug));
+});
+
+router.put('/:recordingId/context', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await updateReviewerContext(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
+});
+
+router.get('/:recordingId/goal-coverage', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await getGoalCoverage(String(req.params.recordingId), projectSlug));
+});
+
+router.put('/:recordingId/goal', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await updateRecordingGoal(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
+});
+
+router.post('/:recordingId/suggestion-drafts', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await keepSuggestionDraft(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }), 201);
+});
+
+router.delete('/:recordingId/suggestion-drafts/:scenarioId', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await discardSuggestionDraft(String(req.params.recordingId), String(req.params.scenarioId), projectSlug));
 });
 
 router.get('/:recordingId/semantic', async (req: Request, res: Response) => {

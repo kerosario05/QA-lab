@@ -13,12 +13,21 @@ export interface RecordingCapability {
   enabled: boolean;
   reason?: 'disabled_by_config' | 'no_interactive_desktop';
   message?: string;
+  /**
+   * "remote": the recording browser runs on the server and this panel streams it (live view);
+   * "headed" (or absent, older engines): it opens as a window where the engine runs.
+   */
+  presentation?: 'headed' | 'remote';
+  /** Page size of a remote recording, in CSS pixels. */
+  viewport?: { width: number; height: number };
 }
 
 interface CapabilitiesResponse {
   ok: true;
   recording: RecordingCapability;
   maxConcurrent: number;
+  presentation?: 'headed' | 'remote';
+  viewport?: { width: number; height: number };
 }
 
 /**
@@ -39,7 +48,9 @@ export function fetchRecordingCapability(): Promise<RecordingCapability> {
   inFlight = api
     .get<CapabilitiesResponse>('/api/recordings/capabilities')
     .then((response) => {
-      cached = response.recording ?? ASSUMED;
+      cached = response.recording
+        ? { ...response.recording, presentation: response.presentation, viewport: response.viewport }
+        : ASSUMED;
       return cached;
     })
     .catch(() => {

@@ -122,6 +122,14 @@ export function listRecordings(projectSlug: string): Promise<RecordingsProviderR
   );
 }
 
+export function getScenarioCatalog(projectSlug: string): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-scenario-catalog',
+    `/api/recordings/scenario-catalog?projectSlug=${encodeURIComponent(projectSlug)}`,
+    { method: 'GET' },
+  );
+}
+
 export function startRecording(payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
   return callRecordingEndpoint(
     'recordings-start',
@@ -197,6 +205,65 @@ export function updateRecordingScenarioValue(recordingId: string, payload: Recor
     'recordings-scenario-value',
     `/api/recordings/${encodeURIComponent(recordingId)}/scenario-value`,
     { method: 'PUT', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
+export function renameRecordingScenario(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-scenario-title',
+    `/api/recordings/${encodeURIComponent(recordingId)}/scenario-title`,
+    { method: 'PUT', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
+export function getReviewerContext(recordingId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-context',
+    `/api/recordings/${encodeURIComponent(recordingId)}/context?projectSlug=${encodeURIComponent(projectSlug)}`,
+    { method: 'GET' },
+  );
+}
+
+/** Stores the business context of one scope: "recording" or a scenario id. */
+export function updateReviewerContext(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-context-update',
+    `/api/recordings/${encodeURIComponent(recordingId)}/context`,
+    { method: 'PUT', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
+export function getGoalCoverage(recordingId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-goal-coverage',
+    `/api/recordings/${encodeURIComponent(recordingId)}/goal-coverage?projectSlug=${encodeURIComponent(projectSlug)}`,
+    { method: 'GET' },
+  );
+}
+
+/** Adjusts the declared goal, or accepts that the recording does not complete it. */
+export function updateRecordingGoal(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-goal',
+    `/api/recordings/${encodeURIComponent(recordingId)}/goal`,
+    { method: 'PUT', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
+/** Keeps a suggestion the engine's quality gate discarded, as a non-executable draft. */
+export function keepSuggestionDraft(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-suggestion-draft',
+    `/api/recordings/${encodeURIComponent(recordingId)}/suggestion-drafts`,
+    { method: 'POST', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
+export function discardSuggestionDraft(recordingId: string, scenarioId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-suggestion-draft-delete',
+    `/api/recordings/${encodeURIComponent(recordingId)}/suggestion-drafts/${encodeURIComponent(scenarioId)}?projectSlug=${encodeURIComponent(projectSlug)}`,
+    { method: 'DELETE' },
   );
 }
 

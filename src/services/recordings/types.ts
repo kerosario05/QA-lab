@@ -151,6 +151,8 @@ export interface RuntimeInputRequirement {
 }
 
 export interface RecordingReadiness {
+  /** The scenario is a kept suggestion, never recorded: blocks execution and publication. */
+  reviewDraft?: boolean;
   functionalReadiness: boolean;
   dataReadiness: boolean;
   technicalReadiness: boolean;
@@ -208,9 +210,37 @@ export interface RecordedStepTarget {
   ambiguous?: boolean;
 }
 
+/** One recorded scenario of the project, as listed for selection across recordings. */
+export interface RecordedScenarioCatalogEntry {
+  recordingId: string;
+  recordingLabel?: string;
+  recordedAt: string;
+  platform: 'android' | 'web';
+  scenarioId: string;
+  title: string;
+  primary: boolean;
+  provenance?: string;
+  testRailCaseId?: number | string;
+  promoted: boolean;
+  /** What the engine's execute admission would accept right now. */
+  executable: boolean;
+  blockedReasons: string[];
+  titleReview?: ScenarioTitleReview;
+}
+
+/** How the engine judged a scenario title: repeats in the app, and whether it names anything. */
+export interface ScenarioTitleReview {
+  scenarioId: string;
+  conflicts: Array<{ source: 'recording' | 'case'; title: string; id: string; recordingId?: string }>;
+  weak: boolean;
+  reasons: Array<'duplicate_title' | 'typed_goal_title' | 'generic_title'>;
+}
+
 export interface RecordedScenario {
   scenarioId: string;
   title: string;
+  /** Renamed by a reviewer; regenerating the recording keeps it. */
+  titleEditedByUser?: boolean;
   description: string;
   preconditions: string[];
   kind: 'happy_path' | 'negative';
@@ -223,7 +253,7 @@ export interface RecordedScenario {
    */
   provenance?: 'observed' | 'derived';
   /** `segment` scenarios cover the flow up to the end of one screen block. */
-  scope?: 'end_to_end' | 'segment';
+  scope?: 'end_to_end' | 'segment' | 'sub_flow';
   mobileSteps: Array<Record<string, unknown>>;
   webSteps: Array<Record<string, unknown>>;
   testRailSteps: RecordedScenarioStep[];
@@ -262,6 +292,8 @@ export interface RecordedScenario {
   traceBacked?: boolean;
   containsUnexecutedActions?: boolean;
   replayEligible?: boolean;
+  /** A discarded suggestion a reviewer kept: documentation only, never executed or published. */
+  reviewDraft?: boolean;
   functionalReadiness?: boolean;
   technicalReadiness?: boolean;
   /** Present once the scenario has been published as a TestRail case. */
@@ -319,6 +351,46 @@ export interface DerivationMetadata {
   opportunitiesDetected?: number;
   candidatesGenerated?: number;
   rejectedBecause?: string[];
+  /** Difference against the scenarios persisted before this derivation. */
+  changes?: DerivationChanges;
+}
+
+/** Mirrors the engine's reviewer-context.ts. Never execution authority. */
+export interface ReviewerContext {
+  purpose?: string;
+  expectedOutcome?: string;
+  businessRules?: string;
+  testData?: string;
+  preconditions?: string[];
+}
+
+export interface RecordingReviewerContext {
+  recording?: ReviewerContext;
+  scenarios?: Record<string, ReviewerContext>;
+}
+
+/** Mirrors the engine's goal-coverage.ts. */
+export interface GoalTermCoverage {
+  term: string;
+  kind: 'action' | 'object';
+  covered: boolean;
+  evidence: string[];
+  missing?: { control: string; screen?: string };
+}
+
+export interface GoalCoverage {
+  goal?: string;
+  status: 'no_goal' | 'covered' | 'partial' | 'not_reached';
+  terms: GoalTermCoverage[];
+  pressed: string[];
+  acknowledged: boolean;
+}
+
+export interface DerivationChanges {
+  added: string[];
+  updated: string[];
+  removed: string[];
+  unchanged: string[];
 }
 
 export interface SemanticRecordingModel {
@@ -439,7 +511,7 @@ export interface SemanticRecordingModel {
     totalTokens?: number;
     contextBeforeChars?: number;
     contextAfterChars?: number;
-    candidates?: Array<{ title: string; type: string; rationale: string; sourceEvidenceRefs: string[]; expectedResultCandidate: string; oracleAuthority: string; goalRelated: boolean; needsReview: boolean; finalDecision: 'accepted' | 'rejected'; rejectionReason?: string }>;
+    candidates?: Array<{ candidateId?: string; title: string; type: string; rationale: string; sourceEvidenceRefs: string[]; expectedResultCandidate: string; oracleAuthority: string; goalRelated: boolean; needsReview: boolean; finalDecision: 'accepted' | 'rejected'; rejectionReason?: string }>;
     providerRejected?: Array<{ reason: string; sourceEvidenceRefs?: string[] }>;
   };
   derivation?: DerivationMetadata;

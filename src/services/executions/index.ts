@@ -1,7 +1,12 @@
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
+/** Where the execution was launched from: a Jira/TestRail launch or a recording replay. */
+export type ExecutionSource = 'launch' | 'recording';
+
 export interface ExecutionListItem {
   launchId: string;
+  source?: ExecutionSource;
+  recordingId?: string;
   createdAt?: string;
   completedAt?: string;
   status?: string;
@@ -33,8 +38,15 @@ export interface ExecutionDefect {
   jiraIssueUrl?: string;
 }
 
+/** What the run was based on: a Jira story, TestRail cases with no story, or a recording. */
+export type ExecutionOrigin = 'jira' | 'testrail' | 'recording';
+
 export interface ExecutionSummary {
   launchId: string;
+  source?: ExecutionSource;
+  origin?: ExecutionOrigin;
+  recordingId?: string;
+  recording?: { id: string; goal?: string };
   jobId?: string;
   createdAt?: string;
   completedAt?: string;

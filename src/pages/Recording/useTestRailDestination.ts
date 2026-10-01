@@ -27,6 +27,8 @@ export interface TestRailDestination {
   projectId?: string;
   suiteId?: string;
   sectionId?: string;
+  /** Shown in "Ejecuciones" for the run; ids alone are unreadable there. */
+  sectionName?: string;
 }
 
 export function useTestRailDestination(seed: TestRailSeed | null | undefined) {
@@ -130,13 +132,14 @@ export function useTestRailDestination(seed: TestRailSeed | null | undefined) {
     setSectionId('');
   }, []);
 
+  const sectionName = sections.find((s) => String(s.id) === sectionId)?.name;
+
   const destination: TestRailDestination = {
     projectId: projectId || undefined,
     suiteId: suiteId || undefined,
     sectionId: sectionId || undefined,
+    ...(sectionId && sectionName ? { sectionName } : {}),
   };
-
-  const sectionName = sections.find((s) => String(s.id) === sectionId)?.name;
 
   return {
     projects,

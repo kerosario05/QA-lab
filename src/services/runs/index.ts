@@ -349,7 +349,7 @@ export const runsProxy = {
     return request(`/api/runs/${jobId}/rerun`, { method: 'POST', body: JSON.stringify(body) });
   },
 
-  /** Descarga el archivo DOCX de evidencia para un jobId */
+  /** Descarga el documento de evidencia (PDF; DOCX si el motor solo tiene ese) para un jobId */
   downloadEvidence: async (jobId: string): Promise<void> => {
     const res = await fetch(`${PROXY}/api/runs/${jobId}/evidence-docx`);
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -357,7 +357,8 @@ export const runsProxy = {
     // Obtener el nombre del archivo desde el header o usar uno por defecto
     const contentDisposition = res.headers.get('Content-Disposition');
     const filenameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-    const filename = filenameMatch ? filenameMatch[1].replace(/['"]/g, '') : `evidencia-${jobId}.docx`;
+    const fallbackExtension = res.headers.get('Content-Type')?.includes('pdf') ? 'pdf' : 'docx';
+    const filename = filenameMatch ? filenameMatch[1].replace(/['"]/g, '') : `evidencia-${jobId}.${fallbackExtension}`;
 
     // Descargar el archivo
     const blob = await res.blob();

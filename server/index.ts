@@ -14,7 +14,8 @@ import mobileRouter from './routes/mobile';
 import executionsRouter from './routes/executions';
 import runtimeInputsRouter from './routes/runtime-inputs';
 import recordingsRouter from './routes/recordings';
-import { captureRequestAuth } from './engine-auth';
+import { captureRequestAuth, engineBaseUrl } from './engine-auth';
+import { attachLiveViewProxy } from './live-view-proxy';
 import { identityRouter } from './routes/identity';
 
 const app = express();
@@ -157,9 +158,13 @@ if (fs.existsSync(path.join(distDir, 'index.html'))) {
   console.log(`[qa-lab-server] sin dist/: solo API (en desarrollo lo sirve Vite)`);
 }
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[qa-lab-server] API listening on http://localhost:${PORT}`);
+  console.log(`[qa-lab-server] live view: ws /api/recordings/:recordingId/live -> motor`);
   console.log(`[qa-lab-server] routes: /api/testrail/*, /api/jira/*, /api/scenarios/*, /api/runs/*, /api/newman/*, /api/mobile/*, /api/executions/*, /api/recordings/*, /api/checklists/*`);
   const railEnv = { url: !!process.env.TESTRAIL_URL, email: !!process.env.TESTRAIL_EMAIL, key: !!process.env.TESTRAIL_API_KEY };
   console.log(`[qa-lab-server] TESTRAIL_URL=${railEnv.url} TESTRAIL_EMAIL=${railEnv.email} TESTRAIL_API_KEY=${railEnv.key}`);
 });
+
+// Live view of "remote" recordings: WebSocket upgrades tunneled to the engine.
+attachLiveViewProxy(server, engineBaseUrl);

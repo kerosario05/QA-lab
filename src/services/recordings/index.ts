@@ -1,5 +1,8 @@
 import type {
   DeriveResult,
+  GoalCoverage,
+  RecordingReviewerContext,
+  ReviewerContext,
   RecordedScenario,
   RecordingLive,
   RecordingSummary,
@@ -7,6 +10,8 @@ import type {
   RecordingDerivationProgress,
   RecordingReplayAdmission,
   RecordingScenarioRejection,
+  RecordedScenarioCatalogEntry,
+  ScenarioTitleReview,
   TestRailPublishResult,
 } from './types';
 
@@ -60,7 +65,7 @@ export function serializedPayloadBytes(payload: unknown): number {
   return new TextEncoder().encode(JSON.stringify(payload)).byteLength;
 }
 
-export type RecordingTestRailDestination = { projectId?: string; suiteId?: string; sectionId?: string };
+export type RecordingTestRailDestination = { projectId?: string; suiteId?: string; sectionId?: string; sectionName?: string };
 
 export function buildRecordingExecutePayload(
   projectSlug: string,
@@ -92,6 +97,12 @@ export const recordingsApi = {
   list: (projectSlug: string) =>
     request<{ recordings: RecordingSummary[]; appSlug: string }>(
       `/api/recordings?projectSlug=${encodeURIComponent(projectSlug)}`,
+    ),
+
+  /** Every recorded scenario of the project, newest recording first, with its executability. */
+  scenarioCatalog: (projectSlug: string) =>
+    request<{ scenarios: RecordedScenarioCatalogEntry[] }>(
+      `/api/recordings/scenario-catalog?projectSlug=${encodeURIComponent(projectSlug)}`,
     ),
 
   start: (projectSlug: string, recordingGoal?: string) =>
@@ -133,7 +144,7 @@ export const recordingsApi = {
     ),
 
   scenarios: (recordingId: string, projectSlug: string) =>
-    request<{ scenarios: RecordedScenario[]; lifecycle?: RecordingLifecycle }>(
+    request<{ scenarios: RecordedScenario[]; lifecycle?: RecordingLifecycle; titleReview?: Record<string, ScenarioTitleReview> }>(
       `/api/recordings/${encodeURIComponent(recordingId)}/scenarios?projectSlug=${encodeURIComponent(projectSlug)}`,
     ),
 
@@ -148,6 +159,51 @@ export const recordingsApi = {
       method: 'PUT',
       body: JSON.stringify(buildScenarioValueUpdateCommand(projectSlug, scenarioId, valueKey, value)),
     }),
+
+  /** Renames one scenario; the answer carries the fresh title review. */
+  renameScenario: (recordingId: string, projectSlug: string, scenarioId: string, title: string) =>
+    request<{ scenario: RecordedScenario; titleReview?: ScenarioTitleReview }>(`/api/recordings/${encodeURIComponent(recordingId)}/scenario-title`, {
+      method: 'PUT',
+      body: JSON.stringify({ projectSlug, scenarioId, title }),
+    }),
+
+  /** Business context QA added, recording-wide and per scenario. */
+  reviewerContext: (recordingId: string, projectSlug: string) =>
+    request<{ context: RecordingReviewerContext }>(
+      `/api/recordings/${encodeURIComponent(recordingId)}/context?projectSlug=${encodeURIComponent(projectSlug)}`,
+    ),
+
+  /** `scope` is "recording" or a scenario id; an empty context removes it. */
+  updateReviewerContext: (recordingId: string, projectSlug: string, scope: string, context: ReviewerContext) =>
+    request<{ context: RecordingReviewerContext }>(`/api/recordings/${encodeURIComponent(recordingId)}/context`, {
+      method: 'PUT',
+      body: JSON.stringify({ projectSlug, scope, context }),
+    }),
+
+  /** Does the recording do what its declared goal says? Computed by the engine on every read. */
+  goalCoverage: (recordingId: string, projectSlug: string) =>
+    request<{ coverage: GoalCoverage }>(
+      `/api/recordings/${encodeURIComponent(recordingId)}/goal-coverage?projectSlug=${encodeURIComponent(projectSlug)}`,
+    ),
+
+  updateGoal: (recordingId: string, projectSlug: string, change: { goal?: string; acknowledgeCoverage?: boolean }) =>
+    request<{ coverage: GoalCoverage }>(`/api/recordings/${encodeURIComponent(recordingId)}/goal`, {
+      method: 'PUT',
+      body: JSON.stringify({ projectSlug, ...change }),
+    }),
+
+  /** Keeps a suggestion the quality gate discarded, as a draft that never runs or publishes. */
+  keepSuggestionDraft: (recordingId: string, projectSlug: string, candidateId: string) =>
+    request<{ scenario: RecordedScenario }>(`/api/recordings/${encodeURIComponent(recordingId)}/suggestion-drafts`, {
+      method: 'POST',
+      body: JSON.stringify({ projectSlug, candidateId }),
+    }),
+
+  discardSuggestionDraft: (recordingId: string, projectSlug: string, scenarioId: string) =>
+    request<{ scenarioId: string }>(
+      `/api/recordings/${encodeURIComponent(recordingId)}/suggestion-drafts/${encodeURIComponent(scenarioId)}?projectSlug=${encodeURIComponent(projectSlug)}`,
+      { method: 'DELETE' },
+    ),
 
   trace: (recordingId: string, projectSlug: string) =>
     request<{ trace: { narrative?: string } }>(

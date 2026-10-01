@@ -134,7 +134,10 @@ export function resolveScenarioReadiness(scenario: RecordedScenario, values: Rea
   const oracleReadiness = reviewedOracle || (scenario.readiness?.oracleReadiness ?? scenario.oracleAuthority !== 'review_required');
   const mutationEffectReadiness = scenario.mutationDiagnostics?.rejectionReason !== 'MUTATION_NO_EFFECT'
     && scenario.mutationDiagnostics?.rejectionReason !== 'RUNTIME_DATA_CONSTRAINT_VIOLATION';
-  const executionReadiness = functionalReadiness && dataReadiness && executionActionReadiness && mutationEffectReadiness;
+  // A kept suggestion was never recorded: whatever its projection says, it never runs, is never
+  // promoted and never published -- it documents an idea until someone records it.
+  const recorded = scenario.reviewDraft !== true;
+  const executionReadiness = recorded && functionalReadiness && dataReadiness && executionActionReadiness && mutationEffectReadiness;
   // Promotion (spec generation/reuse/publication) demands full certification: no action may
   // still be pending live re-verification by the runtime resolver, unlike a Recording Replay
   // execution attempt.
@@ -142,10 +145,11 @@ export function resolveScenarioReadiness(scenario: RecordedScenario, values: Rea
   const publicationContentReadiness = functionalReadiness && mutationEffectReadiness && scenario.testRailSteps.every((step) => Boolean(step.content?.trim()));
   // Reported separately from `executionReadiness` so a scenario-wide state-sequence problem can
   // never be surfaced as a per-action coverage problem as well -- see `actionCoverageReadiness`.
-  return { functionalReadiness, dataReadiness, technicalReadiness, oracleReadiness, reviewReadiness: oracleReadiness, publicationContentReadiness, executionReadiness, promotionReadiness, actionCoverageReadiness: canonicalExecutionActionReadiness, publicationReadiness: functionalReadiness && dataReadiness && publicationContentReadiness, missingInputs };
+  return { functionalReadiness, dataReadiness, technicalReadiness, oracleReadiness, reviewReadiness: oracleReadiness, publicationContentReadiness, executionReadiness, promotionReadiness, actionCoverageReadiness: canonicalExecutionActionReadiness, publicationReadiness: recorded && functionalReadiness && dataReadiness && publicationContentReadiness, reviewDraft: !recorded, missingInputs };
 }
 
 export function readinessBadge(readiness: RecordingReadiness): string {
+  if (readiness.reviewDraft) return 'BORRADOR SUGERIDO';
   if (readiness.missingInputs.length > 0) return `FALTAN ${readiness.missingInputs.length} DATOS`;
   if (readiness.publicationReadiness && !readiness.executionReadiness) return 'LISTO PARA TESTRAIL';
   if (!readiness.oracleReadiness) return 'RESULTADO PENDIENTE DE REVISIÓN';
