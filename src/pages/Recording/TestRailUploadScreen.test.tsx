@@ -113,6 +113,80 @@ describe('TestRailUploadScreen', () => {
     expect(container?.textContent).not.toContain('Reproducir y generar spec');
   });
 
+  it('renders every selected scenario and derives the displayed count from that list', async () => {
+    stubFetch();
+    const secondScenario: RecordedScenario = {
+      scenarioId: 'REC-B2DCF6A5-01',
+      title: 'Kiosko3',
+      functionalActionCount: 7,
+    } as unknown as RecordedScenario;
+    render(
+      <TestRailUploadScreen
+        recordingId="a1dcf6a5-4a69-4015-8e44-cfb3ab75fd66"
+        projectSlug="project"
+        projectDetail={null}
+        scenarios={[scenario, secondScenario]}
+        dataOverrides={{}}
+        datasetValues={{}}
+        onBack={vi.fn()}
+      />,
+    );
+    await flush();
+    expect(container?.textContent).toContain('2 escenarios seleccionados');
+    expect(container?.textContent).toContain('Kiosko2');
+    expect(container?.textContent).toContain('Kiosko3');
+  });
+
+  it('starts one batch job for selected scenarios from different recordings', async () => {
+    const executeCalls: Array<{ url: string; body: any }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/testrail/projects/') && url.includes('/suites')) return jsonResponse({ suites: [{ id: 1501, name: 'Suite QA', is_master: false }] });
+      if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 1401, name: 'Proyecto QA' }] });
+      if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 1601, name: 'Secci?n QA', depth: 0 }] });
+      if (url.includes('/execute-batch')) {
+        executeCalls.push({ url, body: JSON.parse(init?.body as string) });
+        return jsonResponse({ ok: true, jobId: 'batch-job', scenarioCount: 2 }, 202);
+      }
+      return jsonResponse({});
+    }));
+    const secondScenario: RecordedScenario = {
+      scenarioId: 'REC-B2DCF6A5-01',
+      title: 'Kiosko3',
+      functionalActionCount: 7,
+    } as unknown as RecordedScenario;
+    const onLaunch = vi.fn();
+    render(
+      <TestRailUploadScreen
+        recordingId="recording-b"
+        projectSlug="project"
+        projectDetail={{ slug: 'project', name: 'Project', type: 'web', testRail: { projectId: '1401', projectIdTr: '1401', suiteId: '1501', sectionId: '1601' } } as any}
+        scenarios={[scenario, secondScenario]}
+        scenarioRecordingIds={['recording-a', 'recording-b']}
+        dataOverrides={{}}
+        datasetValues={{}}
+        scenarioDatasetValues={{}}
+        onBack={vi.fn()}
+        onLaunch={onLaunch}
+      />,
+    );
+    await flush();
+    await flush();
+    expect(findButton('Ejecutar')?.disabled).toBe(false);
+    await act(async () => { findButton('Ejecutar')?.click(); await flush(); });
+    expect(executeCalls).toHaveLength(1);
+    expect(executeCalls[0].url).toContain('/api/recordings/execute-batch');
+    expect(executeCalls[0].body.selections).toEqual([
+      expect.objectContaining({ recordingId: 'recording-a', scenarioId: 'REC-A1DCF6A5-01' }),
+      expect.objectContaining({ recordingId: 'recording-b', scenarioId: 'REC-B2DCF6A5-01' }),
+    ]);
+    expect(onLaunch).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: 'batch-job',
+      scenarioIds: ['REC-A1DCF6A5-01', 'REC-B2DCF6A5-01'],
+      total: 2,
+    }));
+  });
+
   // CASE 4, 5, 6: only the "Solo TestRail" source card is shown — Recording's origin is
   // already known, so Jira and the combined option (both from the unrelated Jira/TestRail
   // "sources" flow) never appear here.
@@ -361,7 +435,7 @@ describe('TestRailUploadScreen', () => {
   // Single-call contract (Phase 9): "Ejecutar Automatización" makes exactly one request to
   // /execute, carrying testRailDestination alongside recordingId/scenarioIds — never a
   // separate publish call composed in front of it.
-  it('sends one /execute request carrying testRailDestination, not a separate publish call', async () => {
+  it('sends one batch request carrying testRailDestination, not a separate publish call', async () => {
     const executeCalls: Array<{ url: string; body: unknown }> = [];
     vi.stubGlobal(
       'fetch',
@@ -371,7 +445,7 @@ describe('TestRailUploadScreen', () => {
         if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 401, name: 'Proyecto QA' }] });
         if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 601, name: 'Sección QA', depth: 0 }] });
         if (url.includes('/testrail')) throw new Error('publishToTestRail must not be called by the destination screen anymore');
-        if (url.includes('/execute')) {
+        if (url.includes('/execute-batch')) {
           executeCalls.push({ url, body: init?.body ? JSON.parse(init.body as string) : undefined });
           return jsonResponse({ ok: true, jobId: 'job-1', scenarioCount: 1, executionMode: 'shared_mcp_core' }, 202);
         }
@@ -402,9 +476,9 @@ describe('TestRailUploadScreen', () => {
     await flush();
 
     expect(executeCalls.length).toBe(1);
-    expect(executeCalls[0].url).toContain('/api/recordings/rec-1/execute');
+    expect(executeCalls[0].url).toContain('/api/recordings/execute-batch');
     expect(executeCalls[0].body).toMatchObject({
-      scenarioIds: ['REC-A1DCF6A5-01'],
+      selections: [{ recordingId: 'rec-1', scenarioId: 'REC-A1DCF6A5-01' }],
       testRailDestination: { projectId: '401', suiteId: '501', sectionId: '601' },
     });
     expect(onLaunch).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'job-1' }));

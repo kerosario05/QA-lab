@@ -81,6 +81,8 @@ export interface RecordedScenarioStep {
   stepNumber?: number;
   isSetup?: boolean;
   valueKey?: string;
+  /** 1-based position within a segmented (OTP-style) input group; picks one character of valueKey's value. */
+  segmentPosition?: number;
   sensitive?: boolean;
   expected: string;
   expectedType?: 'BUSINESS_ORACLE' | 'TECHNICAL_STATE';
@@ -434,3 +436,20 @@ export interface TestRailPublishResult {
   publishedTotal?: number;
   reconciledCount?: number;
 }
+
+export type RecordingDerivationStage = 'normalizing' | 'building_steps' | 'ai_enrichment' | 'saving';
+
+/** Progress of a background step generation (`POST .../derive` with `async: true`). */
+export interface RecordingDerivationProgress {
+  recordingId: string;
+  status: 'idle' | 'deriving' | 'derived' | 'failed';
+  stage?: RecordingDerivationStage;
+  stageIndex?: number;
+  stageCount?: number;
+  actionCount?: number;
+  stepCount?: number;
+  scenarioCount?: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+

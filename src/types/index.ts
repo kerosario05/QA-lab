@@ -50,6 +50,7 @@ export interface ActiveRun {
    *  don't echo issueKey/checklistUrl and tag defects with an internal execution id,
    *  so filtering by the launch jobId returns nothing. */
   checklistByIssueOnly?: boolean;
+  launchWarning?: string;
 }
 
 export interface TestCase {
@@ -157,7 +158,7 @@ export interface FailedTest {
   reportToJira: boolean;
 }
 
-export type View = 'dashboard' | 'execute' | 'grabacion' | 'live' | 'close' | 'ejecuciones' | 'checklist';
+export type View = 'dashboard' | 'execute' | 'grabacion' | 'live' | 'close' | 'ejecuciones' | 'checklist' | 'configuracion' | 'usuarios';
 
 export interface Scenario {
   jiraKey: string;

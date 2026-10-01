@@ -35,6 +35,7 @@ export async function flushScenarioValueWrites(recordingId: string, scenarioIds?
   dirtyKeyCount: number;
   persistSucceededCount: number;
   persistFailedCount: number;
+  persistNotReadyCount: number;
 }> {
   const allowedScenarioIds = scenarioIds ? new Set(scenarioIds) : undefined;
   const keys = [...pendingWrites.entries()]
@@ -42,9 +43,14 @@ export async function flushScenarioValueWrites(recordingId: string, scenarioIds?
     .map(([key]) => key);
   let persistSucceededCount = 0;
   let persistFailedCount = 0;
+  let persistNotReadyCount = 0;
   for (const key of keys) {
-    if (await flushSlot(key) === 'saved') persistSucceededCount += 1;
-    else persistFailedCount += 1;
+    const outcome = await flushSlot(key);
+    if (outcome === 'saved') persistSucceededCount += 1;
+    else {
+      persistFailedCount += 1;
+      if (outcome === 'not_ready') persistNotReadyCount += 1;
+    }
   }
-  return { dirtyKeyCount: keys.length, persistSucceededCount, persistFailedCount };
+  return { dirtyKeyCount: keys.length, persistSucceededCount, persistFailedCount, persistNotReadyCount };
 }

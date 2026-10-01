@@ -1,3 +1,4 @@
+import { engineHeaders } from './engine-auth';
 import { getScenarioPreviewConfig } from './scenario-preview-provider';
 
 export interface MobileProviderResponse {
@@ -28,6 +29,7 @@ async function callMobileEndpoint(
   try {
     const res = await fetch(url, {
       ...init,
+      headers: { ...(init.headers as Record<string, string> | undefined), ...engineHeaders() },
       signal: controller.signal,
     });
 

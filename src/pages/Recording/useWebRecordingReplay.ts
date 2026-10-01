@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { recordingsApi, type RecordingTestRailDestination } from '../../services/recordings';
+import { recordingsApi, type RecordingBatchSelection, type RecordingTestRailDestination } from '../../services/recordings';
 import type { RecordedScenario, RecordingReplayAdmission, RecordingScenarioRejection } from '../../services/recordings/types';
 
 /**
@@ -22,6 +22,7 @@ export interface WebReplayLaunch extends Partial<RecordingReplayAdmission> {
   scenarioCount?: number;
   rejectedScenarios?: RecordingScenarioRejection[];
   executionMode?: string;
+  publishToTestRailInvoked?: boolean;
   fastPath?: Array<{ scenarioId: string; caseId: number; specPath: string; status: 'passed' | 'failed' | 'skipped'; error?: string }>;
 }
 
@@ -90,5 +91,34 @@ export function useWebRecordingReplay() {
     [],
   );
 
-  return { replay, starting, error, setError };
+  const replayBatch = useCallback(async (
+    projectSlug: string,
+    selections: RecordingBatchSelection[],
+    testRailDestination: RecordingTestRailDestination,
+  ): Promise<WebReplayLaunch | null> => {
+    setError(null);
+    if (selections.length === 0) {
+      setError('No hay escenarios seleccionados para reproducir.');
+      return null;
+    }
+    setStarting(true);
+    try {
+      const launch = await recordingsApi.executeBatch(projectSlug, selections, testRailDestination);
+      return {
+        jobId: launch.jobId,
+        scenarioCount: launch.scenarioCount ?? selections.length,
+        requestedCount: launch.requestedCount,
+        acceptedCount: launch.acceptedCount,
+        executionMode: launch.executionMode,
+        publishToTestRailInvoked: launch.publishToTestRailInvoked,
+      };
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return null;
+    } finally {
+      setStarting(false);
+    }
+  }, []);
+
+  return { replay, replayBatch, starting, error, setError };
 }

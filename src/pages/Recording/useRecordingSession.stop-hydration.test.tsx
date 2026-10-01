@@ -197,4 +197,41 @@ describe('useRecordingSession — STOP hydrates the persisted primary immediatel
       container?.remove();
     }
   });
+
+  it('9/stopWaitsForRecorder. keeps polling and remains stopping until the backend confirms the final save', async () => {
+    vi.useFakeTimers();
+    let resolveStop!: (response: Response) => void;
+    let statusCalls = 0;
+    stubFetchByPath({
+      '/recordings/start': () => jsonResponse(startOk),
+      '/rec-1/stop': () => new Promise<Response>((resolve) => { resolveStop = resolve; }),
+      '/rec-1?projectSlug=': () => {
+        statusCalls += 1;
+        return jsonResponse({
+          ok: true,
+          active: true,
+          summary: { ...startOk.summary, status: 'stopping', eventCount: 11, actionCount: 4 },
+          live: { events: 11, screens: 2, currentScreen: 'Formulario' },
+        });
+      },
+      '/rec-1/scenarios?': () => jsonResponse(persistedScenarios('scenario-final')),
+    });
+
+    const holder = await mountAndStart();
+    let stopPromise!: Promise<void>;
+    act(() => { stopPromise = holder.get().stop(); });
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(holder.get().phase).toBe('stopping');
+    expect(holder.get().live?.events).toBe(11);
+    expect(statusCalls).toBeGreaterThan(0);
+
+    await act(async () => {
+      resolveStop(jsonResponse(stopOk));
+      await stopPromise;
+    });
+    expect(holder.get().phase).toBe('stopped');
+    expect(holder.get().persistedScenarioIds.has('scenario-final')).toBe(true);
+    vi.useRealTimers();
+  });
 });

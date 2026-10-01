@@ -1,3 +1,4 @@
+import { engineHeaders } from '../engine-auth';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import * as fs from 'node:fs';
@@ -77,7 +78,7 @@ async function proxy(req: Request, res: Response, path: string, method: string) 
   if (!base) return res.status(500).json({ ok: false, error: 'MCP backend URL not configured' });
   const url = `${base}${path}`;
   try {
-    const opts: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
+    const opts: RequestInit = { method, headers: { 'Content-Type': 'application/json', ...engineHeaders() } };
     if (method !== 'GET' && method !== 'HEAD') opts.body = JSON.stringify(req.body);
     const upstream = await fetch(url, opts);
     const body = await upstream.text();
@@ -121,7 +122,7 @@ router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
   }
   try {
     const url = `${base}/api/checklists/${encodeURIComponent(issueKey)}${qs}`;
-    const upstream = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+    const upstream = await fetch(url, { headers: { 'Content-Type': 'application/json', ...engineHeaders() } });
     const data = await upstream.json().catch(() => null);
     if (!upstream.ok || !data) {
       // Upstream failed — serve from local Jira refs

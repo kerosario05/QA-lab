@@ -1,0 +1,248 @@
+diff --git a/src/pages/Recording/useRecordingSession.ts b/src/pages/Recording/useRecordingSession.ts
+index d5e831b..0644b85 100644
+--- a/src/pages/Recording/useRecordingSession.ts
++++ b/src/pages/Recording/useRecordingSession.ts
+@@ -1,6 +1,7 @@
+ import { useCallback, useEffect, useRef, useState } from 'react';
+ import { ApiError, recordingsApi } from '../../services/recordings';
+-import type { DerivationMetadata, RecordedScenario, RecordingLifecycle, RecordingLive, RecordingSummary, SemanticRecordingModel } from '../../services/recordings/types';
++import type { DerivationMetadata, DeriveResult, RecordedScenario, RecordingDerivationProgress, RecordingLifecycle, RecordingLive, RecordingSummary, SemanticRecordingModel } from '../../services/recordings/types';
++import { isProxyTimeout, type GenerationProgress } from './generation-progress';
+ 
+ /**
+  * Drives one recording from start to derived scenarios.
+@@ -21,6 +22,67 @@ export type RecordingPhase =
+   | 'derived';
+ 
+ const POLL_INTERVAL_MS = 2000;
++/** How often Stop's progress (captures still pending) is refreshed while the Stop request runs. */
++const STOP_PROGRESS_INTERVAL_MS = 1000;
++/** How often a background step generation is polled. */
++const DERIVATION_POLL_INTERVAL_MS = 2000;
++/** Give up polling (the engine keeps working; reopening the recording shows the result). */
++const STOP_WAIT_LIMIT_MS = 10 * 60_000;
++const DERIVATION_WAIT_LIMIT_MS = 20 * 60_000;
++
++const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
++
++/** After a proxy timeout on Stop: waits until the engine reports the recording as no longer active. */
++async function waitUntilStopped(
++  recordingId: string,
++  projectSlug: string,
++  isCurrentRun: () => boolean,
++): Promise<{ summary: RecordingSummary }> {
++  const deadline = Date.now() + STOP_WAIT_LIMIT_MS;
++  while (Date.now() < deadline && isCurrentRun()) {
++    await sleep(POLL_INTERVAL_MS);
++    try {
++      const status = await recordingsApi.status(recordingId, projectSlug);
++      if (!status.active) return { summary: status.summary };
++    } catch {
++      // Keep waiting: a transient error says nothing about the Stop itself.
++    }
++  }
++  throw new Error('La grabación sigue cerrándose en el motor. Vuelve a abrirla desde el historial en unos minutos.');
++}
++
++/**
++ * Polls a background step generation until it is derived or failed. Transport errors (a 504, a
++ * restarting BFF) never end the wait; only the engine's own verdict or the time limit does.
++ */
++async function waitForDerivation(
++  recordingId: string,
++  projectSlug: string,
++  initial: RecordingDerivationProgress,
++  isCurrentRun: () => boolean,
++  onProgress: (progress: RecordingDerivationProgress) => void,
++): Promise<RecordingDerivationProgress> {
++  let current = initial;
++  const deadline = Date.now() + DERIVATION_WAIT_LIMIT_MS;
++  while (current.status === 'deriving' && Date.now() < deadline && isCurrentRun()) {
++    await sleep(DERIVATION_POLL_INTERVAL_MS);
++    try {
++      const res = await recordingsApi.derivation(recordingId, projectSlug);
++      current = res.derivation;
++      if (isCurrentRun()) onProgress(current);
++    } catch {
++      // Keep polling.
++    }
++  }
++  if (current.status === 'idle') {
++    // The engine lost the in-memory progress (restarted) before finishing.
++    return { ...current, status: 'failed', errorMessage: 'El motor se reinició mientras generaba los pasos. Vuelve a pulsar "Generar escenarios".' };
++  }
++  if (current.status === 'deriving' && isCurrentRun()) {
++    return { ...current, status: 'failed', errorMessage: 'La generación de pasos sigue en curso en el motor. Vuelve a abrir la grabación desde el historial en unos minutos.' };
++  }
++  return current;
++}
+ 
+ export function useRecordingSession(projectSlug: string) {
+   const [phase, setPhase] = useState<RecordingPhase>('idle');
+@@ -41,8 +103,13 @@ export function useRecordingSession(projectSlug: string) {
+   const [persistedScenarioIds, setPersistedScenarioIds] = useState<Set<string>>(new Set());
+   const [error, setError] = useState<string | null>(null);
+   const [history, setHistory] = useState<RecordingSummary[]>([]);
++  // What the "generating" indicator shows while Stop finishes or steps are generated.
++  const [generation, setGeneration] = useState<GenerationProgress | null>(null);
+ 
+   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
++  // Bumped by every stop/derive and by a project switch or unmount: a wait loop that no longer
++  // matches it stops touching state (the user moved on).
++  const generationRunRef = useRef(0);
+ 
+   const stopPolling = useCallback(() => {
+     if (pollRef.current) clearInterval(pollRef.current);
+@@ -81,9 +148,14 @@ export function useRecordingSession(projectSlug: string) {
+     setLifecycle(null);
+     setPersistedScenarioIds(new Set());
+     setError(null);
++    generationRunRef.current += 1;
++    setGeneration(null);
+   }, [projectSlug, stopPolling]);
+ 
+-  useEffect(() => stopPolling, [stopPolling]);
++  useEffect(() => () => {
++    stopPolling();
++    generationRunRef.current += 1;
++  }, [stopPolling]);
+ 
+   const start = useCallback(
+     async (recordingGoal?: string) => {
+@@ -143,8 +215,30 @@ export function useRecordingSession(projectSlug: string) {
+     if (!recordingId) return;
+     setPhase('stopping');
+     stopPolling();
++    const runId = ++generationRunRef.current;
++    const isCurrentRun = () => generationRunRef.current === runId;
++    setGeneration({ kind: 'stopping', pendingCaptures: live?.pendingCaptures ?? 0, events: live?.events ?? 0 });
++    // Stop waits for the captures still queued; show how many are left while it runs.
++    const stopProgress = setInterval(async () => {
++      try {
++        const status = await recordingsApi.status(recordingId, projectSlug);
++        if (!isCurrentRun() || !status.active || !status.live) return;
++        setGeneration({ kind: 'stopping', pendingCaptures: status.live.pendingCaptures ?? 0, events: status.live.events });
++      } catch {
++        // Progress is informative only; the Stop request itself decides the outcome.
++      }
++    }, STOP_PROGRESS_INTERVAL_MS);
+     try {
+-      const res = await recordingsApi.stop(recordingId, projectSlug);
++      let res: { summary: RecordingSummary };
++      try {
++        res = await recordingsApi.stop(recordingId, projectSlug);
++      } catch (err) {
++        // A proxy timeout is not a failed Stop: the engine is still finishing. Wait for the
++        // recording to stop being active instead of pretending it is still recording.
++        if (!isProxyTimeout(err)) throw err;
++        res = await waitUntilStopped(recordingId, projectSlug, isCurrentRun);
++      }
++      if (!isCurrentRun()) return;
+       setSummary(res.summary);
+       setPhase('stopped');
+       // FIRST_LOSS fix: STOP's own response (`res.summary`) only ever carries a scenario COUNT
+@@ -173,18 +267,78 @@ export function useRecordingSession(projectSlug: string) {
+       }
+       void refreshHistory();
+     } catch (err) {
++      if (!isCurrentRun()) return;
+       setPhase('recording');
+       setError(err instanceof Error ? err.message : String(err));
++    } finally {
++      clearInterval(stopProgress);
++      if (isCurrentRun()) setGeneration(null);
+     }
+-  }, [recordingId, projectSlug, stopPolling, refreshHistory]);
++  }, [recordingId, projectSlug, stopPolling, refreshHistory, live]);
++
++  /**
++   * Loads what a background generation persisted: the same persisted store `openExisting` reads,
++   * plus the recording summary (the history list may not include the new state yet).
++   */
++  const loadDerivedRecording = useCallback(
++    async (id: string) => {
++      const [scenarioResult, statusResult, semanticResult, traceResult] = await Promise.allSettled([
++        recordingsApi.scenarios(id, projectSlug),
++        recordingsApi.status(id, projectSlug),
++        recordingsApi.semantic(id, projectSlug),
++        recordingsApi.trace(id, projectSlug),
++      ]);
++      const scenariosArray = scenarioResult.status === 'fulfilled' && Array.isArray(scenarioResult.value.scenarios)
++        ? scenarioResult.value.scenarios
++        : [];
++      setScenarios(scenariosArray);
++      setPersistedScenarioIds(new Set(scenariosArray.map((scenario) => scenario.scenarioId)));
++      setLifecycle(scenarioResult.status === 'fulfilled'
++        ? scenarioResult.value.lifecycle ?? { recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: scenariosArray.length > 0 }
++        : { recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: scenariosArray.length > 0 });
++      if (statusResult.status === 'fulfilled') setSummary(statusResult.value.summary);
++      if (semanticResult.status === 'fulfilled') {
++        const model = (semanticResult.value.model as SemanticRecordingModel | null) ?? null;
++        setSemanticModel(model);
++        setDerivation(model?.derivation ?? null);
++      }
++      if (traceResult.status === 'fulfilled') setNarrative(traceResult.value.trace?.narrative ?? '');
++      if (scenarioResult.status === 'rejected') {
++        setError('Los pasos se generaron, pero no se pudieron cargar. Vuelve a abrir la grabación desde el historial.');
++      }
++      setPhase('derived');
++      void refreshHistory();
++    },
++    [projectSlug, refreshHistory],
++  );
+ 
+   const derive = useCallback(
+     async (title?: string) => {
+       if (!recordingId) return;
+       setPhase('deriving');
+       setError(null);
++      const runId = ++generationRunRef.current;
++      const isCurrentRun = () => generationRunRef.current === runId;
+       try {
+-        const res = await recordingsApi.derive(recordingId, projectSlug, title);
++        const started = await recordingsApi.deriveAsync(recordingId, projectSlug, title);
++        if (!isCurrentRun()) return;
++        if (started.derivation) {
++          // Background generation: poll its progress, then load what it persisted.
++          setGeneration({ kind: 'deriving', derivation: started.derivation });
++          const final = await waitForDerivation(recordingId, projectSlug, started.derivation, isCurrentRun, (progress) => {
++            setGeneration({ kind: 'deriving', derivation: progress });
++          });
++          if (!isCurrentRun()) return;
++          if (final.status !== 'derived') {
++            setPhase('stopped');
++            setError(final.errorMessage ?? 'No se pudieron generar los pasos de la grabación.');
++            return;
++          }
++          await loadDerivedRecording(recordingId);
++          return;
++        }
++        // An engine without background generation answered with the full result.
++        const res = started as DeriveResult;
+         setScenarios(res.scenarios ?? []);
+         setNarrative(res.narrative ?? '');
+         setSemanticModel(res.semanticModel ?? null);
+@@ -197,11 +351,14 @@ export function useRecordingSession(projectSlug: string) {
+         setPersistedScenarioIds(new Set((res.scenarios ?? []).map((scenario) => scenario.scenarioId)));
+         void refreshHistory();
+       } catch (err) {
++        if (!isCurrentRun()) return;
+         setPhase('stopped');
+         setError(err instanceof Error ? err.message : String(err));
++      } finally {
++        if (isCurrentRun()) setGeneration(null);
+       }
+     },
+-    [recordingId, projectSlug, refreshHistory],
++    [recordingId, projectSlug, refreshHistory, loadDerivedRecording],
+   );
+ 
+   // Guards against a stale response: if a NEWER `openExisting`/refresh call has started (a
+@@ -338,6 +495,7 @@ export function useRecordingSession(projectSlug: string) {
+     error,
+     setError,
+     history,
++    generation,
+     start,
+     stop,
+     derive,

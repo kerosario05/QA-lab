@@ -1,3 +1,5 @@
+import { LiveBrowserView } from './LiveBrowserView';
+import { GenerationProgressIndicator } from './GenerationProgressIndicator';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
@@ -16,6 +18,7 @@ import { useRecordingSession, type RecordingPhase } from './useRecordingSession'
 import { useRecordingExecution, type RecordingProjectDetail } from './useRecordingExecution';
 import { useTestRailDestination } from './useTestRailDestination';
 import { TestRailUploadScreen } from './TestRailUploadScreen';
+import { getTestRailSelections, setTestRailScenarioSelected, testRailSelectionKey, type TestRailSelection } from './testRailSelection';
 import { ApiError, recordingsApi } from '../../services/recordings';
 import { flushScenarioValueWrites, stageScenarioValueWrite } from '../../services/recordings/scenario-value-flush';
 import type { RecordedScenario, RecordedScenarioStep, RecordingSummary } from '../../services/recordings/types';
@@ -152,18 +155,18 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+const EMBEDDED_RECORDING_VIEWPORT = { width: 1280, height: 720 };
+
 export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void }) {
   const [projects, setProjects] = useState<RecordingProject[]>([]);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [projectSlug, setProjectSlug] = useState('');
   const [projectDetail, setProjectDetail] = useState<RecordingProjectDetail | null>(null);
   const [label, setLabel] = useState('');
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [executionSelected, setExecutionSelected] = useState<Record<string, boolean>>({});
+  const [selected, setSelected] = useState<TestRailSelection>({});
   // Keyed by the STABLE scenarioId, never local component state: a scenario card can be
   // unmounted/remounted (e.g. the primary-scenario slot briefly has no match while
-  // `session.scenarios` is mid-refresh) without losing whether its steps panel was open --
-  // the same invariant `selected`/`executionSelected` above already rely on.
+  // `session.scenarios` is mid-refresh) without losing whether its steps panel was open.
   const [expandedScenarioIds, setExpandedScenarioIds] = useState<Record<string, boolean>>({});
   // A dataset edit blurred BEFORE the backend has materialized its scenario (still
   // mid-recording, race between the live preview and `derive()`/persistence) -- the value is
@@ -181,8 +184,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   // means "stay on the Recording screen"; going back just clears it, so nothing here is lost.
   const [testRailUpload, setTestRailUpload] = useState<{
     scenarios: RecordedScenario[];
+    scenarioRecordingIds: string[];
     dataOverrides: Record<string, Record<number, string>>;
     datasetValues: Record<string, string | undefined>;
+    scenarioDatasetValues: Record<string, Record<string, string | undefined>>;
   } | null>(null);
 
   const session = useRecordingSession(projectSlug);
@@ -193,13 +198,13 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const suggestionScenarios = primaryScenario
     ? session.scenarios.filter((scenario) => scenario.scenarioId !== primaryScenario.scenarioId)
     : [];
-  const selectedScenarios = useMemo(
-    () => session.scenarios.filter((s) => selected[s.scenarioId]),
-    [session.scenarios, selected],
-  );
+  const selectedTestRailEntries = useMemo(() => getTestRailSelections(selected), [selected]);
+  const selectedScenarios = useMemo(() => selectedTestRailEntries.map(({ scenario }) => scenario), [selectedTestRailEntries]);
   const executionScenarios = useMemo(
-    () => session.scenarios.filter((s) => executionSelected[s.scenarioId]),
-    [session.scenarios, executionSelected],
+    () => selectedTestRailEntries
+      .filter((entry) => entry.recordingId === session.recordingId)
+      .map(({ scenario }) => scenario),
+    [selectedTestRailEntries, session.recordingId],
   );
   const sharedDatasetValues = useMemo(
     (): Record<string, string | undefined> => {
@@ -227,19 +232,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     return result;
   }, [session.scenarios, sharedDatasetValues, datasetOverrides]);
   const activeScenario = session.scenarios.find((scenario) => scenario.scenarioId === activeScenarioId) ?? primaryScenario;
-  const currentDatasetValues = activeScenario ? scenarioDatasetValues.get(activeScenario.scenarioId) ?? sharedDatasetValues : sharedDatasetValues;
   const selectedReadiness = useMemo(
     () => selectedScenarios.map((scenario) => ({ scenario, readiness: resolveScenarioReadiness(scenario, scenarioDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues) })),
     [selectedScenarios, scenarioDatasetValues, sharedDatasetValues],
   );
-  const selectedMissingInputs = useMemo(
-    () => selectedReadiness.flatMap(({ scenario, readiness }) => readiness.missingInputs.map((input) => ({ ...input, scenarioId: scenario.scenarioId }))),
-    [selectedReadiness],
-  );
   const readySelectedReadiness = useMemo(() => selectedReadiness.filter(({ readiness }) => readiness.publicationReadiness), [selectedReadiness]);
   const blockedSelectedReadiness = useMemo(() => selectedReadiness.filter(({ readiness }) => !readiness.publicationReadiness), [selectedReadiness]);
-  const reviewSelectedCount = blockedSelectedReadiness.filter(({ readiness }) => !readiness.oracleReadiness && readiness.missingInputs.length === 0).length;
-  const dataBlockedSelectedCount = blockedSelectedReadiness.filter(({ readiness }) => readiness.missingInputs.length > 0).length;
   // `executionReadiness` alone says the recorded ACTIONS can technically be attempted -- it says
   // nothing about whether THIS scenarioId has actually been written to the backend's persisted
   // store yet. A scenario still shown from the live/unpersisted preview (visible before
@@ -292,6 +290,14 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     }
     return result;
   }, [session.scenarios, scenarioDatasetValues]);
+  const replayEntries = useMemo(() => selectedTestRailEntries.map((entry) => {
+    if (entry.recordingId !== session.recordingId) return entry;
+    return {
+      ...entry,
+      dataOverrides: effectiveDataOverrides[entry.scenario.scenarioId] ?? entry.dataOverrides,
+      datasetValues: scenarioDatasetValues.get(entry.scenario.scenarioId) ?? entry.datasetValues,
+    };
+  }), [selectedTestRailEntries, session.recordingId, effectiveDataOverrides, scenarioDatasetValues]);
   const sensitiveDatasetKeys = useMemo(
     () => new Set((session.semanticModel?.datasets ?? []).filter((dataset) => dataset.sensitive).map((dataset) => dataset.valueKey)),
     [session.semanticModel],
@@ -309,9 +315,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
       setProjectDetail(null);
       return;
     }
+    let current = true;
+    setProjectDetail(null);
     fetchProjectDetail(projectSlug)
-      .then(setProjectDetail)
-      .catch(() => setProjectDetail(null));
+      .then((detail) => { if (current) setProjectDetail(detail); })
+      .catch(() => { if (current) setProjectDetail(null); });
+    return () => { current = false; };
   }, [projectSlug]);
 
   // Keep the reviewer's selection stable while scenario values are refreshed. The previous
@@ -321,41 +330,33 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     const primaryId = session.scenarios.find((scenario) => scenario.primary)?.scenarioId ?? session.scenarios[0]?.scenarioId;
     const recordingChanged = selectionRecordingRef.current !== session.recordingId;
     const ids = new Set(session.scenarios.map((scenario) => scenario.scenarioId));
-    const preserveSelection = (previous: Record<string, boolean>) => {
-      const retained = Object.fromEntries(Object.entries(previous).filter(([scenarioId, value]) => value && ids.has(scenarioId)));
-      return Object.keys(retained).length > 0 ? retained : primaryId ? { [primaryId]: true } : {};
-    };
     if (recordingChanged) {
-      setSelected(primaryId ? { [primaryId]: true } : {});
-      setExecutionSelected(primaryId ? { [primaryId]: true } : {});
       setDatasetOverrides({});
       setPublishResult(null);
       // A pending save queued under a DIFFERENT recording must never retry against this one
       // (see `pendingScenarioSaves`'s own `recordingId` guard in the retry effect below).
       setPendingScenarioSaves({});
-    } else {
-      setSelected(preserveSelection);
-      setExecutionSelected(preserveSelection);
     }
     setActiveScenarioId((previous) => previous && ids.has(previous) ? previous : primaryId);
     selectionRecordingRef.current = session.recordingId;
   }, [session.scenarios, session.recordingId]);
 
-  // TEMPORARY DIAGNOSTIC (this ticket only): traces whether section 3 ("Escenarios") is visible
-  // right after the scenario list/recording identity actually changes -- no dataset value or
-  // secret is logged, only ids/counts/booleans.
-  useEffect(() => {
-    console.info('[recording-history-render]', {
-      recordingId: session.recordingId,
-      sessionRecordingId: session.recordingId,
-      scenarioCount: session.scenarios.length,
-      hasNarrative: Boolean(session.narrative),
-      hasSemantic: Boolean(session.semanticModel),
-      sectionVisible: session.scenarios.length > 0 && session.phase !== 'recording',
-    });
-  }, [session.recordingId, session.scenarios, session.narrative, session.semanticModel, session.phase]);
+  function handleProjectChange(nextProjectSlug: string) {
+    if (nextProjectSlug === projectSlug) return;
+    // Selections are scoped to the active project. Clear them synchronously with the project
+    // change so no pending recording refresh can carry scenarios into another project's launch.
+    setSelected({});
+    setExpandedScenarioIds({});
+    setDatasetOverrides({});
+    setActiveScenarioId(undefined);
+    setPublishResult(null);
+    setTestRailUpload(null);
+    setProjectDetail(null);
+    selectionRecordingRef.current = undefined;
+    setProjectSlug(nextProjectSlug);
+  }
 
-  const isRecording = session.phase === 'recording' || session.phase === 'starting';
+  const isRecording = session.phase === 'recording' || session.phase === 'starting' || session.phase === 'stopping';
   const busy = session.phase === 'starting' || session.phase === 'stopping' || session.phase === 'deriving';
 
   /**
@@ -369,14 +370,19 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
    * already-selected scenarios and overrides and navigates there.
    */
   function handleReplay() {
-    if (!projectSlug || !session.recordingId || executionScenarios.length === 0) return;
-    if (executionBlockedWithLifecycle) return;
-    const selectedIds = executionScenarios.map((scenario) => scenario.scenarioId);
-    console.info(`[recording:execute] handlerSelectedIds=${JSON.stringify(selectedIds)} handlerSelectedCount=${selectedIds.length} readyCount=${executionReadyCount}`);
+    if (session.phase === 'stopping' || !projectSlug || !session.recordingId || replayEntries.length === 0) return;
+    const selectedIds = replayEntries.map(({ scenario }) => scenario.scenarioId);
+    console.info(`[recording:testrail] handlerSelectedIds=${JSON.stringify(selectedIds)} handlerSelectedCount=${selectedIds.length}`);
     setTestRailUpload({
-      scenarios: executionScenarios,
-      dataOverrides: effectiveDataOverrides,
-      datasetValues: currentDatasetValues,
+      scenarios: replayEntries.map(({ scenario }) => scenario),
+      scenarioRecordingIds: replayEntries.map(({ recordingId }) => recordingId),
+      dataOverrides: Object.assign({}, ...replayEntries.map((entry) => ({
+        [testRailSelectionKey(entry.recordingId, entry.scenario.scenarioId)]: entry.dataOverrides,
+      }))),
+      datasetValues: sharedDatasetValues,
+      scenarioDatasetValues: Object.assign({}, ...replayEntries.map((entry) => ({
+        [testRailSelectionKey(entry.recordingId, entry.scenario.scenarioId)]: entry.datasetValues,
+      }))),
     });
   }
 
@@ -403,7 +409,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     onLaunch?.({
       id: launch.jobId,
       jobId: launch.jobId,
-      recordingId: session.recordingId,
+      recordingId: session.recordingId ?? undefined,
       scenarioIds: executionScenarios.map((scenario) => scenario.scenarioId),
       project: projectDetail.name,
       triggered: 'Grabación',
@@ -495,9 +501,8 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     }
 
     const flush = await flushScenarioValueWrites(recordingId);
-    const outcome = flush.persistFailedCount === 0 ? 'saved' : 'failed';
-    if (outcome === 'saved') setPublishResult(null);
-    else if (outcome === 'not_ready') {
+    if (flush.persistFailedCount === 0) setPublishResult(null);
+    else if (flush.persistNotReadyCount > 0) {
       setPendingScenarioSaves((prev) => ({ ...prev, [`${scenarioId}:${valueKey}`]: { recordingId, scenarioId, valueKey, value } }));
     }
   }
@@ -548,8 +553,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         projectSlug={projectSlug}
         projectDetail={projectDetail}
         scenarios={testRailUpload.scenarios}
+        scenarioRecordingIds={testRailUpload.scenarioRecordingIds}
         dataOverrides={testRailUpload.dataOverrides}
         datasetValues={testRailUpload.datasetValues}
+        scenarioDatasetValues={testRailUpload.scenarioDatasetValues}
         onBack={() => setTestRailUpload(null)}
         onLaunch={onLaunch}
       />
@@ -578,7 +585,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               <button
                 key={p.slug}
                 disabled={isRecording}
-                onClick={() => setProjectSlug(p.slug)}
+                onClick={() => handleProjectChange(p.slug)}
                 className={cn(
                   'text-left px-3.5 py-3 rounded-xl border transition disabled:opacity-50 disabled:cursor-not-allowed',
                   active
@@ -655,14 +662,43 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
           <p className="mt-2 text-[11px] text-[#B4463C]">Define el objetivo de la grabación para poder iniciar y generar escenarios.</p>
         )}
 
+        {session.phase === 'stopping' && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="recording-stop-progress"
+            className="mt-4 rounded-xl border border-[#104B99]/20 bg-[#F3F7FC] p-4"
+          >
+            <div className="flex items-center gap-2 text-[12px] font-semibold text-[#1a1f2e]">
+              <Loader2 size={14} className="animate-spin text-[#104B99]" />
+              Sincronizando pasos de la grabación…
+            </div>
+            <div
+              role="progressbar"
+              aria-label="Procesando pasos capturados"
+              aria-valuetext="Esperando a que el recorder termine de procesar y guardar los pasos"
+              className="mt-3 h-2 overflow-hidden rounded-full bg-[#DCE5F1]"
+            >
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-[#2474C6]" />
+            </div>
+            <p className="mt-2 text-[11px] text-[#58646D]">
+              No cierres ni cambies de proyecto. Las opciones de escenarios y ejecución se habilitarán cuando termine el guardado.
+              {typeof session.live?.events === 'number' && ` El recorder ha recibido ${session.live.events} eventos hasta ahora.`}
+            </p>
+          </div>
+        )}
+
         {session.phase === 'recording' && (
           <div className="mt-4 rounded-xl border border-[#48A157]/30 bg-[#F3F9F4] p-4">
             <div className="flex items-center gap-2 mb-3">
               <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse" />
               <span className="text-[12px] font-semibold text-[#1a1f2e]">
-                Grabando — {project?.type === 'mobile' ? 'usa la app en el emulador' : 'usa el navegador que se abrió'}
+                Grabando — {project?.type === 'mobile' ? 'usa la app en el emulador' : 'interactúa con el navegador integrado'}
               </span>
             </div>
+            {project?.type !== 'mobile' && session.recordingId && (
+              <LiveBrowserView recordingId={session.recordingId} viewport={EMBEDDED_RECORDING_VIEWPORT} />
+            )}
             <div className="flex gap-4">
               <Stat label="Eventos capturados" value={session.live?.events ?? 0} />
               <Stat label="Pantallas" value={session.live?.screens ?? 0} />
@@ -733,10 +769,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         )}
 
         {session.phase === 'deriving' && (
-          <div aria-live="polite" data-testid="scenario-generation-loading" className="mt-4 flex items-center gap-2 text-[12px] text-[#58646D]">
-            <Loader2 size={14} className="animate-spin" />
-            Generando escenarios…
-          </div>
+          <GenerationProgressIndicator progress={session.generation} testId="scenario-generation-loading" />
         )}
 
         {session.error && (
@@ -763,10 +796,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               TestRail: seleccionados={selectedScenarios.length} · listos={selectedReadiness.filter(({ readiness }) => readiness.publicationReadiness).length} · bloqueados={selectedReadiness.filter(({ readiness }) => !readiness.publicationReadiness).length}
             </div>
             <div className="text-[10px] text-[#58646D]">
-              TestRail: seleccionados={selectedScenarios.length} · listos={readySelectedReadiness.length} · requieren datos={dataBlockedSelectedCount} · requieren revisión={reviewSelectedCount}
-            </div>
-            <div className="text-[10px] text-[#58646D]">
-              Ejecución: seleccionados={executionScenarios.length} · listos={executionReadyCount} · bloqueados={executionScenarios.length - executionReadyCount}
+              Seleccionados={selectedTestRailEntries.length} · listos para ejecutar={executionReadyCount} · bloqueados={Math.max(0, executionScenarios.length - executionReadyCount)}
             </div>
             {selectedScenarios.length > 0 && readySelectedReadiness.length === 0 && (
               <div className="text-[10px] text-[#B4463C]">Sin publicación disponible: {blockedSelectedReadiness.map(({ scenario, readiness }) => `${scenario.title}: ${readiness.missingInputs.length > 0 ? `faltan ${readiness.missingInputs.length} datos` : 'contenido pendiente'}`).join(' · ')}</div>
@@ -779,7 +809,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   title={
                     executionBlockedWithLifecycle
                       ? 'Completa los requisitos de ejecución antes de ejecutar'
-                      : 'Publica en TestRail y ejecuta en el emulador'
+                      : 'Publica y ejecuta únicamente los escenarios seleccionados'
                   }
                   className="bg-[#1a1f2e] hover:bg-black disabled:opacity-40 text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5 transition"
                 >
@@ -790,12 +820,8 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               {projectDetail?.type === 'web' && (
                 <button
                   onClick={handleReplay}
-                  disabled={executionScenarios.length === 0 || executionBlockedWithLifecycle}
-                  title={
-                    executionBlockedWithLifecycle
-                      ? 'Completa los requisitos de ejecución antes de reproducir'
-                      : 'Elige el destino en TestRail y ejecuta el recorrido'
-                  }
+                  disabled={session.phase === 'stopping' || replayEntries.length === 0}
+                  title={session.phase === 'stopping' ? 'Espera a que termine la sincronización de la grabación' : 'Configura TestRail y ejecuta únicamente los escenarios seleccionados'}
                   className="bg-[#1a1f2e] hover:bg-black disabled:opacity-40 text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5 transition"
                 >
                   <Play size={13} />
@@ -858,10 +884,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               <ScenarioCard
                 key={primaryScenario.scenarioId}
                 scenario={primaryScenario}
-                checked={Boolean(selected[primaryScenario.scenarioId])}
-                onToggle={() => setSelected((prev) => ({ ...prev, [primaryScenario.scenarioId]: !prev[primaryScenario.scenarioId] }))}
-                executionChecked={Boolean(executionSelected[primaryScenario.scenarioId])}
-                onExecutionToggle={() => setExecutionSelected((prev) => ({ ...prev, [primaryScenario.scenarioId]: !prev[primaryScenario.scenarioId] }))}
+                checked={Boolean(session.recordingId && selected[testRailSelectionKey(session.recordingId!, primaryScenario.scenarioId)])}
+                onToggle={() => session.recordingId && setSelected((prev) => setTestRailScenarioSelected(prev, {
+                  recordingId: session.recordingId!, scenario: primaryScenario,
+                  dataOverrides: effectiveDataOverrides[primaryScenario.scenarioId] ?? {},
+                  datasetValues: scenarioDatasetValues.get(primaryScenario.scenarioId) ?? sharedDatasetValues,
+                }, !Boolean(selected[testRailSelectionKey(session.recordingId!, primaryScenario.scenarioId)])))}
                 active={activeScenario?.scenarioId === primaryScenario.scenarioId}
                 onActivate={() => setActiveScenarioId(primaryScenario.scenarioId)}
                 expanded={Boolean(expandedScenarioIds[primaryScenario.scenarioId])}
@@ -881,10 +909,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 <ScenarioCard
                   key={s.scenarioId}
                   scenario={s}
-                  checked={Boolean(selected[s.scenarioId])}
-                  onToggle={() => setSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
-                  executionChecked={Boolean(executionSelected[s.scenarioId])}
-                  onExecutionToggle={() => setExecutionSelected((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
+                  checked={Boolean(session.recordingId && selected[testRailSelectionKey(session.recordingId!, s.scenarioId)])}
+                  onToggle={() => session.recordingId && setSelected((prev) => setTestRailScenarioSelected(prev, {
+                    recordingId: session.recordingId!, scenario: s,
+                    dataOverrides: effectiveDataOverrides[s.scenarioId] ?? {},
+                    datasetValues: scenarioDatasetValues.get(s.scenarioId) ?? sharedDatasetValues,
+                  }, !Boolean(selected[testRailSelectionKey(session.recordingId!, s.scenarioId)])))}
                   active={activeScenario?.scenarioId === s.scenarioId}
                   onActivate={() => setActiveScenarioId(s.scenarioId)}
                   expanded={Boolean(expandedScenarioIds[s.scenarioId])}
@@ -944,6 +974,12 @@ function scenarioMetrics(scenario: RecordedScenario) {
     functionalActionCount: scenario.functionalActionCount ?? steps.filter((step, index) => step.classification === 'FUNCTIONAL_ACTION' && !setupIndexes.has(index)).length,
     nonUserSetupSteps: scenario.nonUserSetupSteps ?? setupIndexes.size,
   };
+}
+
+function observedOptionLabel(value: string): string {
+  // Dynamic labels can contain account/card identifiers. Keep enough suffix to distinguish
+  // repeated types while avoiding an unnecessary full identifier in the QA form.
+  return value.replace(/\b\d{6,}\b/g, (digits) => `${'•'.repeat(Math.max(0, digits.length - 4))}${digits.slice(-4)}`);
 }
 
 function TechnicalInspector({ model }: { model: NonNullable<ReturnType<typeof useRecordingSession>['semanticModel']> }) {
@@ -1166,8 +1202,6 @@ export function ScenarioCard({
   scenario,
   checked,
   onToggle,
-  executionChecked,
-  onExecutionToggle,
   active,
   onActivate,
   expanded,
@@ -1181,8 +1215,6 @@ export function ScenarioCard({
   scenario: RecordedScenario;
   checked: boolean;
   onToggle: () => void;
-  executionChecked: boolean;
-  onExecutionToggle: () => void;
   active: boolean;
   onActivate: () => void;
   expanded: boolean;
@@ -1202,9 +1234,12 @@ export function ScenarioCard({
     const sensitive = step.sensitive === true || Boolean(step.valueKey && sensitiveDatasetKeys.has(step.valueKey));
     if (sensitive && !allowSensitiveMaterialization) return step.stepTemplate ?? step.content;
     if (step.valueKey && value !== undefined) {
-      const template = step.stepTemplate ?? step.content;
-      const rendered = template.split(`[${step.valueKey}]`).join(JSON.stringify(value));
-      return step.stepNumber !== undefined ? rendered.replace(/^\s*\d+[.)]\s*/, '') : rendered;
+      const stepValue = step.segmentPosition ? value[step.segmentPosition - 1] : value;
+      if (stepValue !== undefined) {
+        const template = step.stepTemplate ?? step.content;
+        const rendered = template.split(`[${step.valueKey}]`).join(JSON.stringify(stepValue));
+        return step.stepNumber !== undefined ? rendered.replace(/^\s*\d+[.)]\s*/, '') : rendered;
+      }
     }
     const rendered = step.renderedStep ?? step.content;
     return step.stepNumber !== undefined ? rendered.replace(/^\s*\d+[.)]\s*/, '') : rendered;
@@ -1222,8 +1257,7 @@ export function ScenarioCard({
     <div className={cn('rounded-xl border transition', active ? 'border-[#104B99] bg-[#FBFCFE]' : checked ? 'border-[#104B99]/40 bg-[#FBFCFE]' : 'border-[#E8EBEC]')}>
       <div className="flex items-start gap-3 p-3.5">
         <div className="mt-0.5 flex flex-col gap-1 text-[9px] text-[#58646D]">
-          <label className="flex items-center gap-1"><input type="checkbox" checked={checked} onChange={onToggle} className="w-3.5 h-3.5 accent-[#104B99] cursor-pointer" /> TestRail</label>
-          <label className="flex items-center gap-1"><input type="checkbox" checked={executionChecked} onChange={onExecutionToggle} className="w-3.5 h-3.5 accent-[#48A157] cursor-pointer" /> Ejecutar</label>
+          <label className="flex items-center gap-1"><input type="checkbox" checked={checked} onChange={onToggle} className="w-3.5 h-3.5 accent-[#104B99] cursor-pointer" /> Seleccionar</label>
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -1309,7 +1343,7 @@ export function ScenarioCard({
                                 className="mt-0.5 w-full px-2 py-1 rounded border border-[#D9E2EC] bg-white text-[11px] outline-none focus:border-[#104B99] disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"
                               >
                                 <option value="">Selecciona un valor observado</option>
-                                {requirement.allowedValues.map((option) => <option key={option} value={option}>{option}</option>)}
+                                {requirement.allowedValues.map((option) => <option key={option} value={option}>{observedOptionLabel(option)}</option>)}
                               </select>
                             ) : (
                               <input

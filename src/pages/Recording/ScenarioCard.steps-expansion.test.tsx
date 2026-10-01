@@ -1,6 +1,6 @@
 import { act, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { ScenarioCard } from './index';
 import type { RecordedScenario } from '../../services/recordings/types';
 
@@ -155,7 +155,7 @@ describe('ScenarioCard steps expansion', () => {
     act(() => findButton('Ver')?.click());
 
     const withMissingData = scenario({
-      readiness: { functionalReadiness: true, dataReadiness: false, technicalReadiness: true, oracleReadiness: true, executionReadiness: false, publicationReadiness: false, missingInputs: ['Campo requerido'] },
+      readiness: { functionalReadiness: true, dataReadiness: false, technicalReadiness: true, oracleReadiness: true, executionReadiness: false, publicationReadiness: false, missingInputs: [{ valueKey: 'required_field', semanticField: 'Campo requerido', valueRole: 'action_input', required: true, value: null, source: 'unresolved', resolved: false }] },
     });
     rerender(<Harness present s={withMissingData} />);
     expect(container?.textContent).toContain('Ingresar valor');
@@ -163,7 +163,7 @@ describe('ScenarioCard steps expansion', () => {
 
   it('8/blocked. a blocked (not execution-ready) scenario still shows its steps when expanded', () => {
     const blocked = scenario({
-      readiness: { functionalReadiness: true, dataReadiness: false, technicalReadiness: false, oracleReadiness: false, executionReadiness: false, publicationReadiness: false, missingInputs: ['x'] },
+      readiness: { functionalReadiness: true, dataReadiness: false, technicalReadiness: false, oracleReadiness: false, executionReadiness: false, publicationReadiness: false, missingInputs: [{ valueKey: 'required_field', semanticField: 'x', valueRole: 'action_input', required: true, value: null, source: 'unresolved', resolved: false }] },
     });
     render(<Harness present s={blocked} />);
     act(() => findButton('Ver')?.click());

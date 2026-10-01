@@ -7,12 +7,15 @@ import {
   stopRecording,
   deriveScenarios,
   getRecordingScenarios,
+  getRecordingDerivation,
   saveRecordingScenarios,
   updateRecordingScenarioValue,
   getRecordingTrace,
   getSemanticRecording,
   publishToTestRail,
   executeRecording,
+  executeRecordingBatch,
+  controlRecording,
   deleteRecording,
 } from '../recordings-provider';
 import type { RecordingsProviderResponse } from '../recordings-provider';
@@ -99,6 +102,12 @@ router.post('/:recordingId/derive', async (req: Request, res: Response) => {
   forward(res, await deriveScenarios(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
 });
 
+router.get('/:recordingId/derivation', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await getRecordingDerivation(String(req.params.recordingId), projectSlug));
+});
+
 router.get('/:recordingId/scenarios', async (req: Request, res: Response) => {
   const projectSlug = requireProjectSlug(req, res);
   if (!projectSlug) return;
@@ -151,6 +160,22 @@ router.post('/:recordingId/execute', async (req: Request, res: Response) => {
   );
   // 202: the engine answers with a job id, not with the outcome of the replay.
   forward(res, await executeRecording(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }), 202);
+});
+
+router.post('/execute-batch', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  const selections = (req.body as any)?.selections;
+  console.log(`[recordings] web replay batch selectionCount=${Array.isArray(selections) ? selections.length : 0}`);
+  forward(res, await executeRecordingBatch({ ...(req.body ?? {}), projectSlug }), 202);
+});
+
+router.post('/:recordingId/control', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  const action = (req.body as any)?.action;
+  console.log(`[recordings] control request recordingId=${String(req.params.recordingId)} action=${action ?? '—'}`);
+  forward(res, await controlRecording(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
 });
 
 router.delete('/:recordingId', async (req: Request, res: Response) => {

@@ -1,3 +1,4 @@
+import { attachLiveViewProxy } from "./live-view-proxy";
 import './env';
 import express from 'express';
 import cors from 'cors';
@@ -12,11 +13,15 @@ import executionsRouter from './routes/executions';
 import runtimeInputsRouter from './routes/runtime-inputs';
 import recordingsRouter from './routes/recordings';
 
+import { engineBaseUrl, captureRequestAuth } from './engine-auth';
+import { identityRouter } from './routes/identity';
+
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const JSON_LIMIT = process.env.QA_LAB_JSON_LIMIT ?? '1mb';
 
 app.use(cors({ origin: true, credentials: true }));
+app.use(captureRequestAuth());
 // Only parse content types that are actually JSON. Never parse multipart, form-encoded,
 // text/plain, etc. as JSON — that corrupts the body and breaks proxy forwarding.
 app.use(express.json({
@@ -89,6 +94,8 @@ async function proxyProjects(req: any, res: any) {
 }
 
 // /api/projects → automation engine (SQL-backed multi-project storage)
+app.use(identityRouter);
+
 app.all('/api/projects', async (req, res) => proxyProjects(req, res));
 app.all('/api/projects/*splat', async (req, res) => proxyProjects(req, res));
 
@@ -107,9 +114,11 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'qa-lab-backend', timestamp: Date.now() });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[qa-lab-server] API listening on http://localhost:${PORT}`);
   console.log(`[qa-lab-server] routes: /api/testrail/*, /api/jira/*, /api/scenarios/*, /api/runs/*, /api/newman/*, /api/mobile/*, /api/executions/*, /api/recordings/*, /api/checklists/*`);
   const railEnv = { url: !!process.env.TESTRAIL_URL, email: !!process.env.TESTRAIL_EMAIL, key: !!process.env.TESTRAIL_API_KEY };
   console.log(`[qa-lab-server] TESTRAIL_URL=${railEnv.url} TESTRAIL_EMAIL=${railEnv.email} TESTRAIL_API_KEY=${railEnv.key}`);
 });
+
+attachLiveViewProxy(server, engineBaseUrl);

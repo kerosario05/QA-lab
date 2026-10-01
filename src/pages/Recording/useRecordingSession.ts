@@ -1,6 +1,7 @@
+import type { GenerationProgress } from './generation-progress';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, recordingsApi } from '../../services/recordings';
-import type { DerivationMetadata, RecordedScenario, RecordingLifecycle, RecordingLive, RecordingSummary, SemanticRecordingModel } from '../../services/recordings/types';
+import type { DeriveResult, RecordingDerivationProgress, DerivationMetadata, RecordedScenario, RecordingLifecycle, RecordingLive, RecordingSummary, SemanticRecordingModel } from '../../services/recordings/types';
 
 /**
  * Drives one recording from start to derived scenarios.
@@ -20,9 +21,15 @@ export type RecordingPhase =
   | 'deriving'
   | 'derived';
 
-const POLL_INTERVAL_MS = 2000;
+// A recording is human-paced and the backend appends each interaction immediately. Keep the
+// live projection responsive enough that the UI does not make a captured action look delayed.
+// This hook is project-scoped by `projectSlug`, so the cadence applies consistently to every
+// project without introducing app-specific behavior.
+const POLL_INTERVAL_MS = 1000;
 
 export function useRecordingSession(projectSlug: string) {
+  const [generation, setGeneration] = useState<GenerationProgress | null>(null);
+  const generationRunRef = useRef(0);
   const [phase, setPhase] = useState<RecordingPhase>('idle');
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [summary, setSummary] = useState<RecordingSummary | null>(null);
@@ -43,10 +50,17 @@ export function useRecordingSession(projectSlug: string) {
   const [history, setHistory] = useState<RecordingSummary[]>([]);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // A slow status request must not overlap with the next poll. The backend may take
+  // seconds to build the live projection, while the UI cadence is intentionally short.
+  const pollInFlightRef = useRef(false);
+  // Invalidates responses that were started before STOP, a project switch, or a new session.
+  const pollGenerationRef = useRef(0);
+  const historyRequestRef = useRef(0);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = null;
+    pollGenerationRef.current += 1;
   }, []);
 
   const refreshHistory = useCallback(async () => {
@@ -54,12 +68,14 @@ export function useRecordingSession(projectSlug: string) {
       setHistory([]);
       return;
     }
+    const requestId = ++historyRequestRef.current;
     try {
       const res = await recordingsApi.list(projectSlug);
+      if (historyRequestRef.current !== requestId) return;
       setHistory(res.recordings ?? []);
     } catch {
       // A project with no recordings yet is not an error worth showing.
-      setHistory([]);
+      if (historyRequestRef.current === requestId) setHistory([]);
     }
   }, [projectSlug]);
 
@@ -70,6 +86,9 @@ export function useRecordingSession(projectSlug: string) {
   // Switching project abandons whatever was on screen: a recording belongs to one app.
   useEffect(() => {
     stopPolling();
+    openExistingRequestRef.current += 1;
+    generationRunRef.current += 1;
+    setGeneration(null);
     setPhase('idle');
     setRecordingId(null);
     setSummary(null);
@@ -83,10 +102,12 @@ export function useRecordingSession(projectSlug: string) {
     setError(null);
   }, [projectSlug, stopPolling]);
 
-  useEffect(() => stopPolling, [stopPolling]);
+  useEffect(() => () => { generationRunRef.current += 1; stopPolling(); }, [stopPolling]);
 
   const start = useCallback(
     async (recordingGoal?: string) => {
+      generationRunRef.current += 1;
+      setGeneration(null);
       setError(null);
       setPhase('starting');
       setScenarios([]);
@@ -100,35 +121,49 @@ export function useRecordingSession(projectSlug: string) {
         setLifecycle({ recordingExists: true, traceReady: false, semanticReady: false, scenariosReady: false });
         setPersistedScenarioIds(new Set());
 
-        pollRef.current = setInterval(async () => {
+        const pollGeneration = ++pollGenerationRef.current;
+        pollInFlightRef.current = false;
+
+        pollRef.current = setInterval(() => {
+          if (pollGenerationRef.current !== pollGeneration || pollInFlightRef.current) return;
+          pollInFlightRef.current = true;
           try {
-            const status = await recordingsApi.status(res.recordingId, projectSlug);
-            if (status.active) {
-              setLive(status.live ?? null);
-              setSummary(status.summary);
-              setScenarios(status.scenarios ?? status.live?.scenarios ?? []);
-              const liveModel = status.semanticModel ?? status.live?.semanticModel ?? null;
-              setSemanticModel(liveModel);
-              setDerivation(liveModel?.derivation ?? null);
-              setLifecycle({
-                recordingExists: true,
-                traceReady: false,
-                semanticReady: Boolean(liveModel),
-                // While a recording is active, the backend's own status route answers with
-                // `entry.liveProjection.scenarios` under this SAME `scenarios` key (see
-                // `recordings.ts` GET /:recordingId) -- an in-memory preview, not the persisted
-                // store `loadScenarios()` reads. Only `derive()`'s response and
-                // `GET .../scenarios` ever reflect that persisted store, so this poll must never
-                // flip readiness true: treating `status.scenarios` as proof of materialization
-                // here was the false positive that let an edit reach `PUT /scenario-value`
-                // before `derive()` had ever run, guaranteeing 409 SCENARIO_NOT_READY.
-                scenariosReady: false,
-              });
-              // Never update per-scenario persisted authority from the live poll either -- same
-              // reason: nothing here is backend-persisted while the recording is still active.
-            }
+            void recordingsApi.status(res.recordingId, projectSlug).then((status) => {
+              // STOP can resolve before this request does. Its late response is stale and
+              // must never make the screen look as if recording is still active.
+              if (pollGenerationRef.current !== pollGeneration) return;
+              if (status.active) {
+                setLive(status.live ?? null);
+                setSummary(status.summary);
+                setScenarios(status.scenarios ?? status.live?.scenarios ?? []);
+                const liveModel = status.semanticModel ?? status.live?.semanticModel ?? null;
+                setSemanticModel(liveModel);
+                setDerivation(liveModel?.derivation ?? null);
+                setLifecycle({
+                  recordingExists: true,
+                  traceReady: false,
+                  semanticReady: Boolean(liveModel),
+                  // While a recording is active, the backend's own status route answers with
+                  // `entry.liveProjection.scenarios` under this SAME `scenarios` key (see
+                  // `recordings.ts` GET /:recordingId) -- an in-memory preview, not the persisted
+                  // store `loadScenarios()` reads. Only `derive()`'s response and
+                  // `GET .../scenarios` ever reflect that persisted store, so this poll must never
+                  // flip readiness true: treating `status.scenarios` as proof of materialization
+                  // here was the false positive that let an edit reach `PUT /scenario-value`
+                  // before `derive()` had ever run, guaranteeing 409 SCENARIO_NOT_READY.
+                  scenariosReady: false,
+                });
+                // Never update per-scenario persisted authority from the live poll either -- same
+                // reason: nothing here is backend-persisted while the recording is still active.
+              }
+            }).catch(() => {
+              // A transient poll failure must not kill an in-progress walkthrough.
+            }).finally(() => {
+              if (pollGenerationRef.current === pollGeneration) pollInFlightRef.current = false;
+            });
           } catch {
-            // A transient poll failure must not kill an in-progress walkthrough.
+            // A synchronous transport failure must not kill an in-progress walkthrough.
+            if (pollGenerationRef.current === pollGeneration) pollInFlightRef.current = false;
           }
         }, POLL_INTERVAL_MS);
       } catch (err) {
@@ -142,11 +177,13 @@ export function useRecordingSession(projectSlug: string) {
   const stop = useCallback(async () => {
     if (!recordingId) return;
     setPhase('stopping');
-    stopPolling();
     try {
       const res = await recordingsApi.stop(recordingId, projectSlug);
+      // Keep the live status poll running until STOP confirms that the backend has drained
+      // recorder-bound actions and persisted the final trace. The poll is invalidated only
+      // after that authoritative response arrives.
+      stopPolling();
       setSummary(res.summary);
-      setPhase('stopped');
       // FIRST_LOSS fix: STOP's own response (`res.summary`) only ever carries a scenario COUNT
       // (`RecordingSummary.scenarioCount`), never the scenarioIds/payload the backend already
       // persisted (`materializeObservedPrimaryScenario` + `saveScenarios`, both already done by
@@ -171,6 +208,9 @@ export function useRecordingSession(projectSlug: string) {
         // (`openExisting`, same GET) remains the way to recover from a genuine transport outage.
         setLifecycle({ recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: false });
       }
+      // Keep the session in `stopping` until the persisted scenario read has completed. This
+      // is the synchronization boundary used by the UI to enable scenario replay actions.
+      setPhase('stopped');
       void refreshHistory();
     } catch (err) {
       setPhase('recording');
@@ -181,10 +221,44 @@ export function useRecordingSession(projectSlug: string) {
   const derive = useCallback(
     async (title?: string) => {
       if (!recordingId) return;
+      const run = ++generationRunRef.current;
+      const isCurrent = () => generationRunRef.current === run;
       setPhase('deriving');
       setError(null);
+      setGeneration({ kind: 'deriving', derivation: { recordingId, status: 'deriving' } });
       try {
-        const res = await recordingsApi.derive(recordingId, projectSlug, title);
+        const started = await recordingsApi.deriveAsync(recordingId, projectSlug, title);
+        if (!isCurrent()) return;
+        let res: DeriveResult;
+        if (Array.isArray(started.scenarios) && started.summary) {
+          // Older engines return the existing synchronous contract.
+          res = started as DeriveResult;
+        } else {
+          if (!started.derivation || !('status' in started.derivation)) {
+            throw new Error('El backend no devolvió el estado de generación.');
+          }
+          let progress: RecordingDerivationProgress = started.derivation;
+          const deadline = Date.now() + 20 * 60_000;
+          while (progress.status === 'deriving') {
+            setGeneration({ kind: 'deriving', derivation: progress });
+            if (Date.now() >= deadline) throw new Error('La generación sigue en curso. Reabre la grabación para consultar sus resultados.');
+            await new Promise<void>(resolve => setTimeout(resolve, 2000));
+            if (!isCurrent()) return;
+            progress = (await recordingsApi.derivation(recordingId, projectSlug)).derivation;
+            if (!isCurrent()) return;
+          }
+          if (progress.status !== 'derived') throw new Error(progress.errorMessage ?? 'La generación no terminó correctamente.');
+          const [stored, status, semantic, trace] = await Promise.all([
+            recordingsApi.scenarios(recordingId, projectSlug),
+            recordingsApi.status(recordingId, projectSlug),
+            recordingsApi.semantic(recordingId, projectSlug),
+            recordingsApi.trace(recordingId, projectSlug),
+          ]);
+          if (!isCurrent()) return;
+          if (!Array.isArray(stored.scenarios)) throw new Error('No se recibieron los escenarios generados.');
+          res = { scenarios: stored.scenarios, summary: status.summary,
+            semanticModel: semantic.model, narrative: trace.trace.narrative ?? '' };
+        }
         setScenarios(res.scenarios ?? []);
         setNarrative(res.narrative ?? '');
         setSemanticModel(res.semanticModel ?? null);
@@ -192,13 +266,14 @@ export function useRecordingSession(projectSlug: string) {
         setSummary(res.summary);
         setPhase('derived');
         setLifecycle({ recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: (res.scenarios ?? []).length > 0 });
-        // `derive()` is itself the materialization call -- its own response is authoritative
-        // persisted-authority evidence for exactly the scenarioIds it returns.
-        setPersistedScenarioIds(new Set((res.scenarios ?? []).map((scenario) => scenario.scenarioId)));
+        setPersistedScenarioIds(new Set((res.scenarios ?? []).map(scenario => scenario.scenarioId)));
         void refreshHistory();
       } catch (err) {
+        if (!isCurrent()) return;
         setPhase('stopped');
         setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (isCurrent()) setGeneration(null);
       }
     },
     [recordingId, projectSlug, refreshHistory],
@@ -226,6 +301,8 @@ export function useRecordingSession(projectSlug: string) {
    */
   const openExisting = useCallback(
     async (id: string) => {
+      generationRunRef.current += 1;
+      setGeneration(null);
       setError(null);
       setRecordingId(id);
       const requestId = ++openExistingRequestRef.current;
@@ -238,11 +315,19 @@ export function useRecordingSession(projectSlug: string) {
       // call, whatever recording that call was for.
       const isStale = () => openExistingRequestRef.current !== requestId;
 
-      const [scenarioResult, traceResult, semanticResult] = await Promise.allSettled([
+      const [scenarioResult, traceResult] = await Promise.allSettled([
         recordingsApi.scenarios(id, projectSlug),
         recordingsApi.trace(id, projectSlug),
-        recordingsApi.semantic(id, projectSlug),
       ]);
+      // A stopped recording can legitimately have scenarios/trace while semantic derivation is
+      // still pending. Do not issue a request that the backend must answer with 409; scenarios
+      // remain renderable and semantic data will arrive on the next lifecycle refresh/reopen.
+      const semanticReady = scenarioResult.status === 'fulfilled'
+        ? scenarioResult.value.lifecycle?.semanticReady
+        : undefined;
+      const semanticResult = semanticReady === false
+        ? ({ status: 'fulfilled', value: { model: null } } as const)
+        : await Promise.allSettled([recordingsApi.semantic(id, projectSlug)]).then(([result]) => result);
       console.info('[recording-history-resource]', {
         recordingId: id,
         requestSeq: requestId,
@@ -324,6 +409,7 @@ export function useRecordingSession(projectSlug: string) {
   );
 
   return {
+    generation,
     phase,
     recordingId,
     summary,

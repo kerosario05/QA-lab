@@ -8,6 +8,8 @@ import { useTestRailDestination } from './useTestRailDestination';
 import { TestRailDestinationPicker } from './TestRailDestinationPicker';
 import { useWebRecordingReplay } from './useWebRecordingReplay';
 import type { RecordingProjectDetail } from './useRecordingExecution';
+import { groupScenariosByRecording } from './groupScenariosByRecording';
+import { testRailSelectionKey } from './testRailSelection';
 
 /**
  * Dedicated destination screen for a web recording.
@@ -22,11 +24,9 @@ import type { RecordingProjectDetail } from './useRecordingExecution';
  * (BentoCard, step indicator, source cards, TestRail panel, nav footer) instead of being an
  * isolated small dialog — Recording and TestLaunch are the same product.
  *
- * "Ejecutar Automatización" makes one call to the existing `/execute` endpoint, now carrying
- * `testRailDestination` alongside recordingId/scenarioIds/dataOverrides/datasetValues. The
- * backend resolves, per scenario, whether a TestRail case and a fresh promoted spec already
- * exist and decides reuse vs. publish vs. generate from that — this screen no longer composes
- * a separate publish call in front of it.
+ * "Ejecutar Automatización" sends every selected recording/scenario pair in one batch. The
+ * backend resolves per scenario whether to reuse a fresh promoted spec or run discovery and
+ * Auto-POM, then reports the batch through one job id.
  */
 
 export interface TestRailUploadScreenProps {
@@ -34,6 +34,8 @@ export interface TestRailUploadScreenProps {
   projectSlug: string;
   projectDetail: RecordingProjectDetail | null;
   scenarios: RecordedScenario[];
+  scenarioRecordingIds?: string[];
+  scenarioDatasetValues?: Record<string, Record<string, string | undefined>>;
   dataOverrides: Record<string, Record<number, string>>;
   datasetValues: Record<string, string | undefined>;
   onBack: () => void;
@@ -82,6 +84,8 @@ export function TestRailUploadScreen({
   projectSlug,
   projectDetail,
   scenarios,
+  scenarioRecordingIds = [],
+  scenarioDatasetValues = {},
   dataOverrides,
   datasetValues,
   recordingId,
@@ -93,38 +97,41 @@ export function TestRailUploadScreen({
   const [fastPathSummary, setFastPathSummary] = useState<string | null>(null);
 
   const destinationReady = Boolean(testRail.destination.projectId && testRail.destination.suiteId && testRail.destination.sectionId);
-  const canExecute = Boolean(recordingId) && scenarios.length > 0 && destinationReady;
+  const recordingGroups = groupScenariosByRecording(scenarios, scenarioRecordingIds, recordingId);
+  const canExecute = Boolean(recordingId) && recordingGroups.length > 0 && destinationReady;
   const running = replay.starting;
 
   async function handleExecuteAutomation() {
     if (!canExecute || running) return;
     setFastPathSummary(null);
-    const launch = await replay.replay(projectSlug, recordingId, scenarios, dataOverrides, datasetValues, true, testRail.destination);
-    if (!launch) return;
-
-    // Every execution mode — reuse, generate, or a mix — now always gets a jobId back:
-    // reuse_existing runs the promoted spec inside a background job instead of blocking this
-    // request, so there is always a live run to hand off to. This screen never waits for the
-    // final result itself; it hands off to the same execution/Pass Rate screen every other
-    // launch uses and stops being the active view.
-    if (!launch.jobId) {
-      // Defensive only: the backend contract guarantees a jobId for every accepted
-      // execution. If it's ever missing, surface that plainly instead of pretending the run
-      // finished.
-      setFastPathSummary('No se recibió un job de ejecución del backend.');
+    const selections = recordingGroups.flatMap((group) => group.scenarios.map((scenario) => {
+      const overrides = dataOverrides[testRailSelectionKey(group.recordingId, scenario.scenarioId)]
+        ?? dataOverrides[scenario.scenarioId];
+      const values = scenarioDatasetValues[testRailSelectionKey(group.recordingId, scenario.scenarioId)]
+        ?? scenarioDatasetValues[scenario.scenarioId]
+        ?? {};
+      return {
+        recordingId: group.recordingId,
+        scenarioId: scenario.scenarioId,
+        ...(overrides ? { dataOverrides: overrides } : {}),
+        datasetValues: { ...datasetValues, ...values },
+      };
+    }));
+    const launch = await replay.replayBatch(projectSlug, selections, testRail.destination);
+    if (!launch?.jobId) {
+      setFastPathSummary(replay.error ?? 'No se recibió un job de ejecución del backend.');
       return;
     }
-
     onLaunch?.({
       id: launch.jobId,
       jobId: launch.jobId,
       recordingId,
-      scenarioIds: scenarios.map((scenario) => scenario.scenarioId),
+      scenarioIds: selections.map(({ scenarioId }) => scenarioId),
       project: projectDetail?.name ?? projectSlug,
       triggered: 'Grabación web',
       startedAt: new Date().toISOString(),
       progress: 0,
-      total: launch.scenarioCount ?? scenarios.length,
+      total: launch.scenarioCount ?? selections.length,
       completed: 0,
       passed: 0,
       failed: 0,
@@ -175,8 +182,12 @@ export function TestRailUploadScreen({
                 <div className="px-3 py-2.5 text-[12px] font-semibold text-[#1a1f2e] bg-[#FAFAF7]">
                   {scenarios.length === 1 ? '1 escenario seleccionado' : `${scenarios.length} escenarios seleccionados`}
                 </div>
-                {scenarios.map((scenario) => (
-                  <div key={scenario.scenarioId} className="px-3 py-2.5 flex items-center justify-between text-[12px]">
+                {scenarios.map((scenario, index) => (
+                  <div
+                    key={testRailSelectionKey(scenarioRecordingIds[index] ?? recordingId, scenario.scenarioId)}
+                    title={`Grabación ${scenarioRecordingIds[index] ?? recordingId}`}
+                    className="px-3 py-2.5 flex items-center justify-between text-[12px]"
+                  >
                     <span className="text-[#1a1f2e] font-medium truncate">{scenario.title}</span>
                     <span className="text-[#8B999D] flex-shrink-0 ml-2">
                       {typeof scenario.functionalActionCount === 'number'

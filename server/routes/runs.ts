@@ -1,3 +1,4 @@
+import { engineHeaders } from '../engine-auth';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getRunProviderConfig, requestDiscoveryBatch, requestScenarioPreviewRun, rememberActiveScenarios, resolveActiveScenario } from '../runs-provider';
@@ -188,7 +189,7 @@ router.post('/launch-execution', async (req: Request, res: Response) => {
   try {
     const upstreamRes = await fetch(upstreamUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(body),
     });
 
@@ -220,7 +221,7 @@ router.post('/:jobId/rerun', async (req: Request, res: Response) => {
   try {
     const upstreamRes = await fetch(upstreamUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(req.body || { mode: 'all' }),
     });
     const bodyText = await upstreamRes.text();
@@ -245,7 +246,7 @@ router.get('/:jobId/logs', async (req: Request, res: Response) => {
   const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/logs`;
 
   try {
-    const upstreamRes = await fetch(upstreamUrl);
+    const upstreamRes = await fetch(upstreamUrl, { headers: engineHeaders() });
     if (!upstreamRes.ok) {
       const bodyText = await upstreamRes.text().catch(() => '');
       let parsed: any;
@@ -301,7 +302,7 @@ router.get('/:jobId/evidence-docx', async (req: Request, res: Response) => {
   const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/evidence-docx`;
 
   try {
-    const upstreamRes = await fetch(upstreamUrl);
+    const upstreamRes = await fetch(upstreamUrl, { headers: engineHeaders() });
 
     if (!upstreamRes.ok) {
       const bodyText = await upstreamRes.text().catch(() => '');
@@ -355,7 +356,7 @@ router.get('/:jobId/evidence-docx/status', async (req: Request, res: Response) =
   const upstreamDocxUrl = `${baseUrl}/api/runs/${jobId}/evidence-docx`;
 
   try {
-    const statusProbe = await fetch(upstreamStatusUrl, { headers: { Accept: 'application/json' } });
+    const statusProbe = await fetch(upstreamStatusUrl, { headers: { Accept: 'application/json', ...engineHeaders() } });
     const rawBody = await statusProbe.text();
     let parsed: any = null;
     try { parsed = rawBody ? JSON.parse(rawBody) : null; } catch { parsed = null; }
@@ -380,7 +381,7 @@ router.get('/:jobId/evidence-docx/status', async (req: Request, res: Response) =
     }
 
     // Backward-compatible fallback for providers that still don't expose /status.
-    const headProbe = await fetch(upstreamDocxUrl, { method: 'HEAD' });
+    const headProbe = await fetch(upstreamDocxUrl, { method: 'HEAD', headers: engineHeaders() });
     const statusCode = headProbe.status;
     if (statusCode === 200) {
       return sendJson(res, 200, {
@@ -440,7 +441,7 @@ router.get('/:jobId', async (req: Request, res: Response) => {
   const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}`;
 
   try {
-    const upstreamRes = await fetch(upstreamUrl);
+    const upstreamRes = await fetch(upstreamUrl, { headers: engineHeaders() });
     const bodyText = await upstreamRes.text();
     let parsed: any;
     try { parsed = JSON.parse(bodyText); } catch { parsed = null; }

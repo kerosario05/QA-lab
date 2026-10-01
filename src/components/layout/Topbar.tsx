@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Search, Bell } from 'lucide-react';
+import { Search, Bell, LogOut } from 'lucide-react';
+import { useAuth } from '../../auth/AuthContext';
 
 interface TopbarProps {
   title: string;
@@ -8,6 +9,7 @@ interface TopbarProps {
 }
 
 export function Topbar({ title, subtitle, action }: TopbarProps) {
+  const { user, logout } = useAuth();
   const [time, setTime] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 60000);
@@ -43,6 +45,13 @@ export function Topbar({ title, subtitle, action }: TopbarProps) {
           <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-[#48A157] rounded-full" />
         </button>
         {action}
+        <button
+          onClick={() => void logout()}
+          title={user ? `Cerrar sesión de ${user.username}` : 'Cerrar sesión'}
+          className="p-1.5 hover:bg-[#FEF2F2] rounded-full transition text-[#58646D] hover:text-[#DC2626]"
+        >
+          <LogOut size={15} />
+        </button>
       </div>
     </header>
   );

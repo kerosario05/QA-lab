@@ -1,3 +1,4 @@
+import { engineHeaders } from './engine-auth';
 import { getScenarioPreviewConfig } from './scenario-preview-provider';
 
 /**
@@ -47,7 +48,7 @@ async function callRecordingEndpoint(
   const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
+    const res = await fetch(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), ...engineHeaders() }, signal: controller.signal });
     clearTimeout(timeoutId);
 
     const rawBody = await res.text();
@@ -203,6 +204,22 @@ export function executeRecording(recordingId: string, payload: Record<string, un
   );
 }
 
+export function executeRecordingBatch(payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-execute-batch',
+    '/api/recordings/execute-batch',
+    { method: 'POST', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
+export function controlRecording(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-control',
+    `/api/recordings/${encodeURIComponent(recordingId)}/control`,
+    { method: 'POST', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
 export function deleteRecording(recordingId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
   return callRecordingEndpoint(
     'recordings-delete',
@@ -210,3 +227,13 @@ export function deleteRecording(recordingId: string, projectSlug: string): Promi
     { method: 'DELETE' },
   );
 }
+
+export function getRecordingDerivation(recordingId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-derivation',
+    `/api/recordings/${encodeURIComponent(recordingId)}/derivation?projectSlug=${encodeURIComponent(projectSlug)}`,
+    { method: 'GET' },
+    15_000,
+  );
+}
+

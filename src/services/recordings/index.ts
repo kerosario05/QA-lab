@@ -1,5 +1,6 @@
 import type {
   DeriveResult,
+  RecordingDerivationProgress,
   RecordedScenario,
   RecordingLive,
   RecordingSummary,
@@ -60,6 +61,12 @@ export function serializedPayloadBytes(payload: unknown): number {
 }
 
 export type RecordingTestRailDestination = { projectId?: string; suiteId?: string; sectionId?: string };
+export type RecordingBatchSelection = {
+  recordingId: string;
+  scenarioId: string;
+  dataOverrides?: Record<number, string>;
+  datasetValues?: Record<string, string | undefined>;
+};
 
 export function buildRecordingExecutePayload(
   projectSlug: string,
@@ -115,6 +122,17 @@ export const recordingsApi = {
       method: 'POST',
       body: JSON.stringify({ projectSlug, title }),
     }),
+
+  deriveAsync: (recordingId: string, projectSlug: string, title?: string) =>
+    request<Omit<Partial<DeriveResult>, 'derivation'> & { derivation?: RecordingDerivationProgress | DeriveResult['derivation'] }>(`/api/recordings/${encodeURIComponent(recordingId)}/derive`, {
+      method: 'POST',
+      body: JSON.stringify({ projectSlug, title, async: true }),
+    }),
+
+  derivation: (recordingId: string, projectSlug: string) =>
+    request<{ derivation: RecordingDerivationProgress }>(
+      `/api/recordings/${encodeURIComponent(recordingId)}/derivation?projectSlug=${encodeURIComponent(projectSlug)}`,
+    ),
 
   scenarios: (recordingId: string, projectSlug: string) =>
     request<{ scenarios: RecordedScenario[]; lifecycle?: RecordingLifecycle }>(
@@ -188,6 +206,22 @@ export const recordingsApi = {
       `/api/recordings/${encodeURIComponent(recordingId)}/execute`,
       { method: 'POST', body: JSON.stringify(buildRecordingExecutePayload(projectSlug, scenarioIds, dataOverrides, datasetValues, generateSpec, testRailDestination)) },
     ),
+
+  executeBatch: (
+    projectSlug: string,
+    selections: RecordingBatchSelection[],
+    testRailDestination: RecordingTestRailDestination,
+  ) => request<{
+    jobId?: string;
+    scenarioCount?: number;
+    requestedCount?: number;
+    acceptedCount?: number;
+    executionMode?: string;
+    publishToTestRailInvoked?: boolean;
+  } & Partial<RecordingReplayAdmission>>('/api/recordings/execute-batch', {
+    method: 'POST',
+    body: JSON.stringify({ projectSlug, selections, testRailDestination }),
+  }),
 
   remove: (recordingId: string, projectSlug: string) =>
     request<{ ok: boolean }>(

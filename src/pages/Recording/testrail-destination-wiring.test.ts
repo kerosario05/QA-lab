@@ -30,7 +30,10 @@ describe('Recording page — TestRail destination hand-off wiring', () => {
   // clearing it (back navigation) never touches session/recordingId.
   it('handleReplay hands off the real selection instead of executing directly', () => {
     expect(source).not.toMatch(/handleReplay[\s\S]{0,400}replay\.replay/);
-    expect(source).toMatch(/setTestRailUpload\(\{\s*scenarios:\s*executionScenarios/);
+    expect(source).toMatch(/setTestRailUpload\(\{\s*scenarios:\s*replayEntries\.map/);
+    expect(source).toContain('selectedTestRailEntries,');
+    expect(source).toContain('executionScenarios.map((scenario)');
+    expect(source).toContain('handlerSelectedCount=${selectedIds.length}');
   });
 
   it('the destination screen receives the live recordingId and onBack only clears local state', () => {

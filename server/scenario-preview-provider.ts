@@ -1,3 +1,4 @@
+import { engineHeaders } from './engine-auth';
 import { normalizeScenarioPreviewResponse } from '../src/services/scenarios/normalize';
 
 export interface ScenarioPreviewProviderConfig {
@@ -65,7 +66,7 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -171,7 +172,7 @@ export async function requestRouteDiscoveryRun(payload: RouteDiscoveryPayload): 
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
