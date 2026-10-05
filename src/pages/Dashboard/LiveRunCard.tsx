@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react';
 import { Check, XCircle } from 'lucide-react';
 import { C } from '../../constants/theme';
 import type { ActiveRun } from '../../types';
@@ -9,17 +8,6 @@ interface LiveRunCardProps {
 }
 
 export function LiveRunCard({ run, onClick }: LiveRunCardProps) {
-  const [livePct, setLivePct] = useState(run.progress);
-  const [completed, setCompleted] = useState(run.completed);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setLivePct(p => Math.min(p + Math.random() * 0.8, 100));
-      setCompleted(c => Math.min(c + (Math.random() > 0.6 ? 1 : 0), run.total));
-    }, 1500);
-    return () => clearInterval(interval);
-  }, [run.total]);
-
   return (
     <button
       onClick={onClick}
@@ -44,7 +32,7 @@ export function LiveRunCard({ run, onClick }: LiveRunCardProps) {
         <div className="h-1.5 bg-[#F4F1EA] rounded-full overflow-hidden">
           <div
             className="h-full rounded-full transition-all duration-700 relative overflow-hidden"
-            style={{ width: `${livePct}%`, background: `linear-gradient(90deg, ${C.blue}, ${C.green})` }}
+            style={{ width: `${run.progress}%`, background: `linear-gradient(90deg, ${C.blue}, ${C.green})` }}
           >
             <div className="absolute inset-0 opacity-50" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)', animation: 'shimmer 1.5s linear infinite' }} />
           </div>
@@ -53,8 +41,8 @@ export function LiveRunCard({ run, onClick }: LiveRunCardProps) {
 
       <div className="flex items-center justify-between text-[10px]">
         <div className="flex items-center gap-3">
-          <span className="text-[#1a1f2e] font-semibold">{Math.round(livePct)}%</span>
-          <span className="text-[#8B999D] font-mono">{completed}/{run.total}</span>
+          <span className="text-[#1a1f2e] font-semibold">{run.progress}%</span>
+          <span className="text-[#8B999D] font-mono">{run.completed}/{run.total}</span>
           <span className="flex items-center gap-1 text-[#48A157] font-medium"><Check size={9} strokeWidth={3} />{run.passed}</span>
           {run.failed > 0 && <span className="flex items-center gap-1 text-[#E63946] font-medium"><XCircle size={9} />{run.failed}</span>}
         </div>

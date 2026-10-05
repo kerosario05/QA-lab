@@ -14,3 +14,14 @@ export interface JiraSprint {
   endDate?: string;
   goal?: string;
 }
+
+export interface JiraIssue {
+  id?: string;
+  key: string;
+  summary: string;
+  description?: string;
+  acceptanceCriteria?: string;
+  status?: string;
+  issueType?: string;
+  [key: string]: unknown;
+}

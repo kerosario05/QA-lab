@@ -27,6 +27,9 @@ import {
   getScenarioStepState,
   normalizeCaseStartedScenario,
   resolveActiveScenarioUpdate,
+  parseLiveScenarioProgress,
+  parseLiveStepUpdate,
+  applyLiveScenarioProgress,
 } from './state';
 import type { ActiveRun } from '../../types';
 
@@ -47,6 +50,48 @@ const baseRun: ActiveRun = {
 };
 
 describe('LiveExecution state', () => {
+  it('avanza y cierra pasos del runtime de specs promovidos', () => {
+    expect(parseLiveStepUpdate('[promoted-child] [promoted-step] stepIndex=6 phase=start currentUrl=https://example.test/'))
+      .toEqual({ index: 5, status: 'running' });
+    expect(parseLiveStepUpdate('[promoted-child] [promoted-step] stepIndex=5 phase=passed currentUrl=https://example.test/'))
+      .toEqual({ index: 4, status: 'passed' });
+    expect(parseLiveStepUpdate('[promoted-child] [promoted-step] stepIndex=7 phase=failed failureClass=target_not_found'))
+      .toEqual({ index: 6, status: 'failed' });
+  });
+
+  it('avanza al paso reportado por critical-path, aunque falte el evento de evidencia', () => {
+    const progress = parseLiveScenarioProgress('[scenario-preview] stdout: [critical-path] step=33 phase=resolver_start monotonicMs=239350');
+    expect(progress).toEqual({ type: 'step', update: { index: 32, status: 'running' } });
+
+    const scenario = {
+      id: 'PREVIEW-001', title: 'Registro varios clientes', index: 1, total: 1,
+      steps: Array.from({ length: 33 }, (_, index) => `Paso ${index + 1}`),
+    };
+    const updated = applyLiveScenarioProgress(scenario, progress!);
+    expect(updated?.currentStepIndex).toBe(32);
+  });
+
+  it('marca el último paso completado y muestra la fase de promoción al habilitarse el gate', () => {
+    const scenario = {
+      id: 'PREVIEW-001', title: 'Registro varios clientes', index: 1, total: 1,
+      steps: ['Abrir', 'Validar'],
+      stepResults: [{ status: 'passed' }, { status: 'running' }],
+      currentStepIndex: 1,
+    };
+    const progress = parseLiveScenarioProgress('[discovery:workflow] Promotion gate: allowed=true, status=passed');
+    expect(progress).toEqual({ type: 'promoting' });
+    const updated = applyLiveScenarioProgress(scenario, progress!);
+    expect(updated?.phase).toBe('promoting');
+    expect(updated?.currentStepIndex).toBe(1);
+    expect(updated?.stepResults?.map(step => step.status)).toEqual(['passed', 'passed']);
+    expect(parseLiveScenarioProgress('[discovery:workflow] Promotion gate: allowed=false, status=blocked')).toBeNull();
+  });
+
+  it('marca el paso actual como completado al terminar su verificación semántica', () => {
+    const progress = parseLiveScenarioProgress('[critical-path] step=33 phase=semantic_verification_end elapsedMs=1556');
+    expect(progress).toEqual({ type: 'step', update: { index: 32, status: 'passed' } });
+  });
+
   it('mapea case_started a activeScenario y limpia case_finished sin afectar logs normales', () => {
     const started = resolveActiveScenarioUpdate({
       type: 'case_started',

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   ChevronLeft, FileText, Lock, Pause, Square, CheckCircle2,
   Loader2, Terminal, Maximize2, AlertCircle, Download,
+  X, Copy, Check,
 } from 'lucide-react';
 import {
   RadialBarChart, RadialBar,
@@ -35,8 +36,11 @@ import {
   type EvidenceDocumentAvailability,
   type LiveExecutionStatusLike,
   type ActiveScenarioLike,
-  getCompactScenarioSteps,
   getScenarioStepState,
+  parseLiveScenarioProgress,
+  applyLiveScenarioProgress,
+  finishActiveScenario,
+  getCurrentScenarioStepIndex,
 } from './state';
 import {
   createMobileProgressState,
@@ -58,6 +62,23 @@ const DOC_STATUS_POLL_INTERVAL_MS = 2000;
 const DOC_STATUS_MAX_ATTEMPTS = 30;
 const RUN_STATUS_POLL_INTERVAL_MS = 2000;
 
+/** Clipboard write that also works on non-secure origins (navigator.clipboard needs HTTPS/localhost). */
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the legacy path */ }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  try { return document.execCommand('copy'); } finally { document.body.removeChild(area); }
+}
+
 const formatTime = (s: number) => {
   const m   = Math.floor(s / 60);
   const sec = s % 60;
@@ -73,7 +94,7 @@ const mapLevel = (level?: string): DisplayLog['type'] => {
   return 'info';
 };
 
-export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution, onOpenChecklist }: LiveExecutionScreenProps) {
+export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution }: LiveExecutionScreenProps) {
   const [progress,        setProgress]        = useState(run?.progress ?? 0);
   const [total,           setTotal]           = useState(run?.total ?? 0);
   const [requested,       setRequested]       = useState(run?.total ?? 0);
@@ -85,10 +106,13 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [passRate,        setPassRate]        = useState<number | null>(null);
   const [currentTestName, setCurrentTestName] = useState(run?.currentTest || '');
   const [activeScenario, setActiveScenario] = useState<ActiveScenarioLike | null>(
-    ((run as (ActiveRun & { activeScenario?: ActiveScenarioLike | null }) | null)?.activeScenario) ?? null,
+    ((run as (ActiveRun & { activeScenario?: ActiveScenarioLike | null }) | null)?.activeScenario)
+      ?? run?.activeScenarios?.[0]
+      ?? null,
   );
   const [jobStatus,       setJobStatus]       = useState(run?.status || 'queued');
   const [logs,            setLogs]            = useState<DisplayLog[]>([]);
+  const [logsCopied,      setLogsCopied]      = useState(false);
   const [streamError,     setStreamError]     = useState<string | null>(null);
   const [elapsed,         setElapsed]         = useState(0);
   const [currentJobId,    setCurrentJobId]    = useState(run?.jobId || run?.id || '');
@@ -100,6 +124,10 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [docxError,      setDocxError]      = useState<string | null>(null);
   const [documentReady,  setDocumentReady]  = useState(false);
   const [documentState,  setDocumentState]  = useState<EvidenceDocumentAvailability>('idle');
+  const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
+  const [reportPreviewUrl, setReportPreviewUrl] = useState<string | null>(null);
+  const [reportPreviewLoading, setReportPreviewLoading] = useState(false);
+  const [reportPreviewError, setReportPreviewError] = useState<string | null>(null);
   const [rerunKey,        setRerunKey]          = useState(0);
 
   const logsEndRef   = useRef<HTMLDivElement>(null);
@@ -110,6 +138,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const documentPollTimerRef = useRef<number | null>(null);
   const documentPollingJobIdRef = useRef<string | null>(null);
   const documentPollAttemptsRef = useRef(0);
+  const reportPreviewRequestRef = useRef(0);
   const terminalReceivedAtRef = useRef<string | null>(null);
   const activeJobIdRef = useRef(currentJobId);
   const totalRef = useRef(total);
@@ -137,8 +166,60 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const functionalPassRate = computeFunctionalPassRatePercent(passed, failed);
   const functionalPassRateLabel = formatFunctionalPassRateLabel({ passed, failed, status: jobStatus });
   const finalUserMessage = getTerminalUserMessage(jobStatus);
-  const compactScenarioSteps = getCompactScenarioSteps(activeScenario?.steps ?? []);
+  const currentScenarioStepIndex = getCurrentScenarioStepIndex(activeScenario);
+  const currentScenarioStep = currentScenarioStepIndex >= 0
+    ? activeScenario?.steps[currentScenarioStepIndex]?.replace(/^\s*\d+\s*[.)-]\s*/, '').trim()
+    : '';
   const canDownloadDocument = isTerminalStatus(jobStatus) && documentReady && Boolean(currentJobId);
+
+  const closeReportPreview = () => {
+    reportPreviewRequestRef.current += 1;
+    setReportPreviewOpen(false);
+    setReportPreviewUrl(null);
+    setReportPreviewLoading(false);
+    setReportPreviewError(null);
+  };
+
+  const openReportPreview = async () => {
+    if (!canDownloadDocument || reportPreviewLoading) return;
+    const requestId = ++reportPreviewRequestRef.current;
+    setReportPreviewOpen(true);
+    setReportPreviewUrl(null);
+    setReportPreviewError(null);
+    setReportPreviewLoading(true);
+    try {
+      const url = await runsProxy.previewEvidencePdf(currentJobId);
+      if (requestId !== reportPreviewRequestRef.current) {
+        window.URL.revokeObjectURL(url);
+        return;
+      }
+      setReportPreviewUrl(url);
+    } catch (error) {
+      if (requestId === reportPreviewRequestRef.current) {
+        setReportPreviewError(error instanceof Error ? error.message : 'No se pudo cargar la vista previa del PDF.');
+      }
+    } finally {
+      if (requestId === reportPreviewRequestRef.current) setReportPreviewLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!reportPreviewOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeReportPreview();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [reportPreviewOpen]);
+
+  useEffect(() => () => {
+    if (reportPreviewUrl) window.URL.revokeObjectURL(reportPreviewUrl);
+  }, [reportPreviewUrl]);
 
   const handleRerun = async () => {
     if (!run?.jobId || rerunning) return;
@@ -464,6 +545,36 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
 
     const applyStatus = (data: any) => {
       if (activeJobIdRef.current !== streamJobId) return;
+      // A case lifecycle event has a case-level `status` (for example, failed),
+      // which must never be interpreted as the status of the whole queued job.
+      // Handle it before terminal-status filtering so the next case can become
+      // active immediately after the previous case finishes.
+      if (data?.type === 'case_started') {
+        let nextScenario = resolveActiveScenarioUpdate(data);
+        if (nextScenario) {
+          const queueMatch = run?.activeScenarios?.find((scenario) =>
+            scenario.id === nextScenario?.id || scenario.title === nextScenario?.title,
+          ) ?? run?.activeScenarios?.[Math.max(0, nextScenario.index - 1)];
+          if (queueMatch) {
+            nextScenario = {
+              ...nextScenario,
+              steps: nextScenario.steps.length ? nextScenario.steps : queueMatch.steps,
+              index: nextScenario.index || queueMatch.index,
+              total: nextScenario.total || queueMatch.total,
+              currentStepIndex: nextScenario.currentStepIndex ?? 0,
+            };
+          }
+          setCurrentTestName(nextScenario.title);
+          setActiveScenario(nextScenario);
+          setStreamError(null);
+        }
+        return;
+      }
+      if (data?.type === 'case_finished') {
+        setActiveScenario(previous => finishActiveScenario(previous, data));
+        return;
+      }
+
       let stableStatus = data as LiveExecutionStatusLike;
       if (isTerminalStatus(stableStatus.status)) {
         if (!terminalReceivedAtRef.current) {
@@ -482,10 +593,21 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       }
       if (stableStatus.currentTest) setCurrentTestName(stableStatus.currentTest);
       const activeScenarioUpdate = resolveActiveScenarioUpdate(data);
-      if (isTerminalStatus(stableStatus.status) || (data as any)?.type === 'case_finished') {
-        setActiveScenario(null);
-      } else if (activeScenarioUpdate !== undefined) {
-        setActiveScenario(activeScenarioUpdate);
+      if (activeScenarioUpdate && activeScenarioUpdate !== undefined) {
+        setActiveScenario(previous => previous?.id === activeScenarioUpdate.id
+          ? {
+              ...activeScenarioUpdate,
+              steps: activeScenarioUpdate.steps.length ? activeScenarioUpdate.steps : previous.steps,
+              stepResults: activeScenarioUpdate.stepResults?.length ? activeScenarioUpdate.stepResults : previous.stepResults,
+              currentStepIndex: activeScenarioUpdate.currentStepIndex
+                ?? (activeScenarioUpdate.stepResults?.length ? undefined : previous.currentStepIndex),
+              status: activeScenarioUpdate.status ?? previous.status,
+            }
+          : activeScenarioUpdate);
+      } else if (activeScenarioUpdate === null && !isTerminalStatus(stableStatus.status)) {
+        // Retain the completed case until the next case_started event.
+      } else if (isTerminalStatus(stableStatus.status)) {
+        setActiveScenario(previous => previous);
       }
       if (stableStatus.status)      setJobStatus(stableStatus.status);
       if (data.checklistUrl)        setChecklistUrl(data.checklistUrl);
@@ -536,6 +658,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       try {
         const statusData = await runsProxy.getJob(streamJobId);
         if (activeJobIdRef.current !== streamJobId) return;
+        setStreamError(null);
         applyStatus(statusData as LiveExecutionStatusLike);
       } catch {
         // Ignore transient polling errors; stream keeps primary real-time channel.
@@ -568,6 +691,21 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
           type: mapLevel(entry.level),
           msg:  entry.message,
         }]);
+        const trimmedMessage = entry.message.trim();
+        const jsonStart = trimmedMessage.indexOf('{');
+        const jsonEnd = trimmedMessage.lastIndexOf('}');
+        if (jsonStart >= 0 && jsonEnd > jsonStart) {
+          try {
+            const lifecycleEvent = JSON.parse(trimmedMessage.slice(jsonStart, jsonEnd + 1));
+            if (lifecycleEvent?.type === 'case_started' || lifecycleEvent?.type === 'case_finished') {
+              applyStatus(lifecycleEvent);
+            }
+          } catch {
+            // Ordinary log text can begin with a brace; only structured lifecycle JSON matters.
+          }
+        }
+        const scenarioProgress = parseLiveScenarioProgress(entry.message);
+        if (scenarioProgress) setActiveScenario(previous => applyLiveScenarioProgress(previous, scenarioProgress));
         if (isMobile) {
           const counters = reduceMobileProgress(mobileState, entry.message, mobileTotal);
           if (counters) {
@@ -646,8 +784,12 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
           <div className="flex items-center gap-2">
             {isDone ? (
               <>
-                <button className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]">
-                  <FileText size={11} /> Ver reporte
+                <button
+                  onClick={openReportPreview}
+                  disabled={!canDownloadDocument || reportPreviewLoading}
+                  className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {reportPreviewLoading ? <Loader2 size={11} className="animate-spin" /> : <FileText size={11} />} Ver reporte
                 </button>
                 <button
                   onClick={async () => {
@@ -797,50 +939,48 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                   ? <CheckCircle2 size={13} className={isFailed ? 'text-[#E63946]' : 'text-[#48A157]'} />
                   : <Loader2 size={13} className="text-[#104B99] animate-spin" />}
               </div>
-              <div className={cn(
-                "text-[10px] uppercase tracking-[0.15em] font-semibold",
-                !isDone && "text-[#8B999D]",
+              <div title={!isDone && activeScenario ? activeScenario.title : undefined} className={cn(
+                "min-w-0 truncate font-semibold",
+                !isDone && activeScenario && "text-[13px] text-[#1a1f2e]",
+                !isDone && !activeScenario && "text-[10px] uppercase tracking-[0.15em] text-[#8B999D]",
                 isDone && finalUserMessage.tone === 'success' && "text-[#48A157]",
                 isDone && finalUserMessage.tone === 'error' && "text-[#E63946]",
                 isDone && finalUserMessage.tone === 'neutral' && "text-[#58646D]",
               )}>
                 {isDone
                   ? finalUserMessage.text
-                  : 'Ejecutándose ahora'}
+                  : activeScenario ? `Ejecutándose ahora · ${activeScenario.title}` : 'Ejecutándose ahora'}
               </div>
             </div>
 
-            {/* During execution: show the structured active scenario, not a log-derived id. */}
-             {!isDone && activeScenario && (
-               <div className="space-y-3">
-                 <div>
-                   <div className="flex items-center gap-1.5 text-[10px] text-[#58646D]">
-                     <span className="text-[#48A157]">●</span>
-                     <span>Ejecutando · escenario {activeScenario.index} de {activeScenario.total}</span>
+            {/* Show only the current step; the case title lives in the one-line header above. */}
+             {activeScenario && (
+               <div className="border-t border-[#E8ECEE] pt-2.5 text-[12px] text-[#58646D]">
+                   <div className="text-[9px] uppercase tracking-[0.14em] font-semibold text-[#8B999D] mb-1.5">
+                     {activeScenario.phase === 'promoting'
+                       ? `Promoviendo spec · ${activeScenario.steps.length} de ${activeScenario.steps.length}`
+                       : `Paso actual${currentScenarioStepIndex >= 0 ? ` · ${currentScenarioStepIndex + 1} de ${activeScenario.steps.length}` : ''}`}
                    </div>
-                   <div className="text-[18px] font-medium text-[#1a1f2e] leading-tight line-clamp-2 mt-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
-                     {activeScenario.title}
-                   </div>
-                   <div className="text-[10px] text-[#8B999D] font-mono mt-1">{activeScenario.id} · {activeScenario.index} de {activeScenario.total}</div>
-                 </div>
-
-                 <div className="border-t border-[#E8ECEE] pt-2.5 text-[12px] text-[#58646D]">
-                   <div className="text-[9px] uppercase tracking-[0.14em] font-semibold text-[#8B999D] mb-1.5">Pasos</div>
-                   <div className="space-y-1">
-                     {compactScenarioSteps.steps.map((step, index) => {
-                       const state = getScenarioStepState(activeScenario.stepResults, index);
-                       const marker = state === 'completed' ? '✓' : state === 'running' ? '●' : '○';
-                       return <div className="flex items-start gap-2 leading-5" key={`${index}-${step}`}><span className="w-3 shrink-0 text-center">{marker}</span><span className="truncate">{step}</span></div>;
-                     })}
-                   </div>
-                   {compactScenarioSteps.remaining > 0 && (
-                     <div className="text-[11px] text-[#8B999D] mt-1">+ {compactScenarioSteps.remaining} pasos</div>
-                   )}
-                 </div>
+                   {currentScenarioStep && (
+                     <div key={`${activeScenario.id}-${currentScenarioStepIndex}`} className="flex items-start gap-2 leading-5 transition-opacity duration-300 animate-[live-step-enter_220ms_ease-out]">
+                       {(() => {
+                       const state = getScenarioStepState(activeScenario.stepResults, currentScenarioStepIndex);
+                       const marker = state === 'completed' ? '✓' : state === 'failed' ? '✕' : state === 'running' ? '●' : '○';
+                       const markerClass = state === 'completed' ? 'text-[#48A157]' : state === 'failed' ? 'text-[#E63946]' : state === 'running' ? 'text-[#104B99]' : 'text-[#AAB4B8]';
+                       return <><span className={cn('w-3 shrink-0 text-center font-semibold', markerClass)}>{marker}</span><span>{currentScenarioStep}</span></>;
+                       })()}
                </div>
+                   )}
+                   {!currentScenarioStep && !isDone && (
+                     <div className="text-[11px] text-[#8B999D]">Esperando el siguiente paso…</div>
+                   )}
+                  </div>
              )}
-            {!isDone && !activeScenario && (
-              <div className="text-[13px] text-[#8B999D]">Esperando escenario activo...</div>
+            {!activeScenario && (
+              <div>
+                <div className="text-[16px] font-medium text-[#1a1f2e]">{currentTestName || 'Preparando el primer escenario…'}</div>
+                <div className="text-[13px] text-[#8B999D] mt-1">Esperando que inicie el caso para mostrar sus pasos.</div>
+              </div>
             )}
 
             {/* When done: show title + optional checklist button */}
@@ -970,6 +1110,21 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                 </span>
               )}
               <span className="text-[9px] text-white/40 font-mono">{logs.length} eventos</span>
+              <button
+                type="button"
+                title={logsCopied ? 'Copiado' : 'Copiar logs'}
+                aria-label="Copiar logs"
+                disabled={logs.length === 0}
+                onClick={async () => {
+                  const copied = await copyTextToClipboard(logs.map((log) => `${log.time} ${log.msg}`).join('\n'));
+                  if (!copied) return;
+                  setLogsCopied(true);
+                  window.setTimeout(() => setLogsCopied(false), 1500);
+                }}
+                className="text-white/60 hover:text-white disabled:opacity-30 disabled:hover:text-white/60"
+              >
+                {logsCopied ? <Check size={12} className="text-[#5EC470]" /> : <Copy size={12} />}
+              </button>
               <button className="text-white/60 hover:text-white"><Maximize2 size={12} /></button>
             </div>
           </div>
@@ -1012,6 +1167,52 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         </BentoCard>
 
       </div>
+      {reportPreviewOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 sm:p-6"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeReportPreview();
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="report-preview-title"
+            className="flex h-[min(92vh,980px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+          >
+            <header className="flex shrink-0 items-center justify-between border-b border-[#E8EBEC] px-5 py-3">
+              <div>
+                <h2 id="report-preview-title" className="text-sm font-semibold text-[#1a1f2e]">Reporte de ejecución</h2>
+                <p className="mt-0.5 text-[11px] text-[#8B999D]">Vista previa del PDF de evidencias</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeReportPreview}
+                aria-label="Cerrar vista previa del reporte"
+                className="rounded-full p-2 text-[#58646D] transition hover:bg-[#F4F1EA] hover:text-[#1a1f2e]"
+              >
+                <X size={17} />
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 bg-[#F4F1EA]">
+              {reportPreviewLoading && (
+                <div className="flex h-full items-center justify-center gap-2 text-sm text-[#58646D]">
+                  <Loader2 size={16} className="animate-spin" /> Cargando PDF...
+                </div>
+              )}
+              {reportPreviewError && (
+                <div className="flex h-full items-center justify-center p-6 text-center text-sm text-[#B4463C]">
+                  No se pudo mostrar el PDF: {reportPreviewError}
+                </div>
+              )}
+              {reportPreviewUrl && !reportPreviewLoading && (
+                <iframe title="Vista previa del PDF de evidencias" src={reportPreviewUrl} className="h-full w-full border-0" />
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

@@ -51,6 +51,13 @@ export interface ActiveRun {
    *  so filtering by the launch jobId returns nothing. */
   checklistByIssueOnly?: boolean;
   launchWarning?: string;
+  activeScenarios?: Array<{
+    id: string;
+    title: string;
+    index: number;
+    total: number;
+    steps: string[];
+  }>;
 }
 
 export interface TestCase {

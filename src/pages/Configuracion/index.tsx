@@ -120,7 +120,6 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
     ])
       .then(([data]) => {
         const p = data.project;
-        const cfg = data.mobileConfig || data.webConfig;
         setName(p.name || '');
         setSlug(p.slug || '');
         setType(p.projectType === 2 ? 'mobile' : 'web');

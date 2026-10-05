@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Check, Boxes, GitBranch, Database,
@@ -12,7 +12,6 @@ import { jiraProjectsProxy } from '../../services/jira';
 import { scenariosProxy, normalizeScenarioPreviewResponse } from '../../services/scenarios';
 import type { Story, BlockedScenario } from '../../services/scenarios';
 import { runsProxy } from '../../services/runs';
-import type { RunPayload } from '../../services/runs';
 import { newmanProxy } from '../../services/newman';
 import type { NewmanRunPayload, NewmanCollection } from '../../services/newman';
 import { mobileProxy } from '../../services/mobile';
@@ -31,7 +30,6 @@ import {
   buildRuntimeEntriesByCase,
   hydrateNewlySelectedCaseInputs,
   propagateRuntimeInputChange,
-  type RuntimeEntry,
   type RuntimeInputValuesByCaseId,
 } from './input-requirements-values';
 import { hydrateScenarioSyntheticInputs, type ResolvedInput } from './scenario-input-autofill';
@@ -44,7 +42,7 @@ import {
 import { evaluateInputRequirementsReadiness } from './input-requirements-gate';
 import { TestRailReviewAction } from './TestRailReviewAction';
 import { approveTestRailReview, getTestRailReviewStates, rejectTestRailReview, type TestRailReviewState } from '../../services/testrail/reviews';
-import { buildTestRailLaunchPayload, buildTestRailRuntimePayloadFragment, resolveTestRailInputGate } from './test-launch-payload';
+import { buildTestRailLaunchPayload, buildTestRailRuntimePayloadFragment } from './test-launch-payload';
 
 interface TestLaunchProps {
   onLaunch: (run: ActiveRun) => void;
@@ -684,7 +682,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
          setStories(normalized.stories);
          setRouteProfile(normalized.routeProfile);
         setTotalScenarios(normalized.totalScenarios);
-        setSprintMeta(normalized.sprint);
+        setSprintMeta(normalized.sprint ?? null);
         setBlockedScenarios(normalized.blockedScenarios ?? []);
         setAdaptiveScenarios(normalized.adaptiveScenarios ?? []);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
@@ -1083,7 +1081,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     if (!persisted || (persisted.generationBatches?.length ?? 0) === 0) return; // nada que recuperar
     // Compatibilidad: mismo app/proyecto y, si ambos conocen sprint, mismo sprint.
     if (persisted.appSlug !== config.automationProject || persisted.projectKey !== config.jiraProject) return;
-    if (persisted.sprintId && activeSprint.id && persisted.sprintId !== activeSprint.id) return;
+    if (persisted.sprintId && activeSprint.id && Number(persisted.sprintId) !== Number(activeSprint.id)) return;
     mobileHydratedRef.current = true;
     mobileRehydrationActiveRef.current = true;
     stopMobileGenerationPolling();
@@ -2124,7 +2122,7 @@ try {
          setStories(normalized.stories);
          setRouteProfile(normalized.routeProfile);
         setTotalScenarios(normalized.totalScenarios);
-        setSprintMeta(normalized.sprint);
+        setSprintMeta(normalized.sprint ?? null);
         setBlockedScenarios(normalized.blockedScenarios ?? []);
         setAdaptiveScenarios(normalized.adaptiveScenarios ?? []);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
@@ -3152,7 +3150,7 @@ try {
                   <span className="text-[14px] font-semibold">No se pudieron generar los escenarios</span>
                 </div>
                 <p className="text-[12px] text-[#8B999D] mb-4">{mobileScenariosError}</p>
-                <button onClick={handleGenerateMobileScenarios} className="text-[12px] font-semibold text-[#104B99] hover:underline flex items-center gap-1.5">
+                <button onClick={() => handleGenerateMobileScenarios(missingMobileIssueKeys)} className="text-[12px] font-semibold text-[#104B99] hover:underline flex items-center gap-1.5">
                   <Loader2 size={12} /> Reintentar
                 </button>
               </div>

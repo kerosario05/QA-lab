@@ -1,4 +1,4 @@
-import { ApiError } from '../../services/scenarios/client';
+import { ApiError } from '../../services/http';
 
 export interface PreviewRequestContext {
   jiraIssueKey: string;
@@ -37,8 +37,8 @@ export function formatScenarioPreviewError(error: unknown, context: PreviewReque
     return [
       `HTTP ${error.status}`,
       `endpoint=${context?.endpoint ?? '/api/scenarios/preview'}`,
-      `errorCode=${error.errorCode}`,
-      `message=${error.detail}`,
+      `errorCode=${error.code}`,
+      `message=${error.message}`,
       contextParts.length > 0 ? `context=${contextParts.join(' | ')}` : '',
     ].filter(Boolean).join(' · ');
   }

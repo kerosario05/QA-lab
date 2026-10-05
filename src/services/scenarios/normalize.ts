@@ -17,6 +17,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
   adaptiveScenarios: any[];
   rejected: any[];
   rawShape: string;
+  sprint?: { id: number; name: string };
 } {
   const raw = parsed?.stories ?? parsed?.scenarios ?? [];
   const flatItems: any[] = Array.isArray(raw) ? raw : [];
@@ -76,7 +77,7 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
         };
 }) : story.scenarios,
     }));
-     return { stories, routeProfile, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
+     return { stories, routeProfile, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape, sprint: parsed?.sprint };
   }
 
   // Group flat scenario items by jiraKey
@@ -153,5 +154,5 @@ export function normalizeScenarioPreviewResponse(parsed: any): {
   const stories = Array.from(grouped.values());
   console.log('[scenario-normalize] output', { stories: stories.length, blockedScenarios: blockedScenarios.length, firstScenarios: stories[0]?.scenarios?.length });
 
-   return { stories, routeProfile, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape };
+   return { stories, routeProfile, totalScenarios, blockedScenarios, adaptiveScenarios, rejected, rawShape, sprint: parsed?.sprint };
 }

@@ -17,7 +17,7 @@ type AutomationEngineSectionCasesResponse = {
   [key: string]: unknown;
 };
 
-type SectionCasesFetcher = (url: string) => Promise<Response>;
+type SectionCasesFetcher = (url: string) => Promise<globalThis.Response>;
 
 export async function fetchAutomationEngineSectionCases(input: {
   baseUrl: string;
@@ -72,7 +72,8 @@ router.get('/projects', async (req: Request, res: Response) => {
       const enriched = await Promise.all(
         projects.map(async (p: any) => {
           try {
-            const suites = await client.getSuites(p.id);
+            const suitesResponse = await client.getSuites(p.id);
+            const suites = suitesResponse.suites;
             const suitesWithCounts = await Promise.all(
               suites.map(async (s: any) => {
                 let caseCount = 0;
@@ -86,7 +87,7 @@ router.get('/projects', async (req: Request, res: Response) => {
                 };
               }),
             );
-            const totalCaseCount = suitesWithCounts.reduce((sum, s) => sum + s.caseCount, 0);
+            const totalCaseCount = suitesWithCounts.reduce((sum: number, s: { caseCount: number }) => sum + s.caseCount, 0);
             return {
               id: p.id, name: p.name, suite_mode: p.suite_mode ?? 1,
               totalCaseCount, suites: suitesWithCounts,

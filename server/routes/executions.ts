@@ -29,8 +29,13 @@ function forward(res: Response, result: ExecutionsProviderResponse): void {
 }
 
 // GET /api/executions
-router.get('/', async (_req: Request, res: Response) => {
-  const result = await listExecutions();
+router.get('/', async (req: Request, res: Response) => {
+  const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+  const offset = typeof req.query.offset === 'string' ? Number(req.query.offset) : undefined;
+  const result = await listExecutions({
+    ...(Number.isFinite(limit) ? { limit } : {}),
+    ...(Number.isFinite(offset) ? { offset } : {}),
+  });
   forward(res, result);
 });
 

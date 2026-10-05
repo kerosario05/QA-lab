@@ -10,7 +10,21 @@ const upstreamBase = () => (process.env.RUN_PROVIDER_BASE_URL || process.env.SCE
 // ── Server-side fallback: persist Jira defect references when MCP runner PATCH fails ──
 const JIRA_REFS_PATH = path.join(process.cwd(), '.data', 'jira-defect-refs.json');
 
-function loadJiraRefs(): Record<string, { jiraIssueKey: string; jiraIssueUrl: string; jiraUploadedAt: string; jiraUploadStatus: string; jiraUploadError?: string }> {
+interface JiraDefectRef {
+  jiraIssueKey: string;
+  jiraIssueUrl: string;
+  jiraUploadedAt: string;
+  jiraUploadStatus: string;
+  jiraUploadError?: string;
+  issueKey?: string;
+  jobId?: string;
+  scenarioId?: string;
+  executionScenarioId?: string;
+  id?: string;
+  [key: string]: unknown;
+}
+
+function loadJiraRefs(): Record<string, JiraDefectRef> {
   try {
     if (fs.existsSync(JIRA_REFS_PATH)) {
       return JSON.parse(fs.readFileSync(JIRA_REFS_PATH, 'utf-8'));
@@ -93,7 +107,7 @@ async function proxy(req: Request, res: Response, path: string, method: string) 
   }
 }
 
-router.post('/api/user-stories/:issueKey/checklist-url', (req, res) => proxy(req, res, `/api/user-stories/${encodeURIComponent(req.params.issueKey)}/checklist-url`, 'POST'));
+router.post('/api/user-stories/:issueKey/checklist-url', (req, res) => proxy(req, res, `/api/user-stories/${encodeURIComponent(String(req.params.issueKey))}/checklist-url`, 'POST'));
 router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
   const params = new URLSearchParams();
   if (req.query.jobId) params.set('jobId', String(req.query.jobId));
@@ -101,7 +115,7 @@ router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
   if (req.query.scenarioIds) params.set('scenarioIds', String(req.query.scenarioIds));
   const encoded = params.toString();
   const qs = encoded ? `?${encoded}` : '';
-  const issueKey = req.params.issueKey;
+  const issueKey = String(req.params.issueKey);
   const queryJobId = req.query.jobId ? String(req.query.jobId) : undefined;
   const queryRunId = req.query.runId ? String(req.query.runId) : undefined;
   const queryScenarioIds = req.query.scenarioIds
@@ -123,7 +137,7 @@ router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
   try {
     const url = `${base}/api/checklists/${encodeURIComponent(issueKey)}${qs}`;
     const upstream = await fetch(url, { headers: { 'Content-Type': 'application/json', ...engineHeaders() } });
-    const data = await upstream.json().catch(() => null);
+    const data = await upstream.json().catch(() => null) as Record<string, any> | null;
     if (!upstream.ok || !data) {
       // Upstream failed — serve from local Jira refs
       const localDefects = serveLocalJiraRefs(issueKey, queryJobId, queryScenarioIds);
@@ -154,9 +168,10 @@ router.get('/api/checklists/:issueKey', async (req: Request, res: Response) => {
     res.status(502).json({ ok: false, error: `proxy_error: ${err.message}` });
   }
 });
-router.post('/api/checklists/:issueKey/defects', (req, res) => proxy(req, res, `/api/checklists/${encodeURIComponent(req.params.issueKey)}/defects`, 'POST'));
+router.post('/api/checklists/:issueKey/defects', (req, res) => proxy(req, res, `/api/checklists/${encodeURIComponent(String(req.params.issueKey))}/defects`, 'POST'));
 router.patch('/api/checklists/:issueKey/defects/:defectId', async (req: Request, res: Response) => {
-  const { issueKey, defectId } = req.params;
+  const issueKey = String(req.params.issueKey);
+  const defectId = String(req.params.defectId);
   const bodyKeys = Object.keys(req.body ?? {});
   const jiraFields = bodyKeys.filter(k => k.startsWith('jira'));
   const hasNonJiraFields = bodyKeys.some(k => !k.startsWith('jira') && k !== 'status' && k !== 'jobId' && k !== 'scenarioId');
@@ -175,7 +190,7 @@ router.patch('/api/checklists/:issueKey/defects/:defectId', async (req: Request,
       jiraUploadedAt: req.body.jiraUploadedAt ?? new Date().toISOString(),
       jiraUploadStatus: req.body.jiraUploadStatus ?? 'uploaded',
       jiraUploadError: req.body.jiraUploadError ?? undefined,
-      issueKey: issueKey,
+      issueKey,
       jobId: req.body.jobId ?? existing.jobId ?? undefined,
       scenarioId: req.body.scenarioId ?? existing.scenarioId ?? undefined,
     };

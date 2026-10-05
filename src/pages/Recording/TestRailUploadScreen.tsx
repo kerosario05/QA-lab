@@ -138,6 +138,13 @@ export function TestRailUploadScreen({
       currentTest: '',
       eta: '—',
       status: 'running',
+      activeScenarios: recordingGroups.flatMap((group) => group.scenarios).map((scenario, index, all) => ({
+        id: scenario.scenarioId,
+        title: scenario.title,
+        index: index + 1,
+        total: all.length,
+        steps: (scenario.testRailSteps ?? []).map((step) => step.content).filter((step): step is string => typeof step === 'string' && step.trim().length > 0),
+      })),
     });
   }
 

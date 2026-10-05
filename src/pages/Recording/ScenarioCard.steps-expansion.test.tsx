@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ScenarioCard } from './index';
 import type { RecordedScenario } from '../../services/recordings/types';
+import { encodeSelectionRule } from '../../services/recordings/dynamic-selection-rule';
 
 /**
  * FIRST_LOSS: the "Ver pasos"/"Ocultar pasos" panel's open/closed state was local component
@@ -199,4 +200,28 @@ describe('ScenarioCard steps expansion', () => {
     expect(container?.textContent).toContain('Ingresar valor');
     expect(container?.textContent).not.toContain('Paso de B');
   });
+
+  it('renders an applied dynamic selection rule in the matching recorded step and masks captured account details', () => {
+    const valueKey = 'account_from_select_input_seleccion';
+    const oldCapturedLabel = 'Cuenta Corrientes / 11311000003156 / RD$168,967.94';
+    const currentRule = encodeSelectionRule({ terms: ['Cuenta Corrientes'], matchIndex: 0 });
+    const s = scenario({
+      testRailSteps: [{ content: 'Seleccionar [account_from_select_input_seleccion] en "account-from-select-input"',
+        stepTemplate: 'Seleccionar [account_from_select_input_seleccion] en "account-from-select-input"',
+        valueKey, interactionId: 'interaction-17', expected: '', stepNumber: 17 }],
+      requiredData: [{ key: valueKey, label: 'account-from-select-input', semanticField: 'account-from-select-input',
+        stepIndex: 17, exampleValue: oldCapturedLabel, sensitive: false, valueRole: 'action_input',
+        source: 'RECORDED_CONFIRMED', allowedValues: [oldCapturedLabel] } as any],
+      canonicalInteractions: [{ id: 'interaction-17', action: 'select', valueKey,
+        semanticField: 'account-from-select-input' }],
+      runtimeInputRequirements: [{ valueKey, semanticField: 'account-from-select-input', valueRole: 'action_input',
+        required: true, value: oldCapturedLabel, source: 'RECORDED_CONFIRMED', resolved: true, editable: true,
+        allowedValues: [oldCapturedLabel] }],
+    });
+    render(<ScenarioCard {...cardProps(s, true, noop)} datasetValues={{ [valueKey]: currentRule }} />);
+    expect(container?.textContent).toContain('opción que contiene \"Cuenta Corrientes\" (coincidencia 1)');
+    expect(container?.textContent).not.toContain('11311000003156');
+    expect(container?.textContent).not.toContain('168,967.94');
+  });
+
 });

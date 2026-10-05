@@ -1,5 +1,5 @@
 import { engineHeaders } from './engine-auth';
-import type { Story, StoryScenario } from '../src/services/scenarios/types';
+import type { Story } from '../src/services/scenarios/types';
 
 export interface RunProviderConfig {
   baseUrl: string;

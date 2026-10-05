@@ -64,7 +64,141 @@ export type ActiveScenarioLike = {
   preconditions?: string[];
   expectedResult?: string | null;
   stepResults?: Array<{ status?: string; state?: string }>;
+  currentStepIndex?: number;
+  status?: 'running' | 'passed' | 'failed';
+  phase?: 'executing' | 'promoting';
 };
+
+export type LiveStepUpdate = { index: number; status: 'running' | 'passed' | 'failed' };
+
+export type LiveScenarioProgressUpdate =
+  | { type: 'step'; update: LiveStepUpdate }
+  | { type: 'promoting' };
+
+export function parseLiveScenarioProgress(message: unknown): LiveScenarioProgressUpdate | null {
+  if (typeof message !== 'string') return null;
+
+  if (/\bPromotion gate:\s*allowed\s*=\s*true\b/i.test(message) || /(?:^|\s)\[promote\]/i.test(message)) {
+    return { type: 'promoting' };
+  }
+
+  const criticalPath = message.match(/\[critical-path\]\s+step\s*=\s*(\d+)\s+phase\s*=\s*([\w-]+)/i);
+  if (criticalPath) {
+    const index = Number(criticalPath[1]) - 1;
+    if (!Number.isInteger(index) || index < 0) return null;
+    const phase = criticalPath[2].toLowerCase();
+    if (phase === 'resolver_start' || phase === 'click_dispatch_start') {
+      return { type: 'step', update: { index, status: 'running' } };
+    }
+    if (phase === 'semantic_verification_end' || phase === 'early_completion_end') {
+      return { type: 'step', update: { index, status: 'passed' } };
+    }
+  }
+
+  const step = parseLiveStepUpdate(message);
+  return step ? { type: 'step', update: step } : null;
+}
+
+export function parseLiveStepUpdate(message: unknown): LiveStepUpdate | null {
+  if (typeof message !== 'string') return null;
+  // Promoted-spec reuse emits its own per-step lifecycle markers. Discovery's
+  // [critical-path] markers are not present on that execution path, so without
+  // this mapping the live panel remains on the last keypress/dispatch marker.
+  const promotedLifecycle = message.match(/\[promoted-step\][^\n]*\bstepIndex\s*=\s*(\d+)\b[^\n]*\bphase\s*=\s*(start|passed|failed)\b/i);
+  if (promotedLifecycle) {
+    const index = Number(promotedLifecycle[1]) - 1;
+    if (!Number.isInteger(index) || index < 0) return null;
+    const phase = promotedLifecycle[2].toLowerCase();
+    const status: LiveStepUpdate['status'] = phase === 'start'
+      ? 'running'
+      : phase === 'failed' ? 'failed' : 'passed';
+    return { index, status };
+  }
+  const promotedDispatch = message.match(/\[promoted-press-dispatch\][^\n]*\bstepIndex\s*=\s*(\d+)\b[^\n]*\btargetResolved\s*=\s*true\b/i);
+  const promotedTrace = promotedDispatch ? null : message.match(/\[promoted-press-trace\][^\n]*\bstep\s*=\s*(\d+)\b/i);
+  const promotedResolution = promotedDispatch || promotedTrace
+    ? null
+    : message.match(/\[promoted-press-resolution\][^\n]*\bstep\s*=\s*(\d+)\b/i);
+  const promotedStep = promotedDispatch ?? promotedTrace ?? promotedResolution;
+  if (promotedStep) {
+    const index = Number(promotedStep[1]) - 1;
+    if (Number.isInteger(index) && index >= 0) return { index, status: 'running' };
+  }
+  const evidence = message.match(/\[evidence\]\s+step\s+(\d+)\s*:\s*[\s\S]*?\bstatus\s*=\s*(passed|pass|success|ok|failed|fail|error|started|running)\b/i);
+  const structured = evidence ?? message.match(/\b(?:scenario[_ -]?)?step(?:[_ -]?(?:finished|started|result))?\s*(?:index\s*=\s*)?(\d+)(?:\/\d+)?\b[\s\S]{0,180}?\bstatus\s*[=:]\s*(passed|pass|success|ok|failed|fail|error|started|running)\b/i);
+  if (!structured) return null;
+  const index = Number(structured[1]) - 1;
+  if (!Number.isInteger(index) || index < 0) return null;
+  const raw = structured[2].toLowerCase();
+  return { index, status: ['failed', 'fail', 'error'].includes(raw) ? 'failed' : ['started', 'running'].includes(raw) ? 'running' : 'passed' };
+}
+
+export function applyLiveStepUpdate(scenario: ActiveScenarioLike | null, update: LiveStepUpdate): ActiveScenarioLike | null {
+  if (!scenario || update.index >= scenario.steps.length) return scenario;
+  const stepResults = [...(scenario.stepResults ?? [])];
+  stepResults[update.index] = { ...stepResults[update.index], status: update.status };
+  const currentStepIndex = update.status === 'passed'
+    ? (update.index + 1 < scenario.steps.length ? update.index + 1 : undefined)
+    : update.index;
+  return { ...scenario, stepResults, currentStepIndex };
+}
+
+export function applyLiveScenarioProgress(
+  scenario: ActiveScenarioLike | null,
+  progress: LiveScenarioProgressUpdate,
+): ActiveScenarioLike | null {
+  if (!scenario) return scenario;
+  if (progress.type === 'step') {
+    return applyLiveStepUpdate(scenario, progress.update);
+  }
+
+  const stepResults = scenario.steps.map((_, index) => ({
+    ...scenario.stepResults?.[index],
+    status: 'passed' as const,
+  }));
+  return {
+    ...scenario,
+    stepResults,
+    currentStepIndex: scenario.steps.length ? scenario.steps.length - 1 : undefined,
+    phase: 'promoting',
+  };
+}
+
+export function getCurrentScenarioStepIndex(scenario: ActiveScenarioLike | null): number {
+  if (!scenario || scenario.steps.length === 0 || scenario.status === 'passed' || scenario.status === 'failed') return -1;
+  if (scenario.currentStepIndex != null && scenario.currentStepIndex >= 0 && scenario.currentStepIndex < scenario.steps.length) {
+    return scenario.currentStepIndex;
+  }
+  const runningIndex = scenario.stepResults?.findIndex((_, index) => getScenarioStepState(scenario.stepResults, index) === 'running') ?? -1;
+  if (runningIndex >= 0) return runningIndex;
+  const pendingIndex = scenario.stepResults?.findIndex((_, index) => getScenarioStepState(scenario.stepResults, index) === 'pending') ?? -1;
+  if (pendingIndex >= 0) return pendingIndex;
+  return scenario.stepResults?.length ? -1 : 0;
+}
+
+export function finishActiveScenario(scenario: ActiveScenarioLike | null, value: unknown): ActiveScenarioLike | null {
+  if (!scenario || !value || typeof value !== 'object') return scenario;
+  const event = value as Record<string, unknown>;
+  if (event.type !== 'case_finished' || (event.caseId && event.caseId !== scenario.id)) return scenario;
+  const passed = ['passed', 'pass', 'success', 'completed', 'done'].includes(String(event.status ?? '').toLowerCase());
+  const results = [...(scenario.stepResults ?? [])];
+  if (passed) {
+    for (let index = 0; index < scenario.steps.length; index += 1) {
+      if (!results[index] || ['running', 'started'].includes(String(results[index].status ?? results[index].state ?? '').toLowerCase())) {
+        results[index] = { ...results[index], status: 'passed' };
+      }
+    }
+  } else {
+    const failedAtStep = Number(event.failedAtStep);
+    if (Number.isInteger(failedAtStep) && failedAtStep > 0 && failedAtStep <= scenario.steps.length) {
+      results[failedAtStep - 1] = { ...results[failedAtStep - 1], status: 'failed' };
+    } else {
+      const runningIndex = results.findIndex(result => ['running', 'started', 'in_progress'].includes(String(result?.status ?? result?.state ?? '').toLowerCase()));
+      if (runningIndex >= 0) results[runningIndex] = { ...results[runningIndex], status: 'failed' };
+    }
+  }
+  return { ...scenario, stepResults: results, currentStepIndex: undefined, status: passed ? 'passed' : 'failed' };
+}
 
 export function normalizeCaseStartedScenario(value: unknown): ActiveScenarioLike | null {
   if (!value || typeof value !== 'object') return null;
@@ -83,6 +217,7 @@ export function normalizeCaseStartedScenario(value: unknown): ActiveScenarioLike
     steps: Array.isArray(event.steps)
       ? event.steps.filter((step): step is string => typeof step === 'string')
       : [],
+    currentStepIndex: 0,
   };
 }
 
@@ -118,9 +253,10 @@ export function getCompactScenarioSteps(steps: string[], maxVisible = 5): { step
 export function getScenarioStepState(
   stepResults: ActiveScenarioLike['stepResults'],
   index: number,
-): 'completed' | 'running' | 'pending' {
+): 'completed' | 'failed' | 'running' | 'pending' {
   const raw = String(stepResults?.[index]?.status ?? stepResults?.[index]?.state ?? '').toLowerCase();
   if (['passed', 'pass', 'completed', 'complete', 'success', 'ok'].includes(raw)) return 'completed';
+  if (['failed', 'fail', 'error', 'blocked'].includes(raw)) return 'failed';
   if (['running', 'started', 'in_progress', 'executing'].includes(raw)) return 'running';
   return 'pending';
 }

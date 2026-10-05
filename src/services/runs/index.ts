@@ -1,4 +1,35 @@
 import type { Story } from '../scenarios';
+import type { McpScenario, McpRouteProfile } from '../scenarios';
+
+export interface DiscoveryBatchPayload {
+  caseIds: number[];
+  appSlug: string;
+  sectionName?: string;
+  overwrite: boolean;
+  autoPromote: boolean;
+  autoPom: boolean;
+  rerunActive: boolean;
+  forceRediscovery: boolean;
+  contextOnly: boolean;
+}
+
+export interface ScenarioPreviewPayload {
+  appSlug: string;
+  targetAppSlug: string;
+  targetAppName?: string;
+  sectionName?: string;
+  routeProfile?: McpRouteProfile;
+  source?: { projectKey: string; sprintId?: number; status?: string };
+  scenarios: McpScenario[];
+  options: {
+    overwrite: boolean;
+    autoPromote: boolean;
+    autoPom: boolean;
+    rerunActive: boolean;
+    forceRediscovery: boolean;
+    contextOnly: boolean;
+  };
+}
 
 const PROXY = import.meta.env.VITE_API_URL ?? '';
 
@@ -370,6 +401,18 @@ export const runsProxy = {
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
+  },
+
+  /** Obtiene una URL temporal para mostrar el PDF de evidencia en un visor embebido. */
+  previewEvidencePdf: async (jobId: string): Promise<string> => {
+    const res = await fetch(`${PROXY}/api/runs/${encodeURIComponent(jobId)}/evidence-docx?format=pdf`);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const blob = await res.blob();
+    const contentType = res.headers.get('Content-Type') ?? blob.type;
+    if (!contentType.toLowerCase().includes('pdf')) {
+      throw new Error('El reporte disponible no es un PDF.');
+    }
+    return window.URL.createObjectURL(blob);
   },
 
   /** Verifica disponibilidad del DOCX sin descargar el archivo completo */

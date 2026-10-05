@@ -52,8 +52,12 @@ async function callExecutionsEndpoint(logTag: string, path: string): Promise<Exe
   }
 }
 
-export function listExecutions(): Promise<ExecutionsProviderResponse> {
-  return callExecutionsEndpoint('executions-list', '/api/executions');
+export function listExecutions(query?: { limit?: number; offset?: number }): Promise<ExecutionsProviderResponse> {
+  const params = new URLSearchParams();
+  if (query?.limit != null) params.set('limit', String(query.limit));
+  if (query?.offset != null) params.set('offset', String(query.offset));
+  const suffix = params.size ? `?${params.toString()}` : '';
+  return callExecutionsEndpoint('executions-list', `/api/executions${suffix}`);
 }
 
 export function getExecution(launchId: string): Promise<ExecutionsProviderResponse> {

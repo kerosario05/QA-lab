@@ -26,6 +26,31 @@ function enrichSseLine(line: string, jobId: string): string {
 
 console.log('[runs] route registered');
 
+// GET /api/runs — live in-memory jobs from the automation engine.
+router.get('/', async (_req: Request, res: Response) => {
+  const config = getRunProviderConfig();
+  if (!config.baseUrl) {
+    return sendJson(res, 503, { ok: false, errorCode: 'RUN_PROVIDER_NOT_CONFIGURED', message: 'No hay un proveedor de ejecuciones configurado.' });
+  }
+  try {
+    const upstream = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/api/runs`, {
+      headers: engineHeaders(),
+      signal: AbortSignal.timeout(Math.min(config.timeoutMs, 15_000)),
+    });
+    const raw = await upstream.text();
+    let body: Record<string, unknown>;
+    try { body = raw ? JSON.parse(raw) as Record<string, unknown> : {}; }
+    catch { body = { ok: false, errorCode: 'INVALID_RUNS_RESPONSE', message: 'El motor devolvió una respuesta inválida.' }; }
+    return sendJson(res, upstream.status, body);
+  } catch (error) {
+    return sendJson(res, 502, {
+      ok: false,
+      errorCode: 'RUN_PROVIDER_ERROR',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 // POST /api/runs/from-scenarios
 router.post('/from-scenarios', async (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
@@ -85,11 +110,7 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
     // Resolver nombre del proyecto TestRail para migración automática de perfil
     let testRailProjectName = body?.testRailProjectName as string | undefined;
     if (!testRailProjectName && projectId > 0) {
-      const trClient = new TestRailClient({
-        url: process.env.TESTRAIL_URL || '',
-        email: process.env.TESTRAIL_EMAIL || '',
-        apiKey: process.env.TESTRAIL_API_KEY || '',
-      });
+      const trClient = new TestRailClient();
       testRailProjectName = await resolveTestRailProjectName(projectId, null, trClient).catch(() => null) ?? undefined;
     }
 

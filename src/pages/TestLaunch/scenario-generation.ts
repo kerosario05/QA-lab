@@ -135,11 +135,15 @@ export function normalizeGeneratedScenarios(
     };
   }
 
-  if (response && Array.isArray((response as McpPreviewResponse).scenarios) && (response as McpPreviewResponse).scenarios.length > 0) {
-    const stories = buildStoriesFromMcpScenarios((response as McpPreviewResponse).scenarios, jiraIssueKey, jiraSummary);
+  const flatScenarios = response && Array.isArray((response as McpPreviewResponse).scenarios)
+    ? (response as McpPreviewResponse).scenarios ?? []
+    : [];
+  if (flatScenarios.length > 0) {
+    const stories = buildStoriesFromMcpScenarios(flatScenarios, jiraIssueKey, jiraSummary);
+    const generatedCount = Number((response as McpPreviewResponse).summary?.generated);
     return {
       stories,
-      totalScenarios: (response as McpPreviewResponse).summary?.generated ?? stories.reduce((acc, story) => acc + (story.scenarioCount ?? story.scenarios.length ?? 0), 0),
+      totalScenarios: Number.isFinite(generatedCount) ? generatedCount : stories.reduce((acc, story) => acc + (story.scenarioCount ?? story.scenarios.length), 0),
       activeGenerationSource: {
         jiraIssueKey,
         jiraSummary,

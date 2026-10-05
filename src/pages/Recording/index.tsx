@@ -1,3 +1,5 @@
+import { DynamicListSelection } from "./DynamicListSelection";
+import { parseSelectionRule, selectionRuleDescription } from "../../services/recordings/dynamic-selection-rule";
 import { LiveBrowserView } from './LiveBrowserView';
 import { GenerationProgressIndicator } from './GenerationProgressIndicator';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -6,6 +8,7 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  ChevronUp,
   Loader2,
   MonitorSmartphone,
   Play,
@@ -14,7 +17,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
-import { useRecordingSession, type RecordingPhase } from './useRecordingSession';
+import { useRecordingSession, type RecordingBrowserMode, type RecordingPhase } from './useRecordingSession';
 import { useRecordingExecution, type RecordingProjectDetail } from './useRecordingExecution';
 import { useTestRailDestination } from './useTestRailDestination';
 import { TestRailUploadScreen } from './TestRailUploadScreen';
@@ -177,8 +180,16 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   // replay an edit that belongs to an earlier, unrelated recording/scenario.
   const [pendingScenarioSaves, setPendingScenarioSaves] = useState<Record<string, { recordingId: string; scenarioId: string; valueKey: string; value: string }>>({});
   const [activeScenarioId, setActiveScenarioId] = useState<string | undefined>();
+  const [scenariosPanelCollapsed, setScenariosPanelCollapsed] = useState(false);
   const [datasetOverrides, setDatasetOverrides] = useState<Record<string, Record<string, string>>>({});
   const [publishResult, setPublishResult] = useState<string | null>(null);
+  const [selectedHistoryRecordingIds, setSelectedHistoryRecordingIds] = useState<string[]>([]);
+  const [deletingSelectedHistory, setDeletingSelectedHistory] = useState(false);
+  const [selectingHistoryScenarios, setSelectingHistoryScenarios] = useState(false);
+  const [loadingHistoryScenarioRecordingIds, setLoadingHistoryScenarioRecordingIds] = useState<string[]>([]);
+  const [recordingSelectionNotice, setRecordingSelectionNotice] = useState<string | null>(null);
+  const historySelectionRequestRef = useRef(0);
+  const historyScenarioRequestRefs = useRef(new Map<string, number>());
   // Structured hand-off to the dedicated TestRail destination screen — carries exactly the
   // scenarios/overrides the user had selected, never a label or a re-derived query. `null`
   // means "stay on the Recording screen"; going back just clears it, so nothing here is lost.
@@ -191,14 +202,20 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   } | null>(null);
 
   const session = useRecordingSession(projectSlug);
+  const [recordingBrowserMode, setRecordingBrowserMode] = useState<RecordingBrowserMode>('integrated');
   const execution = useRecordingExecution();
   const testRail = useTestRailDestination(projectDetail?.testRail);
   const project = projects.find((p) => p.slug === projectSlug);
+
   const primaryScenario = session.scenarios.find((scenario) => scenario.primary) ?? session.scenarios[0];
   const suggestionScenarios = primaryScenario
     ? session.scenarios.filter((scenario) => scenario.scenarioId !== primaryScenario.scenarioId)
     : [];
   const selectedTestRailEntries = useMemo(() => getTestRailSelections(selected), [selected]);
+  const projectHistory = useMemo(
+    () => session.history.filter((recording) => recording.projectSlug === projectSlug),
+    [session.history, projectSlug],
+  );
   const selectedScenarios = useMemo(() => selectedTestRailEntries.map(({ scenario }) => scenario), [selectedTestRailEntries]);
   const executionScenarios = useMemo(
     () => selectedTestRailEntries
@@ -346,6 +363,13 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     // Selections are scoped to the active project. Clear them synchronously with the project
     // change so no pending recording refresh can carry scenarios into another project's launch.
     setSelected({});
+    setSelectedHistoryRecordingIds([]);
+    setScenariosPanelCollapsed(false);
+    setRecordingSelectionNotice(null);
+    historySelectionRequestRef.current += 1;
+    historyScenarioRequestRefs.current.clear();
+    setSelectingHistoryScenarios(false);
+    setLoadingHistoryScenarioRecordingIds([]);
     setExpandedScenarioIds({});
     setDatasetOverrides({});
     setActiveScenarioId(undefined);
@@ -354,6 +378,158 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     setProjectDetail(null);
     selectionRecordingRef.current = undefined;
     setProjectSlug(nextProjectSlug);
+  }
+
+  const allHistoryScenariosSelected = projectHistory.length > 0
+    && selectedTestRailEntries.length > 0
+    && projectHistory.every((recording) => selectedTestRailEntries.filter((entry) => entry.recordingId === recording.recordingId).length >= recording.scenarioCount);
+  const selectedRecordingsAreActive = selectedHistoryRecordingIds.some((recordingId) => {
+    const recording = projectHistory.find((item) => item.recordingId === recordingId);
+    const currentSessionIsActive = recordingId === session.recordingId
+      && (session.phase === 'starting' || session.phase === 'recording' || session.phase === 'stopping');
+    return currentSessionIsActive || recording?.status === 'starting' || recording?.status === 'recording' || recording?.status === 'stopping';
+  });
+
+  async function handleToggleAllRecordings() {
+    setRecordingSelectionNotice(null);
+    const recordingIds = projectHistory.map(({ recordingId }) => recordingId);
+    if (allHistoryScenariosSelected) {
+      setSelectedHistoryRecordingIds([]);
+      setSelected((previous) => Object.fromEntries(
+        Object.entries(previous).filter(([, selection]) => !recordingIds.includes(selection.recordingId)),
+      ));
+      return;
+    }
+
+    setSelectedHistoryRecordingIds(recordingIds);
+    if (!projectSlug || projectHistory.length === 0 || selectingHistoryScenarios) return;
+
+    const requestId = ++historySelectionRequestRef.current;
+    historyScenarioRequestRefs.current.clear();
+    setLoadingHistoryScenarioRecordingIds([]);
+    setSelectingHistoryScenarios(true);
+    setRecordingSelectionNotice('Cargando escenarios de las grabaciones seleccionadas…');
+    try {
+      const loaded: Array<{ recordingId: string; scenarios: RecordedScenario[] }> = [];
+      // Bound parallel requests so selecting a large history does not overwhelm the backend.
+      for (let start = 0; start < projectHistory.length; start += 6) {
+        const batch = projectHistory.slice(start, start + 6);
+        const results = await Promise.allSettled(batch.map(async ({ recordingId }) => ({
+          recordingId,
+          response: await recordingsApi.scenarios(recordingId, projectSlug),
+        })));
+        for (const result of results) {
+          if (result.status === 'fulfilled' && Array.isArray(result.value.response.scenarios)) {
+            loaded.push({ recordingId: result.value.recordingId, scenarios: result.value.response.scenarios });
+          }
+        }
+      }
+
+      if (historySelectionRequestRef.current !== requestId) return;
+
+      const availableRecordingIds = new Set(loaded.map(({ recordingId }) => recordingId));
+      const loadedRecordingIds = [...availableRecordingIds];
+      const selections = loaded.flatMap(({ recordingId, scenarios }) => scenarios.map((scenario) => ({
+        recordingId,
+        scenario,
+        dataOverrides: {} as Record<number, string>,
+        datasetValues: {} as Record<string, string | undefined>,
+      })));
+      setSelected((previous) => {
+        const withoutProjectHistory = Object.fromEntries(
+          Object.entries(previous).filter(([, selection]) => !loadedRecordingIds.includes(selection.recordingId)),
+        );
+        return selections.reduce((next, selection) => setTestRailScenarioSelected(next, selection, true), withoutProjectHistory);
+      });
+
+      const failedCount = projectHistory.length - availableRecordingIds.size;
+      const scenarioCount = selections.length;
+      setRecordingSelectionNotice(failedCount > 0
+        ? `Se seleccionaron ${scenarioCount} escenarios; no se pudieron cargar los de ${failedCount} grabaciones.`
+        : scenarioCount > 0
+          ? `Se seleccionaron ${scenarioCount} escenarios de ${projectHistory.length} grabaciones para ejecutar.`
+          : 'Las grabaciones seleccionadas no tienen escenarios guardados para ejecutar.');
+    } finally {
+      if (historySelectionRequestRef.current === requestId) setSelectingHistoryScenarios(false);
+    }
+  }
+
+  async function handleToggleHistoryRecording(recordingId: string) {
+    setRecordingSelectionNotice(null);
+    const isSelected = selectedHistoryRecordingIds.includes(recordingId);
+    if (isSelected) {
+      historyScenarioRequestRefs.current.set(recordingId, (historyScenarioRequestRefs.current.get(recordingId) ?? 0) + 1);
+      setSelectedHistoryRecordingIds((previous) => previous.filter((id) => id !== recordingId));
+      setSelected((previous) => Object.fromEntries(
+        Object.entries(previous).filter(([, selection]) => selection.recordingId !== recordingId),
+      ));
+      setLoadingHistoryScenarioRecordingIds((previous) => previous.filter((id) => id !== recordingId));
+      return;
+    }
+
+    if (!projectSlug || selectingHistoryScenarios) return;
+    setSelectedHistoryRecordingIds((previous) => previous.includes(recordingId) ? previous : [...previous, recordingId]);
+    const requestId = (historyScenarioRequestRefs.current.get(recordingId) ?? 0) + 1;
+    historyScenarioRequestRefs.current.set(recordingId, requestId);
+    setLoadingHistoryScenarioRecordingIds((previous) => previous.includes(recordingId) ? previous : [...previous, recordingId]);
+    setRecordingSelectionNotice('Cargando escenarios de la grabación seleccionada…');
+    try {
+      const response = await recordingsApi.scenarios(recordingId, projectSlug);
+      if (historyScenarioRequestRefs.current.get(recordingId) !== requestId) return;
+      if (!Array.isArray(response.scenarios)) {
+        setRecordingSelectionNotice('El backend no devolvió una lista válida de escenarios para esta grabación.');
+        return;
+      }
+      const selections = response.scenarios.map((scenario) => ({
+        recordingId,
+        scenario,
+        dataOverrides: {} as Record<number, string>,
+        datasetValues: {} as Record<string, string | undefined>,
+      }));
+      setSelected((previous) => {
+        const withoutThisRecording = Object.fromEntries(
+          Object.entries(previous).filter(([, selection]) => selection.recordingId !== recordingId),
+        );
+        return selections.reduce((next, selection) => setTestRailScenarioSelected(next, selection, true), withoutThisRecording);
+      });
+      setRecordingSelectionNotice(selections.length > 0
+        ? `Se seleccionaron ${selections.length} escenarios de esta grabación para ejecutar.`
+        : 'Esta grabación no tiene escenarios guardados para ejecutar.');
+    } catch (error) {
+      if (historyScenarioRequestRefs.current.get(recordingId) !== requestId) return;
+      setRecordingSelectionNotice(`No se pudieron cargar los escenarios: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (historyScenarioRequestRefs.current.get(recordingId) === requestId) {
+        setLoadingHistoryScenarioRecordingIds((previous) => previous.filter((id) => id !== recordingId));
+      }
+    }
+  }
+
+  async function handleDeleteSelectedRecordings() {
+    const recordingIds = selectedHistoryRecordingIds.filter((recordingId) => projectHistory.some((item) => item.recordingId === recordingId));
+    if (!projectSlug || recordingIds.length === 0 || deletingSelectedHistory || selectedRecordingsAreActive) return;
+    const confirmed = window.confirm(`¿Eliminar ${recordingIds.length} grabación${recordingIds.length === 1 ? '' : 'es'} seleccionada${recordingIds.length === 1 ? '' : 's'}? Esta acción no se puede deshacer.`);
+    if (!confirmed) return;
+
+    setDeletingSelectedHistory(true);
+    setRecordingSelectionNotice(null);
+    const removedIds: string[] = [];
+    try {
+      for (const recordingId of recordingIds) {
+        if (await session.remove(recordingId)) removedIds.push(recordingId);
+      }
+      setSelectedHistoryRecordingIds((previous) => previous.filter((recordingId) => !removedIds.includes(recordingId)));
+      if (removedIds.length > 0) {
+        setSelected((previous) => Object.fromEntries(Object.entries(previous).filter(([, selection]) => !removedIds.includes(selection.recordingId))));
+      }
+      await session.refreshHistory();
+      const failedCount = recordingIds.length - removedIds.length;
+      setRecordingSelectionNotice(failedCount === 0
+        ? `Se eliminaron ${removedIds.length} grabación${removedIds.length === 1 ? '' : 'es'}.`
+        : `Se eliminaron ${removedIds.length}; ${failedCount} no se pudieron eliminar y siguen seleccionadas.`);
+    } finally {
+      setDeletingSelectedHistory(false);
+    }
   }
 
   const isRecording = session.phase === 'recording' || session.phase === 'starting' || session.phase === 'stopping';
@@ -370,7 +546,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
    * already-selected scenarios and overrides and navigates there.
    */
   function handleReplay() {
-    if (session.phase === 'stopping' || !projectSlug || !session.recordingId || replayEntries.length === 0) return;
+    if (session.phase === 'stopping' || !projectSlug || replayEntries.length === 0) return;
     const selectedIds = replayEntries.map(({ scenario }) => scenario.scenarioId);
     console.info(`[recording:testrail] handlerSelectedIds=${JSON.stringify(selectedIds)} handlerSelectedCount=${selectedIds.length}`);
     setTestRailUpload({
@@ -379,7 +555,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
       dataOverrides: Object.assign({}, ...replayEntries.map((entry) => ({
         [testRailSelectionKey(entry.recordingId, entry.scenario.scenarioId)]: entry.dataOverrides,
       }))),
-      datasetValues: sharedDatasetValues,
+      // Each selected scenario already carries the values captured for its own recording.
+      // A global fallback here could leak values from whichever recording happens to be open.
+      datasetValues: {},
       scenarioDatasetValues: Object.assign({}, ...replayEntries.map((entry) => ({
         [testRailSelectionKey(entry.recordingId, entry.scenario.scenarioId)]: entry.datasetValues,
       }))),
@@ -422,6 +600,13 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
       currentTest: '',
       eta: '—',
       status: 'running',
+      activeScenarios: executionScenarios.map((scenario, index) => ({
+        id: scenario.scenarioId,
+        title: scenario.title,
+        index: index + 1,
+        total: executionScenarios.length,
+        steps: (scenario.testRailSteps ?? []).map((step) => step.content).filter((step): step is string => typeof step === 'string' && step.trim().length > 0),
+      })),
       issueKey: launch.issueKey,
       checklistUrl: launch.checklistUrl,
     });
@@ -546,10 +731,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persistedScenarioIdsKey, session.recordingId]);
 
-  if (testRailUpload && session.recordingId) {
+  if (testRailUpload) {
     return (
       <TestRailUploadScreen
-        recordingId={session.recordingId}
+        recordingId={testRailUpload.scenarioRecordingIds[0] ?? session.recordingId ?? ''}
         projectSlug={projectSlug}
         projectDetail={projectDetail}
         scenarios={testRailUpload.scenarios}
@@ -585,26 +770,34 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               <button
                 key={p.slug}
                 disabled={isRecording}
+                aria-pressed={active}
                 onClick={() => handleProjectChange(p.slug)}
                 className={cn(
-                  'text-left px-3.5 py-3 rounded-xl border transition disabled:opacity-50 disabled:cursor-not-allowed',
+                  'group relative overflow-hidden text-left px-4 py-3.5 rounded-xl border transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#104B99]/30',
                   active
-                    ? 'border-[#104B99] bg-[#F4F7FC]'
-                    : 'border-[#E8EBEC] hover:border-[#BABEC3] bg-white',
+                    ? 'border-[#104B99] bg-gradient-to-br from-[#F4F8FE] to-[#EDF4FB] shadow-[0_5px_18px_-12px_rgba(16,75,153,0.65)]'
+                    : 'border-[#E8EBEC] bg-white hover:-translate-y-0.5 hover:border-[#104B99]/45 hover:bg-[#FAFCFF] hover:shadow-[0_7px_18px_-14px_rgba(16,75,153,0.45)]',
                 )}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[13px] font-medium text-[#1a1f2e] truncate">{p.name}</span>
+                {active && <span className="absolute bottom-0 left-0 top-0 w-[3px] bg-gradient-to-b from-[#104B99] to-[#48A157]" />}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors', active ? 'bg-[#104B99] text-white shadow-sm' : 'bg-[#F4F1EA] text-[#58646D] group-hover:bg-[#EEF4FB] group-hover:text-[#104B99]')}>
+                      <MonitorSmartphone size={15} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-[13px] font-semibold text-[#1a1f2e]">{p.name}</span>
+                      <span className="mt-0.5 flex items-center gap-1 text-[10px] text-[#8B999D]">
+                        {p.type === 'mobile' ? 'Android · Appium' : 'Web · Playwright'}
+                        {!p.ready && <span className="text-[#C2872F]">· sin configurar</span>}
+                      </span>
+                    </span>
+                  </div>
                   {active ? (
-                    <CheckCircle2 size={14} className="text-[#104B99] shrink-0" />
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#48A157] text-white shadow-sm"><CheckCircle2 size={14} /></span>
                   ) : (
-                    <Circle size={14} className="text-[#BABEC3] shrink-0" />
+                    <Circle size={17} className="shrink-0 text-[#C4CCCF] transition-colors group-hover:text-[#104B99]" />
                   )}
-                </div>
-                <div className="text-[10px] text-[#8B999D] mt-1 flex items-center gap-1.5">
-                  <MonitorSmartphone size={11} />
-                  {p.type === 'mobile' ? 'Android · Appium' : 'Web · Playwright'}
-                  {!p.ready && <span className="text-[#C2872F]">· sin configurar</span>}
                 </div>
               </button>
             );
@@ -639,14 +832,35 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
           </div>
 
           {!isRecording ? (
-            <button
-              onClick={() => session.start(label.trim() || undefined)}
-              disabled={!projectSlug || busy || label.trim().length === 0}
-              className="bg-[#48A157] hover:bg-[#3d8a4a] disabled:opacity-50 text-white text-[12px] font-semibold px-4 py-2.5 rounded-full flex items-center gap-1.5 transition"
-            >
-              {session.phase === 'starting' ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
-              {session.phase === 'starting' ? 'Preparando…' : 'Iniciar grabación'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {project?.type !== 'mobile' && (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label="Usar Chromium del PC para grabar"
+                  aria-checked={recordingBrowserMode === 'desktop'}
+                  disabled={session.phase === 'starting' || busy}
+                  onClick={() => setRecordingBrowserMode((mode) => mode === 'integrated' ? 'desktop' : 'integrated')}
+                  className="flex items-center gap-2 rounded-full border border-[#E8EBEC] bg-white px-3 py-2 text-[11px] font-medium text-[#58646D] transition disabled:opacity-50"
+                >
+                  <span className={cn('relative h-4 w-7 rounded-full transition-colors', recordingBrowserMode === 'desktop' ? 'bg-[#48A157]' : 'bg-[#B7C0C4]')}>
+                    <span className={cn('absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform', recordingBrowserMode === 'desktop' ? 'translate-x-3.5' : 'translate-x-0.5')} />
+                  </span>
+                  {recordingBrowserMode === 'desktop' ? 'Chromium del PC' : 'Integrado en QA Lab'}
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setScenariosPanelCollapsed(false);
+                  void session.start(label.trim() || undefined, recordingBrowserMode);
+                }}
+                disabled={!projectSlug || busy || label.trim().length === 0 || session.phase === 'starting'}
+                className="bg-[#48A157] hover:bg-[#3d8a4a] disabled:opacity-50 text-white text-[12px] font-semibold px-4 py-2.5 rounded-full flex items-center gap-1.5 transition"
+              >
+                {session.phase === 'starting' ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+                {session.phase === 'starting' ? 'Preparando…' : 'Iniciar grabación'}
+              </button>
+            </div>
           ) : (
             <button
               onClick={session.stop}
@@ -693,10 +907,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             <div className="flex items-center gap-2 mb-3">
               <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse" />
               <span className="text-[12px] font-semibold text-[#1a1f2e]">
-                Grabando — {project?.type === 'mobile' ? 'usa la app en el emulador' : 'interactúa con el navegador integrado'}
+                Grabando — {project?.type === 'mobile' ? 'usa la app en el emulador' : recordingBrowserMode === 'desktop' ? 'interactúa con la ventana Chromium del PC' : 'interactúa con el navegador integrado'}
               </span>
             </div>
-            {project?.type !== 'mobile' && session.recordingId && (
+            {project?.type !== 'mobile' && recordingBrowserMode === 'integrated' && session.recordingId && (
               <LiveBrowserView recordingId={session.recordingId} viewport={EMBEDDED_RECORDING_VIEWPORT} />
             )}
             <div className="flex gap-4">
@@ -780,8 +994,51 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         )}
       </section>
 
+      {/* Keep history actions above expandable scenario cards so their position stays stable. */}
+      {projectSlug && (
+        <section className="bg-white rounded-2xl border border-[#E8EBEC] px-5 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-[13px] font-semibold text-[#1a1f2e]">Grabaciones anteriores</h2>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => void handleToggleAllRecordings()}
+                disabled={session.historyLoading || projectHistory.length === 0 || deletingSelectedHistory || selectingHistoryScenarios || loadingHistoryScenarioRecordingIds.length > 0}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#104B99]/20 bg-[#F4F8FD] px-3 py-1.5 text-[11px] font-semibold text-[#104B99] transition hover:border-[#104B99]/50 disabled:cursor-wait disabled:opacity-60"
+              >
+                {selectingHistoryScenarios ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                {selectingHistoryScenarios ? 'Cargando casos…' : allHistoryScenariosSelected ? 'Deseleccionar todas' : 'Seleccionar todas las grabaciones'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteSelectedRecordings()}
+                disabled={selectedHistoryRecordingIds.length === 0 || deletingSelectedHistory || selectedRecordingsAreActive || selectingHistoryScenarios || loadingHistoryScenarioRecordingIds.length > 0}
+                title={selectedRecordingsAreActive ? 'Detén primero la grabación activa antes de eliminarla.' : undefined}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#B4463C]/20 bg-[#FFF7F6] px-3 py-1.5 text-[11px] font-semibold text-[#B4463C] transition hover:border-[#B4463C]/50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {deletingSelectedHistory ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                {deletingSelectedHistory ? 'Eliminando…' : `Eliminar seleccionadas${selectedHistoryRecordingIds.length ? ` (${selectedHistoryRecordingIds.length})` : ''}`}
+              </button>
+              {project?.type !== 'mobile' && (
+                <button
+                  type="button"
+                  onClick={handleReplay}
+                  disabled={session.phase === 'stopping' || replayEntries.length === 0 || selectingHistoryScenarios || loadingHistoryScenarioRecordingIds.length > 0}
+                  title={session.phase === 'stopping' ? 'Espera a que termine la sincronización de la grabación' : 'Configura TestRail y ejecuta los escenarios seleccionados'}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-[#1a1f2e] px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Play size={12} />
+                  Reproducir y subir a TestRail{replayEntries.length > 0 ? ` (${replayEntries.length})` : ''}
+                </button>
+              )}
+            </div>
+          </div>
+          {recordingSelectionNotice && <div role="status" className="mt-2 rounded-lg bg-[#F4F8FD] px-3 py-2 text-[11px] text-[#58646D]">{recordingSelectionNotice}</div>}
+        </section>
+      )}
+
       {/* ── Step 3: scenarios ───────────────────────────────────────── */}
-      {session.scenarios.length > 0 && session.phase !== 'recording' && (
+      {session.scenarios.length > 0 && session.phase !== 'recording' && !scenariosPanelCollapsed && (
         <section className="bg-white rounded-2xl border border-[#E8EBEC] p-5">
           <div className="flex items-center justify-between gap-2 mb-4">
             <div className="flex items-center gap-2">
@@ -792,16 +1049,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 Escenarios
               </h2>
             </div>
-            <div className="hidden text-[10px] text-[#58646D]">
-              TestRail: seleccionados={selectedScenarios.length} · listos={selectedReadiness.filter(({ readiness }) => readiness.publicationReadiness).length} · bloqueados={selectedReadiness.filter(({ readiness }) => !readiness.publicationReadiness).length}
-            </div>
-            <div className="text-[10px] text-[#58646D]">
-              Seleccionados={selectedTestRailEntries.length} · listos para ejecutar={executionReadyCount} · bloqueados={Math.max(0, executionScenarios.length - executionReadyCount)}
-            </div>
-            {selectedScenarios.length > 0 && readySelectedReadiness.length === 0 && (
-              <div className="text-[10px] text-[#B4463C]">Sin publicación disponible: {blockedSelectedReadiness.map(({ scenario, readiness }) => `${scenario.title}: ${readiness.missingInputs.length > 0 ? `faltan ${readiness.missingInputs.length} datos` : 'contenido pendiente'}`).join(' · ')}</div>
-            )}
-            <div className="flex items-center gap-2">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              {selectedScenarios.length > 0 && readySelectedReadiness.length === 0 && (
+                <div className="text-[10px] text-[#B4463C]">Sin publicación disponible: {blockedSelectedReadiness.map(({ scenario, readiness }) => `${scenario.title}: ${readiness.missingInputs.length > 0 ? `faltan ${readiness.missingInputs.length} datos` : 'contenido pendiente'}`).join(' · ')}</div>
+              )}
               {projectDetail?.type === 'mobile' && (
                 <button
                   onClick={handleExecute}
@@ -817,19 +1068,20 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   Publicar y ejecutar
                 </button>
               )}
-              {projectDetail?.type === 'web' && (
-                <button
-                  onClick={handleReplay}
-                  disabled={session.phase === 'stopping' || replayEntries.length === 0}
-                  title={session.phase === 'stopping' ? 'Espera a que termine la sincronización de la grabación' : 'Configura TestRail y ejecuta únicamente los escenarios seleccionados'}
-                  className="bg-[#1a1f2e] hover:bg-black disabled:opacity-40 text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5 transition"
-                >
-                  <Play size={13} />
-                  Reproducir y subir a TestRail
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setScenariosPanelCollapsed(true)}
+                title="Minimizar este panel"
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#104B99]/20 bg-[#F4F8FD] px-3 py-2 text-[11px] font-semibold text-[#104B99] transition hover:border-[#104B99]/50"
+              >
+                <ChevronUp size={13} />
+                Minimizar
+              </button>
             </div>
           </div>
+
+          {!scenariosPanelCollapsed && (
+            <>
 
           {projectDetail?.type === 'web' && executionBlockedWithLifecycle && executionScenarios.length > 0 && (
             <div role="status" className="mb-3 rounded-lg border border-[#F0C7C3] bg-[#FDF0EF] px-3 py-2 text-[11px] text-[#8E332C]">
@@ -883,6 +1135,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               <div className="text-[11px] uppercase tracking-[0.12em] text-[#104B99] font-semibold mb-2">Escenario principal · observado</div>
               <ScenarioCard
                 key={primaryScenario.scenarioId}
+                projectSlug={projectSlug}
                 scenario={primaryScenario}
                 checked={Boolean(session.recordingId && selected[testRailSelectionKey(session.recordingId!, primaryScenario.scenarioId)])}
                 onToggle={() => session.recordingId && setSelected((prev) => setTestRailScenarioSelected(prev, {
@@ -908,6 +1161,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               {suggestionScenarios.map((s) => (
                 <ScenarioCard
                   key={s.scenarioId}
+                  projectSlug={projectSlug}
                   scenario={s}
                   checked={Boolean(session.recordingId && selected[testRailSelectionKey(session.recordingId!, s.scenarioId)])}
                   onToggle={() => session.recordingId && setSelected((prev) => setTestRailScenarioSelected(prev, {
@@ -939,20 +1193,32 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               </pre>
             </details>
           )}
+            </>
+          )}
         </section>
       )}
 
       {/* ── History ─────────────────────────────────────────────────── */}
-      {projectSlug && session.history.length > 0 && (
+      {projectSlug && (
         <section className="bg-white rounded-2xl border border-[#E8EBEC] p-5">
-          <h2 className="text-[13px] font-semibold text-[#1a1f2e] mb-3">Grabaciones anteriores</h2>
+          <h2 className="mb-3 text-[13px] font-semibold text-[#1a1f2e]">Lista de grabaciones</h2>
           <div className="space-y-1.5">
-            {session.history.map((h) => (
+            {session.historyLoading ? (
+              <div role="status" className="px-3 py-5 text-[11px] text-[#8B999D]">Cargando grabaciones de {project?.name ?? projectSlug}…</div>
+            ) : projectHistory.length === 0 ? (
+              <div className="px-3 py-5 text-[11px] text-[#8B999D]">No hay grabaciones anteriores para este proyecto.</div>
+            ) : projectHistory.map((h) => (
               <HistoryRow
                 key={h.recordingId}
                 item={h}
                 active={h.recordingId === session.recordingId}
-                onOpen={() => session.openExisting(h.recordingId)}
+                selected={selectedHistoryRecordingIds.includes(h.recordingId)}
+                selectionBusy={selectingHistoryScenarios || loadingHistoryScenarioRecordingIds.includes(h.recordingId)}
+                onToggleSelected={() => void handleToggleHistoryRecording(h.recordingId)}
+                onOpen={() => {
+                  setScenariosPanelCollapsed(false);
+                  void session.openExisting(h.recordingId);
+                }}
                 onDelete={() => session.remove(h.recordingId)}
               />
             ))}
@@ -974,6 +1240,17 @@ function scenarioMetrics(scenario: RecordedScenario) {
     functionalActionCount: scenario.functionalActionCount ?? steps.filter((step, index) => step.classification === 'FUNCTIONAL_ACTION' && !setupIndexes.has(index)).length,
     nonUserSetupSteps: scenario.nonUserSetupSteps ?? setupIndexes.size,
   };
+}
+
+function recordedListSelectionMode(scenario: RecordedScenario, valueKey: string): 'index' | 'value' | undefined {
+  const modes = new Set((scenario.canonicalInteractions ?? [])
+    .filter((interaction) => interaction.action === 'select' && interaction.valueKey === valueKey)
+    .map((interaction) => {
+      const evidence = interaction.playwrightRecorderEvidence as { nativeSelection?: { selectionMode?: string } } | undefined;
+      return evidence?.nativeSelection?.selectionMode;
+    }));
+  if (modes.size !== 1) return undefined;
+  return modes.has('index') ? 'index' : modes.has('value') ? 'value' : undefined;
 }
 
 function observedOptionLabel(value: string): string {
@@ -1199,6 +1476,7 @@ function requirementConstraintDescription(requirement: { constraints?: Array<{ t
 }
 
 export function ScenarioCard({
+  projectSlug,
   scenario,
   checked,
   onToggle,
@@ -1212,6 +1490,7 @@ export function ScenarioCard({
   sensitiveDatasetKeys,
   allowSensitiveMaterialization,
 }: {
+  projectSlug?: string;
   scenario: RecordedScenario;
   checked: boolean;
   onToggle: () => void;
@@ -1230,15 +1509,36 @@ export function ScenarioCard({
   const onReviewChange = (_status: 'PENDING' | 'APPROVED' | 'REJECTED', _expected: string) => undefined;
   const readiness = resolveScenarioReadiness(scenario, datasetValues);
   const renderStep = (step: RecordedScenarioStep) => {
-    const value = step.valueKey ? datasetValues[step.valueKey] : undefined;
-    const sensitive = step.sensitive === true || Boolean(step.valueKey && sensitiveDatasetKeys.has(step.valueKey));
+    const recordedInteraction = step.interactionId
+      ? scenario.canonicalInteractions?.find((interaction) => String(interaction.id ?? '') === step.interactionId)
+      : undefined;
+    const valueKey = step.valueKey ?? (typeof recordedInteraction?.valueKey === 'string' ? recordedInteraction.valueKey : undefined);
+    const value = valueKey ? datasetValues[valueKey] : undefined;
+    const sensitive = step.sensitive === true || Boolean(valueKey && sensitiveDatasetKeys.has(valueKey));
     if (sensitive && !allowSensitiveMaterialization) return step.stepTemplate ?? step.content;
-    if (step.valueKey && value !== undefined) {
+    if (valueKey && value !== undefined) {
       const stepValue = step.segmentPosition ? value[step.segmentPosition - 1] : value;
       if (stepValue !== undefined) {
         const template = step.stepTemplate ?? step.content;
-        const rendered = template.split(`[${step.valueKey}]`).join(JSON.stringify(stepValue));
-        return step.stepNumber !== undefined ? rendered.replace(/^\s*\d+[.)]\s*/, '') : rendered;
+        const valueMarker = '[' + valueKey + ']';
+        const selectionDescription = selectionRuleDescription(stepValue);
+        const isDynamicSelection = parseSelectionRule(stepValue) !== undefined;
+        const readableValue = JSON.stringify(selectionDescription);
+        if (template.includes(valueMarker)) {
+          if (isDynamicSelection) {
+            const selectFieldTemplate = template.match(/^\s*Seleccionar\s+\[[^\]]+\]\s+en\s+["']([^"']+)["']\s*$/i);
+            if (selectFieldTemplate) {
+              const rendered = 'Seleccionar ' + selectionDescription + ' en el campo ' + JSON.stringify(selectFieldTemplate[1]);
+              return step.stepNumber !== undefined ? rendered.replace(/^\s*\d+[.)]\s*/, '') : rendered;
+            }
+          }
+          const rendered = template.split(valueMarker).join(readableValue);
+          return step.stepNumber !== undefined ? rendered.replace(/^\s*\d+[.)]\s*/, '') : rendered;
+        }
+        if (parseSelectionRule(stepValue) && recordedInteraction?.action === 'select') {
+          const field = String(recordedInteraction.semanticField ?? valueKey);
+          return 'Seleccionar ' + readableValue + ' en ' + JSON.stringify(field);
+        }
       }
     }
     const rendered = step.renderedStep ?? step.content;
@@ -1326,14 +1626,26 @@ export function ScenarioCard({
                         const value = datasetValues[requirement.valueKey] ?? '';
                         const disabled = !isQaOverridableRuntimeInput(requirement) || requirement.editable === false;
                         const constraintDescription = requirementConstraintDescription(requirement);
+                        const listMode = recordedListSelectionMode(scenario, requirement.valueKey);
                         return (
-                          <label key={requirement.valueKey} className="block">
+                          <div key={requirement.valueKey} className="block">
                             <span className={cn('text-[10px]', !value.trim() ? 'text-[#B4463C]' : 'text-[#58646D]')}>
                               {humanRequirementLabel(requirement)}{requirement.required ? ' · Requerido' : ''}{requirement.sensitive ? ' · QA sensible' : ''}
                             </span>
                             {constraintDescription && <div className="mt-0.5 text-[9px] text-[#58646D]">{constraintDescription}</div>}
+                            {requirement.allowedValues?.length ? <div className="mt-0.5 text-[10px] text-[#58646D]">
+                              {listMode === 'index' ? 'Lista dinámica · Selección configurable' : listMode === 'value' ? 'Selección por valor' : 'Tipo de lista sin confirmar'}
+                            </div> : null}
                             <div className="mt-0.5 font-mono break-all text-[9px] text-[#8B999D]" title={requirement.valueKey}>valueKey: {requirement.valueKey}</div>
-                            {requirement.allowedValues && requirement.allowedValues.length > 0 ? (
+                            {listMode === 'index' && requirement.allowedValues?.length ? (
+                              <DynamicListSelection
+                                projectSlug={projectSlug ?? ''} fieldKey={requirement.valueKey}
+                                label={humanRequirementLabel(requirement)} value={value}
+                                options={requirement.allowedValues} disabled={disabled}
+                                onValueChange={(nextValue) => onDatasetValueChange(requirement.valueKey, nextValue)}
+                                onApply={(nextValue) => { onDatasetValueChange(requirement.valueKey, nextValue); onDatasetBlur(requirement.valueKey, nextValue); }}
+                              />
+                            ) : requirement.allowedValues && requirement.allowedValues.length > 0 ? (
                               <select
                                 aria-label={humanRequirementLabel(requirement)}
                                 value={value}
@@ -1342,8 +1654,8 @@ export function ScenarioCard({
                                 disabled={disabled}
                                 className="mt-0.5 w-full px-2 py-1 rounded border border-[#D9E2EC] bg-white text-[11px] outline-none focus:border-[#104B99] disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"
                               >
-                                <option value="">Selecciona un valor observado</option>
-                                {requirement.allowedValues.map((option) => <option key={option} value={option}>{observedOptionLabel(option)}</option>)}
+                                <option value="">{listMode === 'index' ? 'Selecciona una posición' : 'Selecciona un valor observado'}</option>
+                                {requirement.allowedValues.map((option, index) => <option key={option} value={option}>{listMode === 'index' ? `Opción ${index + 1}` : observedOptionLabel(option)}</option>)}
                               </select>
                             ) : (
                               <input
@@ -1357,7 +1669,7 @@ export function ScenarioCard({
                                 className="mt-0.5 w-full px-2 py-1 rounded border border-[#D9E2EC] bg-white text-[11px] outline-none focus:border-[#104B99] disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"
                               />
                             )}
-                          </label>
+                          </div>
                         );
                       })}
                     </div>
@@ -1469,11 +1781,17 @@ export function ScenarioCard({
 function HistoryRow({
   item,
   active,
+  selected,
+  selectionBusy,
+  onToggleSelected,
   onOpen,
   onDelete,
 }: {
   item: RecordingSummary;
   active: boolean;
+  selected: boolean;
+  selectionBusy: boolean;
+  onToggleSelected: () => void;
   onOpen: () => void;
   onDelete: () => void;
 }) {
@@ -1481,9 +1799,17 @@ function HistoryRow({
     <div
       className={cn(
         'flex items-center gap-3 px-3 py-2.5 rounded-lg border transition',
-        active ? 'border-[#104B99]/40 bg-[#FBFCFE]' : 'border-transparent hover:bg-[#FAFAF7]',
+        selected ? 'border-[#104B99]/25 bg-[#F7FAFE]' : active ? 'border-[#104B99]/40 bg-[#FBFCFE]' : 'border-transparent hover:bg-[#FAFAF7]',
       )}
     >
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={onToggleSelected}
+        disabled={selectionBusy}
+        aria-label={`Seleccionar grabación ${item.label || item.recordingId.slice(0, 8)}`}
+        className="h-4 w-4 shrink-0 accent-[#104B99]"
+      />
       <button onClick={onOpen} className="flex-1 min-w-0 text-left">
         <div className="text-[12.5px] font-medium text-[#1a1f2e] truncate">
           {item.label || `Grabación ${item.recordingId.slice(0, 8)}`}

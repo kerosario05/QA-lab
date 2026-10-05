@@ -36,7 +36,7 @@ export function buildScenarioPreviewCacheKey(
     `testRailProjectId=${config.testRailProject || ''}`,
     `suiteId=${suiteId ?? ''}`,
     `sectionId=${sectionId ?? ''}`,
-    `sectionName=${selectedSection?.displayName ?? selectedSection?.name ?? ''}`,
+    `sectionName=${selectedSection?.name ?? ''}`,
     `sourceMode=${sourceMode}`,
     `jiraIssueKey=${jiraIssueKey}`,
     `jiraSummary=${jiraSummary}`,

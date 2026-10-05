@@ -1,291 +1,195 @@
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, AreaChart, Area, RadialBarChart, RadialBar, PolarAngleAxis,
-} from 'recharts';
-import {
-  ArrowUpRight, ArrowDownRight, ArrowRight, Filter, Bug,
-  Gauge, Radio, Sparkles, Flame, Hourglass,
-} from 'lucide-react';
+import { useMemo } from 'react';
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Activity, ArrowRight, Check, CheckCircle2, CircleHelp, Radio, XCircle } from 'lucide-react';
 import { C } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
-import { Sparkline } from '../../components/ui/Sparkline';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import { LiveRunsSection } from './LiveRunsSection';
-import {
-  projects, executionHistory, weekData, severityData,
-  monthlyDefects,
-} from '../../data/mockData';
+import { lastThirtyDays, type DashboardData, type DashboardExecution } from '../../services/dashboard';
 import type { ActiveRun } from '../../types';
 
 interface DashboardGeneralProps {
-  onSelectProject: (id: string) => void;
+  data: DashboardData;
+  onSelectProject: (slug: string) => void;
   onOpenRun: (run: ActiveRun) => void;
 }
 
-export function DashboardGeneral({ onSelectProject, onOpenRun }: DashboardGeneralProps) {
+function inWindow(execution: DashboardExecution, from: Date, to: Date) {
+  const timestamp = Date.parse(execution.createdAt);
+  return Number.isFinite(timestamp) && timestamp >= from.getTime() && timestamp <= to.getTime();
+}
+
+function resultStatus(execution: DashboardExecution): string {
+  if (execution.failed > 0 && execution.passed > 0) return 'partial';
+  if (execution.failed > 0 || /fail|error/i.test(execution.status)) return 'failed';
+  if (execution.passed > 0 || /pass|success|complete|promot/i.test(execution.status)) return 'success';
+  return 'partial';
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Fecha no disponible' : new Intl.DateTimeFormat('es-DO', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+export function DashboardGeneral({ data, onSelectProject, onOpenRun }: DashboardGeneralProps) {
+  const { from, to } = lastThirtyDays();
+  const executions = useMemo(() => data.executions.filter((execution) => inWindow(execution, from, to)), [data.executions, from.getTime(), to.getTime()]);
+  const totals = executions.reduce((summary, execution) => ({
+    launches: summary.launches + 1,
+    scenarios: summary.scenarios + execution.scenarioCount,
+    passed: summary.passed + execution.passed,
+    failed: summary.failed + execution.failed,
+  }), { launches: 0, scenarios: 0, passed: 0, failed: 0 });
+  const decidedCases = totals.passed + totals.failed;
+  const passRate = decidedCases ? Math.round((totals.passed / decidedCases) * 100) : null;
+  const projectsWithActivity = new Set(executions.map((execution) => execution.appSlug)).size;
+  const daily = useMemo(() => {
+    const rows = Array.from({ length: 7 }, (_, offset) => {
+      const date = new Date(to);
+      date.setDate(date.getDate() - (6 - offset));
+      date.setHours(0, 0, 0, 0);
+      return { date, label: new Intl.DateTimeFormat('es-DO', { weekday: 'short' }).format(date), launches: 0, passed: 0 };
+    });
+    for (const execution of executions) {
+      const date = new Date(execution.createdAt);
+      const row = rows.find((item) => item.date.toDateString() === date.toDateString());
+      if (row) { row.launches += 1; row.passed += execution.passed; }
+    }
+    return rows;
+  }, [executions, to.getTime()]);
+  const byProject = data.projects.map((project) => {
+    const rows = executions.filter((execution) => execution.appSlug === project.slug);
+    const passed = rows.reduce((sum, execution) => sum + execution.passed, 0);
+    const failed = rows.reduce((sum, execution) => sum + execution.failed, 0);
+    const count = passed + failed;
+    return { project, rows, passed, failed, rate: count ? Math.round((passed / count) * 100) : null, latest: rows[0], latestPass: rows.find((execution) => execution.passed > 0 && execution.failed === 0) };
+  });
+  const recent = executions.slice(0, 8);
+
   return (
     <div className="space-y-4">
-      <LiveRunsSection onOpenRun={onOpenRun} />
+      <LiveRunsSection runs={data.activeRuns} available={data.activeRunsAvailable} onOpenRun={onOpenRun} />
 
+      {/* QA Lab executive summary: original navy, success, failure and compact KPI panels. */}
       <div className="grid grid-cols-12 gap-4">
-        <BentoCard className="col-span-5 bg-gradient-to-br from-[#0a2547] via-[#104B99] to-[#0a2547] border-0 text-white !p-0">
-          <div className="absolute inset-0 opacity-30" style={{ backgroundImage: `radial-gradient(circle at 20% 50%, ${C.green}40 0%, transparent 50%), radial-gradient(circle at 80% 80%, #ffffff20 0%, transparent 50%)` }} />
-          <div className="absolute top-4 right-4 w-32 h-32 rounded-full border border-white/10" />
-          <div className="absolute top-12 right-12 w-16 h-16 rounded-full border border-white/10" />
-          <div className="relative p-6 h-full flex flex-col">
-            <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-white/60 font-medium mb-3">
-              <Radio size={11} className="text-[#5EC470]" />
-              Resumen ejecutivo
+        <BentoCard className="col-span-12 min-h-[245px] border-0 bg-gradient-to-br from-[#0a2547] via-[#104B99] to-[#0a2547] !p-0 text-white shadow-[0_14px_36px_-22px_rgba(10,37,71,0.8)] sm:col-span-6 lg:col-span-5">
+          <div className="absolute -right-2 top-4 h-36 w-36 rounded-full border border-white/10" />
+          <div className="absolute right-8 top-12 h-20 w-20 rounded-full border border-white/10" />
+          <div className="relative flex h-full flex-col p-6">
+            <div className="mb-3 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/60"><Radio size={12} className="text-[#5EC470]" />Resumen ejecutivo</div>
+            <div className="text-[60px] font-medium leading-none tracking-tight">{totals.launches.toLocaleString('es-DO')}</div>
+            <div className="mt-2 text-[11px] text-white/65">ejecuciones completadas · últimos 30 días</div>
+            <div className="mt-5 flex items-center gap-2 border-b border-white/15 pb-4 text-[10px] text-white/65">
+              <span className="rounded-full bg-white/10 px-2.5 py-1 text-white/80">{data.projects.length} proyectos habilitados</span>
+              <span>Resultados recibidos desde QA Lab</span>
             </div>
-            <div className="text-[64px] font-medium leading-none tracking-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>9,570</div>
-            <div className="text-[12px] text-white/70 mt-1">ejecuciones en mayo · todos los proyectos</div>
-            <div className="flex items-center gap-2 mt-3">
-              <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-[#5EC470]/20 text-[#5EC470] px-2 py-1 rounded-full">
-                <ArrowUpRight size={11} /> +18% vs abril
-              </span>
-              <span className="inline-flex items-center gap-1 text-[11px] text-white/60 px-2 py-1">
-                <Flame size={11} /> Récord histórico
-              </span>
-            </div>
-            <div className="mt-auto pt-5 grid grid-cols-3 gap-4 border-t border-white/10">
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-white/50">Proyectos</div>
-                <div className="text-[20px] font-medium mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>24</div>
-              </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-white/50">Equipos</div>
-                <div className="text-[20px] font-medium mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>8</div>
-              </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-white/50">Test Cases</div>
-                <div className="text-[20px] font-medium mt-0.5" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>1,064</div>
-              </div>
+            <div className="mt-auto grid grid-cols-3 gap-3 pt-4">
+              <HeroStat label="Proyectos" value={data.projects.length} />
+              <HeroStat label="Escenarios" value={totals.scenarios} />
+              <HeroStat label="Casos" value={decidedCases} />
             </div>
           </div>
         </BentoCard>
 
-        <BentoCard className="col-span-3 flex flex-col">
-          <div className="flex items-center justify-between mb-1">
-            <div className="text-[10px] uppercase tracking-[0.15em] text-[#8B999D] font-medium">Tasa de éxito</div>
-            <Gauge size={14} className="text-[#48A157]" />
-          </div>
-          <div className="flex-1 flex items-center justify-center relative">
-            <ResponsiveContainer width="100%" height={140}>
-              <RadialBarChart innerRadius="70%" outerRadius="100%" data={[{ name: 'pass', value: 91.4, fill: C.green }]} startAngle={90} endAngle={-270}>
-                <PolarAngleAxis type="number" domain={[0, 100]} angleAxisId={0} tick={false} />
-                <RadialBar background={{ fill: '#F4F1EA' } as any} dataKey="value" cornerRadius={20} />
-              </RadialBarChart>
-            </ResponsiveContainer>
-            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-              <div className="text-[32px] font-medium leading-none text-[#1a1f2e]" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>91.4<span className="text-[16px] text-[#8B999D]">%</span></div>
-              <div className="text-[10px] text-[#48A157] font-medium mt-1 flex items-center gap-0.5"><ArrowUpRight size={10} />+2.1%</div>
+        <BentoCard className="col-span-12 min-h-[245px] !p-5 sm:col-span-6 lg:col-span-3">
+          <div className="flex items-center justify-between"><div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#8B999D]">Tasa de éxito</div><Activity size={15} className="text-[#48A157]" /></div>
+          <div className="flex h-[178px] items-center justify-center">
+            <div className="relative flex h-[138px] w-[138px] items-center justify-center rounded-full" style={{ background: passRate === null ? '#F4F1EA' : `conic-gradient(${C.green} ${passRate * 3.6}deg, #F4F1EA ${passRate * 3.6}deg)` }}>
+              <div className="flex h-[108px] w-[108px] flex-col items-center justify-center rounded-full bg-white"><span className="text-[31px] font-medium leading-none text-[#1a1f2e]">{passRate === null ? '—' : `${passRate}%`}</span><span className="mt-1 text-[8px] uppercase tracking-wider text-[#8B999D]">Pass rate</span></div>
             </div>
           </div>
+          <div className="text-center text-[10px] text-[#8B999D]">{decidedCases ? `${totals.passed} aprobados de ${decidedCases} resultados` : 'Sin resultados para calcular'}</div>
         </BentoCard>
 
-        <BentoCard className="col-span-2 flex flex-col justify-between" accent="#E63946">
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-[10px] uppercase tracking-[0.15em] text-[#8B999D] font-medium">Defectos</div>
-              <Bug size={14} className="text-[#E63946]" />
-            </div>
-            <div className="text-[40px] font-medium leading-none text-[#1a1f2e]" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>100</div>
-            <div className="text-[11px] text-[#58646D] mt-1">encontrados este mes</div>
-          </div>
-          <div className="flex items-center gap-1.5 text-[10px] mt-3">
-            <span className="text-[#48A157] font-semibold flex items-center"><ArrowDownRight size={10} />-5%</span>
-            <span className="text-[#8B999D]">vs anterior</span>
-          </div>
+        <BentoCard className="col-span-12 min-h-[245px] !p-5 sm:col-span-6 lg:col-span-2">
+          <div className="flex items-center justify-between"><div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#8B999D]">Fallos</div><XCircle size={15} className="text-[#E63946]" /></div>
+          <div className="mt-5 text-[42px] font-medium leading-none text-[#1a1f2e]">{totals.failed.toLocaleString('es-DO')}</div>
+          <div className="mt-2 text-[10px] text-[#687680]">casos fallidos reportados</div>
+          <div className="mt-auto flex items-center gap-1.5 pt-8 text-[9px] text-[#8B999D]"><span className="h-1.5 w-1.5 rounded-full bg-[#E63946]" />Últimos 30 días</div>
         </BentoCard>
 
-        <BentoCard className="col-span-2 bg-[#F4F1EA] border-[#E8E0CC]">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-[10px] uppercase tracking-[0.15em] text-[#58646D] font-medium">ROI</div>
-            <Hourglass size={14} className="text-[#104B99]" />
-          </div>
-          <div className="text-[40px] font-medium leading-none text-[#1a1f2e]" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>847h</div>
-          <div className="text-[11px] text-[#58646D] mt-1">ahorradas en mayo</div>
-          <div className="mt-3 text-[10px] text-[#58646D] flex items-center gap-1">
-            <Sparkles size={10} className="text-[#48A157]" />
-            ~RD$2.1M en costo evitado
-          </div>
+        <BentoCard className="col-span-12 min-h-[245px] !p-5 sm:col-span-6 lg:col-span-2">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#8B999D]">Jobs activos</div>
+          <div className="mt-5 text-[42px] font-medium leading-none text-[#104B99]">{data.activeRunsAvailable ? data.activeRuns.length : '—'}</div>
+          <div className="mt-2 text-[10px] text-[#687680]">{data.activeRunsAvailable ? 'en cola o ejecutándose' : 'estado no disponible'}</div>
+          <div className="mt-auto flex items-center gap-1.5 pt-8 text-[9px] text-[#8B999D]"><span className={`h-1.5 w-1.5 rounded-full ${data.activeRunsAvailable ? 'bg-[#48A157]' : 'bg-[#F4A261]'}`} />{data.activeRunsAvailable ? 'Estado del motor' : 'No se pudo consultar'}</div>
         </BentoCard>
       </div>
 
       <div className="grid grid-cols-12 gap-4">
-        <BentoCard className="col-span-7">
-          <div className="flex items-start justify-between mb-4">
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.15em] text-[#8B999D] font-medium mb-1">Pulso de la semana</div>
-              <h3 className="text-[20px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Ejecuciones diarias</h3>
-            </div>
-            <div className="flex items-center gap-3 text-[10px]">
-              <span className="flex items-center gap-1.5 text-[#58646D]"><span className="w-2 h-2 rounded-full bg-[#104B99]" /> Total</span>
-              <span className="flex items-center gap-1.5 text-[#58646D]"><span className="w-2 h-2 rounded-full bg-[#48A157]" /> Exitosas</span>
-            </div>
+        <BentoCard accent={C.blue} className="col-span-12 bg-gradient-to-br from-white via-white to-[#EEF4FB] lg:col-span-7">
+          <div className="mb-4 flex items-center justify-between">
+            <div><div className="mb-1 text-[10px] font-medium uppercase tracking-[0.15em] text-[#8B999D]">Pulso de la semana</div><h3 className="text-[20px] font-medium leading-tight text-[#1a1f2e]">Ejecuciones diarias</h3></div>
+            <div className="flex gap-3 text-[9px] text-[#687680]"><span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-[#104B99]" />Ejecuciones</span><span className="flex items-center gap-1"><i className="h-2 w-2 rounded-full bg-[#48A157]" />Aprobadas</span></div>
           </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <AreaChart data={weekData} margin={{ top: 5, right: 5, left: -28, bottom: 0 }}>
-              <defs>
-                <linearGradient id="gBlue" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={C.blue} stopOpacity={0.2} />
-                  <stop offset="100%" stopColor={C.blue} stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="gGreen" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={C.green} stopOpacity={0.3} />
-                  <stop offset="100%" stopColor={C.green} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="2 4" stroke="#E8EBEC" vertical={false} />
-              <XAxis dataKey="d" stroke="#8B999D" fontSize={11} tickLine={false} axisLine={false} />
-              <YAxis stroke="#8B999D" fontSize={10} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={{ background: 'white', border: '1px solid #E8EBEC', borderRadius: 10, fontSize: 11, padding: '6px 10px' }} />
-              <Area type="monotone" dataKey="val" stroke={C.blue} fill="url(#gBlue)" strokeWidth={2} />
-              <Area type="monotone" dataKey="ok" stroke={C.green} fill="url(#gGreen)" strokeWidth={2} />
+          <ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={daily} margin={{ top: 8, right: 8, left: -24, bottom: 0 }}>
+              <defs><linearGradient id="qaBlue" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.blue} stopOpacity={0.24} /><stop offset="100%" stopColor={C.blue} stopOpacity={0} /></linearGradient><linearGradient id="qaGreen" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.green} stopOpacity={0.2} /><stop offset="100%" stopColor={C.green} stopOpacity={0} /></linearGradient></defs>
+              <CartesianGrid strokeDasharray="2 4" stroke="#E8EBEC" vertical={false} /><XAxis dataKey="label" stroke="#8B999D" fontSize={10} tickLine={false} axisLine={false} /><YAxis allowDecimals={false} stroke="#8B999D" fontSize={10} tickLine={false} axisLine={false} /><Tooltip contentStyle={{ background: 'white', border: '1px solid #E8EBEC', borderRadius: 10, fontSize: 11 }} />
+              <Area type="monotone" dataKey="launches" name="Ejecuciones" stroke={C.blue} fill="url(#qaBlue)" strokeWidth={2.5} /><Area type="monotone" dataKey="passed" name="Aprobadas" stroke={C.green} fill="url(#qaGreen)" strokeWidth={2.5} />
             </AreaChart>
           </ResponsiveContainer>
         </BentoCard>
 
-        <BentoCard className="col-span-3">
-          <div className="text-[10px] uppercase tracking-[0.15em] text-[#8B999D] font-medium mb-1">Defectos abiertos</div>
-          <h3 className="text-[18px] font-medium text-[#1a1f2e] leading-tight mb-4" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Por severidad</h3>
-          <div className="space-y-3">
-            {severityData.map(s => {
-              const total = severityData.reduce((a, b) => a + b.value, 0);
-              const pct = (s.value / total) * 100;
-              return (
-                <div key={s.name}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[11px] text-[#58646D] font-medium">{s.name}</span>
-                    <span className="text-[11px] font-semibold text-[#1a1f2e]">{s.value}</span>
-                  </div>
-                  <div className="h-1.5 bg-[#F4F1EA] rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: s.fill }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+        <BentoCard className="col-span-12 lg:col-span-3">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.15em] text-[#8B999D]">Resultados reportados</div><h3 className="mb-5 text-[18px] font-medium leading-tight text-[#1a1f2e]">Aprobados y fallidos</h3>
+          <ResultBar label="Aprobados" count={totals.passed} total={decidedCases} color={C.green} icon={<Check size={12} />} />
+          <ResultBar label="Fallidos" count={totals.failed} total={decidedCases} color="#E63946" icon={<XCircle size={12} />} />
+          <div className="mt-6 border-t border-[#F0F1EF] pt-4 text-[10px] text-[#8B999D]">{decidedCases ? `${decidedCases} resultados agregados de las ejecuciones` : 'No hay resultados de casos en este período.'}</div>
         </BentoCard>
 
-        <BentoCard className="col-span-2 bg-gradient-to-br from-[#48A157] to-[#357a42] text-white border-0 flex flex-col justify-between">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.15em] text-white/70 font-medium mb-2">Cobertura</div>
-            <div className="text-[44px] font-medium leading-none" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>76<span className="text-[20px]">%</span></div>
-          </div>
-          <div>
-            <div className="text-[10px] text-white/70 mb-1.5">Automatizado vs manual</div>
-            <div className="flex gap-0.5">
-              {Array.from({ length: 10 }).map((_, i) => (
-                <div key={i} className={`h-1 flex-1 rounded-full ${i < 7.6 ? 'bg-white' : 'bg-white/20'}`} />
-              ))}
-            </div>
-          </div>
-        </BentoCard>
-      </div>
-
-      <div className="grid grid-cols-12 gap-4">
-        <BentoCard className="col-span-8">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.15em] text-[#8B999D] font-medium mb-1">Tu portafolio</div>
-              <h3 className="text-[20px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Proyectos automatizados</h3>
-            </div>
-            <button className="text-[11px] text-[#104B99] font-medium hover:underline flex items-center gap-1">
-              Ver todos <ArrowRight size={11} />
-            </button>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {projects.slice(0, 4).map(p => (
-              <button
-                key={p.id}
-                onClick={() => onSelectProject(p.id)}
-                className="text-left p-4 rounded-xl border border-[#E8EBEC] hover:border-[#104B99]/30 hover:bg-[#FAFAF7] transition-all group relative overflow-hidden"
-              >
-                <div className="absolute right-0 top-0 w-20 h-20 rounded-full opacity-[0.04] group-hover:opacity-10 transition" style={{ background: p.status === 'failed' ? '#E63946' : p.status === 'running' ? C.blue : C.green, transform: 'translate(30%, -30%)' }} />
-                <div className="flex items-start justify-between mb-3 relative">
-                  <div>
-                    <div className="text-[13px] font-semibold text-[#1a1f2e]">{p.name}</div>
-                    <div className="text-[10px] text-[#8B999D] mt-0.5">{p.team} · {p.stack}</div>
-                  </div>
-                  <StatusBadge status={p.status} />
-                </div>
-                <div className="flex items-end justify-between relative">
-                  <div className="flex gap-4">
-                    <div>
-                      <div className="text-[9px] uppercase tracking-wider text-[#8B999D]">Pass</div>
-                      <div className={`text-[16px] font-medium ${p.passRate >= 90 ? 'text-[#48A157]' : p.passRate >= 85 ? 'text-[#F4A261]' : 'text-[#E63946]'}`} style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{p.passRate}%</div>
-                    </div>
-                    <div>
-                      <div className="text-[9px] uppercase tracking-wider text-[#8B999D]">Runs</div>
-                      <div className="text-[16px] font-medium text-[#1a1f2e]" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{p.runs.toLocaleString()}</div>
-                    </div>
-                    <div>
-                      <div className="text-[9px] uppercase tracking-wider text-[#8B999D]">Bugs</div>
-                      <div className="text-[16px] font-medium text-[#1a1f2e]" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{p.defects}</div>
-                    </div>
-                  </div>
-                  <Sparkline data={p.trend} color={p.passRate >= 90 ? C.green : p.passRate >= 85 ? '#F4A261' : '#E63946'} />
-                </div>
-              </button>
-            ))}
-          </div>
-        </BentoCard>
-
-        <BentoCard className="col-span-4">
-          <div className="text-[10px] uppercase tracking-[0.15em] text-[#8B999D] font-medium mb-1">Tendencia mensual</div>
-          <h3 className="text-[18px] font-medium text-[#1a1f2e] leading-tight mb-4" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Defectos: hallados vs resueltos</h3>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={monthlyDefects} margin={{ top: 5, right: 5, left: -28, bottom: 0 }} barGap={2}>
-              <CartesianGrid strokeDasharray="2 4" stroke="#E8EBEC" vertical={false} />
-              <XAxis dataKey="mes" stroke="#8B999D" fontSize={11} tickLine={false} axisLine={false} />
-              <YAxis stroke="#8B999D" fontSize={10} tickLine={false} axisLine={false} />
-              <Tooltip contentStyle={{ background: 'white', border: '1px solid #E8EBEC', borderRadius: 10, fontSize: 11 }} />
-              <Bar dataKey="encontrados" fill={C.blue} radius={[6, 6, 0, 0]} maxBarSize={18} />
-              <Bar dataKey="resueltos" fill={C.green} radius={[6, 6, 0, 0]} maxBarSize={18} />
-            </BarChart>
-          </ResponsiveContainer>
+        <BentoCard className="col-span-12 bg-gradient-to-br from-[#48A157] to-[#357a42] text-white lg:col-span-2">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-white/70">Proyectos</div>
+          <div className="mt-4 text-[43px] font-medium leading-none">{projectsWithActivity}<span className="text-[20px] text-white/65">/{data.projects.length}</span></div>
+          <div className="mt-2 text-[10px] text-white/75">con ejecuciones recientes</div>
+          <div className="mt-6 h-1.5 overflow-hidden rounded-full bg-white/20"><div className="h-full rounded-full bg-white" style={{ width: `${data.projects.length ? projectsWithActivity / data.projects.length * 100 : 0}%` }} /></div>
+          <div className="mt-2 text-[9px] text-white/70">{data.projects.length} habilitados</div>
         </BentoCard>
       </div>
 
       <BentoCard>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.15em] text-[#8B999D] font-medium mb-1">Actividad reciente</div>
-            <h3 className="text-[20px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Últimas ejecuciones</h3>
-          </div>
-          <div className="flex items-center gap-2">
-            <button className="text-[11px] border border-[#E8EBEC] px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]">
-              <Filter size={11} /> Filtrar
-            </button>
-          </div>
-        </div>
-        <div className="space-y-1">
-          {executionHistory.map(e => (
-            <div key={e.id} className="grid grid-cols-12 gap-4 items-center px-3 py-2.5 rounded-lg hover:bg-[#FAFAF7] transition-all group cursor-pointer">
-              <div className="col-span-2 text-[11px] font-mono text-[#58646D]">{e.date}</div>
-              <div className="col-span-3 text-[13px] font-medium text-[#1a1f2e]">{e.project}</div>
-              <div className="col-span-2 text-[11px] text-[#58646D] flex items-center gap-1.5">
-                <div className="w-5 h-5 rounded-full bg-[#F4F1EA] flex items-center justify-center text-[9px] font-semibold text-[#58646D]">
-                  {e.triggered.split(' ')[0][0]}
-                </div>
-                {e.triggered}
-              </div>
-              <div className="col-span-2 text-[11px] text-[#58646D] font-mono">{e.duration}</div>
-              <div className="col-span-2 flex items-center gap-3">
-                <div className="flex-1 h-1.5 bg-[#F4F1EA] rounded-full overflow-hidden flex">
-                  <div className="bg-[#48A157] h-full" style={{ width: `${(e.passed / e.total) * 100}%` }} />
-                  <div className="bg-[#E63946] h-full" style={{ width: `${(e.failed / e.total) * 100}%` }} />
-                </div>
-                <span className="text-[10px] text-[#58646D] font-mono">{e.passed}/{e.total}</span>
-              </div>
-              <div className="col-span-1 flex justify-end">
-                <StatusBadge status={e.status} />
-              </div>
-            </div>
-          ))}
-        </div>
+        <div className="mb-4 flex items-center justify-between"><div><div className="mb-1 text-[10px] font-medium uppercase tracking-[0.15em] text-[#8B999D]">Tu portafolio</div><h3 className="text-[20px] font-medium leading-tight text-[#1a1f2e]">Actividad por proyecto · últimos 30 días</h3></div><span className="text-[10px] text-[#8B999D]">{data.projects.length} habilitados</span></div>
+        {byProject.length ? <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">{byProject.map(({ project, rows, passed, failed, rate, latest }) => (
+          <button type="button" key={project.slug} onClick={() => onSelectProject(project.slug)} className="group relative overflow-hidden rounded-xl border border-[#E3E8EC] bg-gradient-to-br from-white to-[#FAFAF7] p-4 text-left transition hover:-translate-y-0.5 hover:border-[#104B99]/40 hover:shadow-[0_8px_24px_-16px_rgba(16,75,153,0.45)]">
+            <span className="absolute bottom-0 left-0 top-0 w-[3px] bg-gradient-to-b from-[#104B99] to-[#48A157]" />
+            <div className="mb-3 flex items-start justify-between gap-2 pl-1"><div><h4 className="text-[13px] font-semibold text-[#1a1f2e]">{project.name}</h4><p className="mt-0.5 text-[10px] text-[#8B999D]">{project.enabled ? 'Habilitado' : 'Deshabilitado'} · {project.projectType === 1 ? 'Web' : `Tipo ${project.projectType}`}</p></div><ArrowRight size={14} className="text-[#8B999D] transition group-hover:translate-x-0.5 group-hover:text-[#104B99]" /></div>
+            <div className="grid grid-cols-3 gap-2 text-[10px]"><TinyMetric label="Ejecuciones" value={rows.length} /><TinyMetric label="Aprobados" value={passed} /><TinyMetric label="Fallidos" value={failed} /></div>
+            <div className="mt-3 flex items-center justify-between border-t border-[#F0F1EF] pt-2 text-[10px]"><span className="text-[#687680]">Tasa de aprobación</span><strong className={rate === null ? 'text-[#8B999D]' : rate >= 90 ? 'text-[#48A157]' : 'text-[#C97623]'}>{rate === null ? 'Sin datos' : `${rate}%`}</strong></div>
+            <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-[#E9ECEA]"><div className="h-full rounded-full bg-gradient-to-r from-[#104B99] to-[#48A157] transition-all" style={{ width: `${rate ?? 0}%` }} /></div>
+            <div className="mt-1 truncate text-[9px] text-[#8B999D]">Última actividad: {latest ? formatDate(latest.createdAt) : 'Sin ejecuciones en el período'}</div>
+          </button>))}</div> : <EmptyState message="El backend no devolvió proyectos habilitados." />}
       </BentoCard>
+
+      <BentoCard accent={C.green} className="bg-gradient-to-br from-white to-[#F1F8F2]">
+        <div className="mb-4 flex items-center gap-2.5"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#48A157]/10"><CheckCircle2 size={15} className="text-[#48A157]" /></div><div><div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-[#48A157]">Éxitos recientes</div><h3 className="text-[19px] font-medium leading-tight text-[#1a1f2e]">Último caso aprobado por proyecto</h3></div></div>
+        {byProject.some((entry) => entry.latestPass) ? <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">{byProject.filter((entry) => entry.latestPass).map(({ project, latestPass }) => (
+          <button type="button" key={project.slug} onClick={() => onSelectProject(project.slug)} className="group flex min-w-0 items-center gap-3 rounded-xl border border-[#DDEBE0] bg-white/90 p-3.5 text-left transition hover:border-[#48A157]/50 hover:shadow-[0_7px_20px_-14px_rgba(72,161,87,0.55)]">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#48A157]/10 text-[#48A157]"><CheckCircle2 size={17} /></span>
+            <span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold text-[#1a1f2e]">{latestPass?.huTitle || latestPass?.huKey || 'Caso aprobado'}</span><span className="mt-1 block truncate text-[9px] text-[#687680]">{project.name} · {latestPass ? formatDate(latestPass.createdAt) : ''}</span></span>
+            <ArrowRight size={13} className="shrink-0 text-[#8B999D] transition group-hover:translate-x-0.5 group-hover:text-[#48A157]" />
+          </button>))}</div> : <EmptyState message="No hay casos aprobados en los últimos 30 días." />}
+      </BentoCard>
+
+      <BentoCard>
+        <div className="mb-4 flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#104B99]/10"><Radio size={13} className="text-[#104B99]" /></div><div><div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.15em] text-[#8B999D]">Actividad reciente</div><h3 className="text-[20px] font-medium leading-tight text-[#1a1f2e]">Últimas ejecuciones</h3></div></div>
+        {recent.length ? <div className="divide-y divide-[#F0F1EF]">{recent.map((execution) => {
+          const project = data.projects.find((item) => item.slug === execution.appSlug);
+          const total = execution.passed + execution.failed;
+          return <div key={execution.launchId} className="grid grid-cols-1 items-center gap-2 rounded-lg py-3 transition hover:bg-[#FAFAF7] md:grid-cols-12 md:gap-4">
+            <div className="text-[10px] font-mono text-[#687680] md:col-span-3">{formatDate(execution.createdAt)}</div>
+            <div className="min-w-0 md:col-span-3"><div className="truncate text-[12px] font-medium text-[#1a1f2e]">{execution.huTitle || project?.name || execution.appSlug}</div><div className="truncate text-[9px] text-[#8B999D]">{project?.name ?? execution.appSlug} · {execution.launchId}</div></div>
+            <div className="flex items-center gap-3 text-[10px] md:col-span-3"><span className="text-[#48A157]">{execution.passed} aprobados</span><span className="text-[#E63946]">{execution.failed} fallidos</span></div>
+            <div className="md:col-span-2"><div className="h-1.5 overflow-hidden rounded-full bg-[#F4F1EA]"><div className="h-full bg-[#48A157]" style={{ width: `${total ? execution.passed / total * 100 : 0}%` }} /></div><div className="mt-1 text-[9px] text-[#8B999D]">{total} resultados · {execution.scenarioCount} escenarios</div></div>
+            <div className="md:col-span-1"><StatusBadge status={resultStatus(execution)} /></div>
+          </div>;
+        })}</div> : <EmptyState message="No hay ejecuciones completadas en los últimos 30 días." />}
+      </BentoCard>
+      {!data.activeRunsAvailable && <div className="flex items-center gap-2 rounded-xl border border-[#F1E4BE] bg-[#FBF5E6] px-4 py-3 text-[10px] text-[#8B6A20]"><CircleHelp size={14} />La sección de jobs activos no está disponible; las estadísticas históricas sí provienen del backend.</div>}
     </div>
   );
 }
+
+function HeroStat({ label, value }: { label: string; value: number }) { return <div className="border-r border-white/15 last:border-0"><div className="text-[9px] uppercase tracking-wider text-white/55">{label}</div><div className="mt-1 text-[19px] font-semibold">{value.toLocaleString('es-DO')}</div></div>; }
+function ResultBar({ label, count, total, color, icon }: { label: string; count: number; total: number; color: string; icon: React.ReactNode }) { const percent = total ? count / total * 100 : 0; return <div className="mb-5"><div className="mb-1.5 flex items-center justify-between"><span className="flex items-center gap-1.5 text-[11px] text-[#58646D]"><span style={{ color }}>{icon}</span>{label}</span><strong className="text-[12px] text-[#1a1f2e]">{count}</strong></div><div className="h-2 overflow-hidden rounded-full bg-[#F4F1EA]"><div className="h-full rounded-full transition-all" style={{ width: `${percent}%`, background: color }} /></div><div className="mt-1 text-right text-[9px] text-[#8B999D]">{total ? `${Math.round(percent)}%` : 'Sin resultados'}</div></div>; }
+function TinyMetric({ label, value }: { label: string; value: number }) { return <div><div className="text-[9px] uppercase tracking-wide text-[#8B999D]">{label}</div><div className="mt-0.5 text-[15px] font-medium text-[#1a1f2e]">{value.toLocaleString('es-DO')}</div></div>; }
+function EmptyState({ message }: { message: string }) { return <div className="rounded-xl border border-dashed border-[#D9DEDF] p-8 text-center text-[11px] text-[#8B999D]">{message}</div>; }

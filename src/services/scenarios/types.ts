@@ -19,6 +19,8 @@ export type RouteProfile = Record<string, unknown>;
 
 export interface StoryScenario {
   scenarioId?: string;
+  id?: string;
+  sourceIssueKey?: string;
   title: string;
   refs: string;
   custom_preconds: string | null;
@@ -56,6 +58,84 @@ export interface ScenariosPreviewResponse {
   totalScenarios?: number;
   stories: Story[];
   routeProfile?: RouteProfile;
+  scenarios?: McpScenario[];
+  data?: {
+    routeProfile?: RouteProfile;
+    stories?: Story[];
+    scenarios?: McpScenario[];
+    [key: string]: unknown;
+  };
+}
+
+export interface McpScenario {
+  scenarioId?: string;
+  id?: string;
+  caseId?: number;
+  sourceIssueKey: string;
+  title: string;
+  steps: string[];
+  preconditions?: string[];
+  expectedResult?: string;
+  nonExecutableCriteria?: string;
+  dataRequirements?: string;
+  type?: string;
+  database?: string;
+  isConverted?: boolean;
+  automationType?: string;
+  launchClassification?: 'standard' | 'adaptive' | 'nonAutomatable';
+  setupStrategy?: string;
+  appSlug?: string;
+  targetAppSlug?: string;
+  targetAppName?: string;
+  routeProfile?: McpRouteProfile;
+  mcpExecutable?: boolean;
+  executionReadiness?: string;
+  semanticValidity?: string;
+  validation?: { valid?: boolean; [key: string]: unknown };
+  publicationClassification?: string;
+  nonAutomatable?: boolean;
+  metadata?: Record<string, unknown>;
+  targetScreen?: string;
+  actualChain?: unknown;
+  requiredChain?: unknown;
+  sourceTrace?: { jiraSummary?: string; [key: string]: unknown };
+  generationSource?: { jiraSummary?: string; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
+export interface McpPreviewResponse extends ScenariosPreviewResponse {
+  source?: { issuesFound?: unknown[]; [key: string]: unknown };
+  cached?: boolean;
+  jobId?: string;
+  job?: { id?: string; status?: string } | null;
+  status?: string;
+  summary?: Record<string, unknown>;
+  blockedScenarios?: unknown[];
+  adaptiveScenarios?: unknown[];
+  rejected?: unknown[];
+}
+
+export interface McpRouteProfile {
+  entry?: Array<{ businessLabel?: string; visibleLabel?: string }>;
+  domainTerms?: Record<string, string>;
+  visibleControls?: string[];
+  [key: string]: unknown;
+}
+
+export type ScenarioReadinessStatus = 'auto_executable' | 'needs_route_profile' | 'needs_test_data' | 'unsupported_or_manual' | 'too_ambiguous';
+
+export interface ScenarioReadinessItem {
+  sourceIssueKey: string;
+  title: string;
+  status: ScenarioReadinessStatus;
+  reasons: string[];
+  blockingSignals: string[];
+  recommendation: string;
+}
+
+export interface ScenarioReadinessSummary {
+  counts: Record<ScenarioReadinessStatus, number>;
+  items: ScenarioReadinessItem[];
 }
 
 export interface ScenariosPreviewParams {

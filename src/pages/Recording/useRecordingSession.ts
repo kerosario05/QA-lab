@@ -21,6 +21,8 @@ export type RecordingPhase =
   | 'deriving'
   | 'derived';
 
+export type RecordingBrowserMode = 'integrated' | 'desktop';
+
 // A recording is human-paced and the backend appends each interaction immediately. Keep the
 // live projection responsive enough that the UI does not make a captured action look delayed.
 // This hook is project-scoped by `projectSlug`, so the cadence applies consistently to every
@@ -48,6 +50,7 @@ export function useRecordingSession(projectSlug: string) {
   const [persistedScenarioIds, setPersistedScenarioIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<RecordingSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // A slow status request must not overlap with the next poll. The backend may take
@@ -66,9 +69,12 @@ export function useRecordingSession(projectSlug: string) {
   const refreshHistory = useCallback(async () => {
     if (!projectSlug) {
       setHistory([]);
+      setHistoryLoading(false);
       return;
     }
     const requestId = ++historyRequestRef.current;
+    setHistory([]);
+    setHistoryLoading(true);
     try {
       const res = await recordingsApi.list(projectSlug);
       if (historyRequestRef.current !== requestId) return;
@@ -76,6 +82,8 @@ export function useRecordingSession(projectSlug: string) {
     } catch {
       // A project with no recordings yet is not an error worth showing.
       if (historyRequestRef.current === requestId) setHistory([]);
+    } finally {
+      if (historyRequestRef.current === requestId) setHistoryLoading(false);
     }
   }, [projectSlug]);
 
@@ -105,7 +113,7 @@ export function useRecordingSession(projectSlug: string) {
   useEffect(() => () => { generationRunRef.current += 1; stopPolling(); }, [stopPolling]);
 
   const start = useCallback(
-    async (recordingGoal?: string) => {
+    async (recordingGoal?: string, browserMode: RecordingBrowserMode = 'integrated') => {
       generationRunRef.current += 1;
       setGeneration(null);
       setError(null);
@@ -114,7 +122,7 @@ export function useRecordingSession(projectSlug: string) {
       setNarrative('');
       console.info('[recording:goal-lineage] uiGoal=', recordingGoal);
       try {
-        const res = await recordingsApi.start(projectSlug, recordingGoal);
+        const res = await recordingsApi.start(projectSlug, recordingGoal, browserMode);
         setRecordingId(res.recordingId);
         setSummary(res.summary);
         setPhase('recording');
@@ -401,8 +409,10 @@ export function useRecordingSession(projectSlug: string) {
           setPersistedScenarioIds(new Set());
         }
         void refreshHistory();
+        return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
+        return false;
       }
     },
     [projectSlug, recordingId, refreshHistory],
@@ -424,6 +434,7 @@ export function useRecordingSession(projectSlug: string) {
     error,
     setError,
     history,
+    historyLoading,
     start,
     stop,
     derive,
