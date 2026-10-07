@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { recordingsApi, type RecordingBatchSelection, type RecordingTestRailDestination } from '../../services/recordings';
+import { recordingsApi, type RecordingBatchSelection, type RecordingJiraIssue, type RecordingTestRailDestination } from '../../services/recordings';
 import type { RecordedScenario, RecordingReplayAdmission, RecordingScenarioRejection } from '../../services/recordings/types';
 
 /**
@@ -95,6 +95,7 @@ export function useWebRecordingReplay() {
     projectSlug: string,
     selections: RecordingBatchSelection[],
     testRailDestination: RecordingTestRailDestination,
+    jiraIssue?: RecordingJiraIssue,
   ): Promise<WebReplayLaunch | null> => {
     setError(null);
     if (selections.length === 0) {
@@ -103,7 +104,7 @@ export function useWebRecordingReplay() {
     }
     setStarting(true);
     try {
-      const launch = await recordingsApi.executeBatch(projectSlug, selections, testRailDestination);
+      const launch = await recordingsApi.executeBatch(projectSlug, selections, testRailDestination, jiraIssue);
       return {
         jobId: launch.jobId,
         scenarioCount: launch.scenarioCount ?? selections.length,

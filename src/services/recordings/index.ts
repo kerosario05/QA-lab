@@ -61,6 +61,7 @@ export function serializedPayloadBytes(payload: unknown): number {
 }
 
 export type RecordingTestRailDestination = { projectId?: string; suiteId?: string; sectionId?: string };
+export type RecordingJiraIssue = { key: string; summary: string };
 export type RecordingBatchSelection = {
   recordingId: string;
   scenarioId: string;
@@ -211,6 +212,7 @@ export const recordingsApi = {
     projectSlug: string,
     selections: RecordingBatchSelection[],
     testRailDestination: RecordingTestRailDestination,
+    jiraIssue?: RecordingJiraIssue,
   ) => request<{
     jobId?: string;
     scenarioCount?: number;
@@ -220,7 +222,7 @@ export const recordingsApi = {
     publishToTestRailInvoked?: boolean;
   } & Partial<RecordingReplayAdmission>>('/api/recordings/execute-batch', {
     method: 'POST',
-    body: JSON.stringify({ projectSlug, selections, testRailDestination }),
+    body: JSON.stringify({ projectSlug, selections, testRailDestination, ...(jiraIssue ? { jiraIssue } : {}) }),
   }),
 
   remove: (recordingId: string, projectSlug: string) =>

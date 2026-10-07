@@ -273,7 +273,6 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     }),
     [executionScenarios, scenarioDatasetValues, sharedDatasetValues, session.persistedScenarioIds],
   );
-  const executionReadyCount = executionReadinessForSelection.filter(({ executable }) => executable).length;
   const executionBlocked = isExecutionSelectionBlocked(
     executionReadinessForSelection.map(({ readiness, scenarioPersisted }) => ({ executionReadiness: readiness.executionReadiness, scenarioPersisted })),
   );

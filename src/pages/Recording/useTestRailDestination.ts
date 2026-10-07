@@ -29,10 +29,12 @@ export interface TestRailDestination {
   sectionId?: string;
 }
 
+export type TestRailSectionOption = TRSection & { suiteName?: string };
+
 export function useTestRailDestination(seed: TestRailSeed | null | undefined) {
   const [projects, setProjects] = useState<TestRailProject[]>([]);
   const [suites, setSuites] = useState<{ id: number; name: string }[]>([]);
-  const [sections, setSections] = useState<TRSection[]>([]);
+  const [sections, setSections] = useState<TestRailSectionOption[]>([]);
 
   const [projectId, setProjectId] = useState<string>('');
   const [suiteId, setSuiteId] = useState<string>('');
@@ -71,18 +73,29 @@ export function useTestRailDestination(seed: TestRailSeed | null | undefined) {
   useEffect(() => {
     if (!projectId) {
       setSuites([]);
+      setSections([]);
       return;
     }
     let cancelled = false;
     setLoading(true);
     setError(null);
     fetchProjectSuites(Number(projectId))
-      .then((list) => {
+      .then(async (list) => {
         if (cancelled) return;
         setSuites(list);
-        // A single-suite project has nothing to choose: picking it keeps the section list
-        // one step away instead of stalling on a dropdown with one entry.
-        if (list.length === 1) setSuiteId(String(list[0].id));
+        // Suite stays an internal TestRail detail. Load sections from every suite so the
+        // visible project/section controls still work for projects with multiple suites.
+        setSuiteId((current) => list.some((suite) => String(suite.id) === current)
+          ? current
+          : list.length === 1 ? String(list[0].id) : '');
+        const groups = await Promise.all(list.map(async (suite) => ({
+          suite,
+          sections: await trSectionsProxy.getSections(Number(projectId), Number(suite.id)),
+        })));
+        if (cancelled) return;
+        setSections(groups.flatMap(({ suite, sections: suiteSections }) =>
+          suiteSections.map((section) => ({ ...section, suiteName: suite.name })),
+        ));
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -95,29 +108,13 @@ export function useTestRailDestination(seed: TestRailSeed | null | undefined) {
     };
   }, [projectId]);
 
+  // A saved destination may contain a section without its suite. Resolve the hidden suite
+  // from the fetched section metadata so seeded destinations remain executable.
   useEffect(() => {
-    if (!projectId || !suiteId) {
-      setSections([]);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    trSectionsProxy
-      .getSections(Number(projectId), Number(suiteId))
-      .then((list) => {
-        if (!cancelled) setSections(list);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, suiteId]);
+    if (suiteId || !sectionId) return;
+    const section = sections.find((candidate) => String(candidate.id) === sectionId);
+    if (section?.suite_id) setSuiteId(String(section.suite_id));
+  }, [sectionId, sections, suiteId]);
 
   const chooseProject = useCallback((value: string) => {
     setProjectId(value);
@@ -125,10 +122,11 @@ export function useTestRailDestination(seed: TestRailSeed | null | undefined) {
     setSectionId('');
   }, []);
 
-  const chooseSuite = useCallback((value: string) => {
-    setSuiteId(value);
-    setSectionId('');
-  }, []);
+  const chooseSection = useCallback((value: string) => {
+    const section = sections.find((candidate) => String(candidate.id) === value);
+    setSectionId(value);
+    if (section?.suite_id) setSuiteId(String(section.suite_id));
+  }, [sections]);
 
   const destination: TestRailDestination = {
     projectId: projectId || undefined,
@@ -147,8 +145,7 @@ export function useTestRailDestination(seed: TestRailSeed | null | undefined) {
     sectionId,
     sectionName,
     chooseProject,
-    chooseSuite,
-    setSectionId,
+    chooseSection,
     destination,
     loading,
     error,

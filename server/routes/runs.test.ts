@@ -10,6 +10,7 @@ let app: ReturnType<typeof express>;
 let server: Server;
 let mockProvider: Server;
 let lastDiscoveryBatchPayload: Record<string, unknown> | null = null;
+let lastEvidenceDocumentFormat: string | undefined;
 
 const api = (path: string) => `http://localhost:${PORT}${path}`;
 
@@ -79,6 +80,12 @@ beforeAll(async () => {
       return;
     }
     res.status(200).json({ jobId: req.params.jobId, status: 'unavailable', documentReady: false, reasonCode: 'document_not_found_after_completion' });
+  });
+  mockApp.get('/api/runs/:jobId/evidence-docx', (req, res) => {
+    lastEvidenceDocumentFormat = typeof req.query.format === 'string' ? req.query.format : undefined;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="evidence.pdf"');
+    res.status(200).send(Buffer.from('%PDF-fixture'));
   });
   mockApp.head('/api/runs/:jobId/evidence-docx', (req, res) => {
     if (req.params.jobId === 'job-ready') {
@@ -420,6 +427,19 @@ describe('runs router — GET endpoints', () => {
     expect(body.status).toBe('ready');
     expect(body.documentReady).toBe(true);
     expect(body.reasonCode).toBe('ready');
+  });
+
+  it('GET /:jobId/evidence-docx forwards the requested PDF format and streams the PDF', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    lastEvidenceDocumentFormat = undefined;
+
+    const res = await fetch(api('/api/runs/job-ready/evidence-docx?format=pdf'));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/pdf');
+    expect(res.headers.get('content-disposition')).toContain('evidence.pdf');
+    expect(await res.text()).toBe('%PDF-fixture');
+    expect(lastEvidenceDocumentFormat).toBe('pdf');
   });
 
   it('GET /:jobId/evidence-docx/status devuelve preparing cuando provider responde preparing', async () => {

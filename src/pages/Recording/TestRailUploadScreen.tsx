@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { AlertTriangle, Boxes, CheckCircle2, ChevronLeft, Database, GitBranch, Loader2, Rocket, ScanLine } from 'lucide-react';
+import { AlertTriangle, Boxes, CheckCircle2, ChevronLeft, GitBranch, Loader2, Rocket, ScanLine } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
 import type { RecordedScenario } from '../../services/recordings/types';
 import type { ActiveRun } from '../../types';
+import type { JiraIssue } from '../../services/jira/types';
 import { useTestRailDestination } from './useTestRailDestination';
 import { TestRailDestinationPicker } from './TestRailDestinationPicker';
+import { JiraRequirementPicker } from './JiraRequirementPicker';
 import { useWebRecordingReplay } from './useWebRecordingReplay';
 import type { RecordingProjectDetail } from './useRecordingExecution';
 import { groupScenariosByRecording } from './groupScenariosByRecording';
@@ -95,10 +97,16 @@ export function TestRailUploadScreen({
   const testRail = useTestRailDestination(projectDetail?.testRail);
   const replay = useWebRecordingReplay();
   const [fastPathSummary, setFastPathSummary] = useState<string | null>(null);
+  const [jiraIssue, setJiraIssue] = useState<JiraIssue | null>(null);
 
   const destinationReady = Boolean(testRail.destination.projectId && testRail.destination.suiteId && testRail.destination.sectionId);
   const recordingGroups = groupScenariosByRecording(scenarios, scenarioRecordingIds, recordingId);
-  const canExecute = Boolean(recordingId) && recordingGroups.length > 0 && destinationReady;
+  const canExecute = Boolean(recordingId) && recordingGroups.length > 0 && destinationReady && Boolean(jiraIssue?.key);
+  const executionBlockedReason = !jiraIssue?.key
+    ? 'Selecciona un caso o requerimiento de Jira'
+    : !destinationReady
+      ? 'Completa Proyecto y Sección de TestRail'
+      : undefined;
   const running = replay.starting;
 
   async function handleExecuteAutomation() {
@@ -117,7 +125,12 @@ export function TestRailUploadScreen({
         datasetValues: { ...datasetValues, ...values },
       };
     }));
-    const launch = await replay.replayBatch(projectSlug, selections, testRail.destination);
+    const launch = await replay.replayBatch(
+      projectSlug,
+      selections,
+      testRail.destination,
+      jiraIssue ? { key: jiraIssue.key, summary: jiraIssue.summary } : undefined,
+    );
     if (!launch?.jobId) {
       setFastPathSummary(replay.error ?? 'No se recibió un job de ejecución del backend.');
       return;
@@ -165,25 +178,13 @@ export function TestRailUploadScreen({
             Configura el destino de TestRail y prepara la ejecución de los escenarios seleccionados.
           </p>
 
-          {/* Origin — this recording's destination is already known; shown, not chosen. */}
-          <div className="mb-7">
-            <div className="grid grid-cols-1 gap-3">
-              <div className="text-left p-4 rounded-2xl border-2 border-[#48A157] bg-[#48A157]/5 max-w-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <Database size={18} className="text-[#48A157]" />
-                  <div className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse" />
-                </div>
-                <div className="text-[13px] font-semibold text-[#1a1f2e]">Solo TestRail</div>
-                <div className="text-[11px] text-[#8B999D] mt-0.5">Publicación y ejecución automatizada</div>
-              </div>
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+            <TestRailDestinationPicker testRail={testRail} />
+            <JiraRequirementPicker selectedIssue={jiraIssue} onSelectIssue={setJiraIssue} />
           </div>
 
-          <div className="grid grid-cols-2 gap-5">
-            <TestRailDestinationPicker testRail={testRail} />
-
-            {/* Scenario summary — read-only context carried from Recording, never editable here. */}
-            <div className="bg-[#FAFAF7] rounded-2xl p-5">
+          {/* Scenario summary follows the two source panels and sizes to its actual contents. */}
+          <div className="mt-5 self-start bg-[#FAFAF7] rounded-2xl p-5">
               <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">Escenarios seleccionados</span>
               <div className="mt-3 rounded-xl border border-[#E8EBEC] divide-y divide-[#E8EBEC] bg-white overflow-hidden">
                 <div className="px-3 py-2.5 text-[12px] font-semibold text-[#1a1f2e] bg-[#FAFAF7]">
@@ -204,7 +205,6 @@ export function TestRailUploadScreen({
                   </div>
                 ))}
               </div>
-            </div>
           </div>
 
           {fastPathSummary && (
@@ -231,7 +231,7 @@ export function TestRailUploadScreen({
           <button
             onClick={handleExecuteAutomation}
             disabled={!canExecute || running}
-            title={!destinationReady ? 'Completa Proyecto, Suite y Sección de TestRail' : undefined}
+            title={executionBlockedReason}
             className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5"
           >
             {running ? <Loader2 size={13} className="animate-spin" /> : <Rocket size={13} />}

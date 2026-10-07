@@ -1,5 +1,5 @@
 import { jiraRequest } from './client';
-import type { JiraProject, JiraSprint } from './types';
+import type { JiraIssue, JiraProject, JiraSprint } from './types';
 
 export const jiraProjectsProxy = {
   /** GET /api/jira/projects */
@@ -20,5 +20,19 @@ export const jiraProjectsProxy = {
     return jiraRequest<{ issues: Array<{ key: string; summary: string }> }>(`/api/jira/projects/${projectKey}/sprint/${sprintId}/issues${qs}`)
       .then(data => Array.isArray(data?.issues) ? data.issues : [])
       .catch(() => []);
+  },
+
+  /** Search Jira issues in a project by issue key or title. */
+  searchIssues: (projectKey: string, query: string): Promise<JiraIssue[]> => {
+    const qs = new URLSearchParams({ q: query }).toString();
+    return jiraRequest<{ issues: JiraIssue[] }>(`/api/jira/projects/${encodeURIComponent(projectKey)}/issues/search?${qs}`)
+      .then((data) => Array.isArray(data?.issues) ? data.issues : []);
+  },
+
+  /** Search Jira issues visible to the configured account by issue key or title. */
+  searchAllIssues: (query: string): Promise<JiraIssue[]> => {
+    const qs = new URLSearchParams({ q: query }).toString();
+    return jiraRequest<{ issues: JiraIssue[] }>(`/api/jira/issues/search?${qs}`)
+      .then((data) => Array.isArray(data?.issues) ? data.issues : []);
   },
 };

@@ -169,6 +169,59 @@ export class JiraClient {
     return issues;
   }
 
+  private async searchByJql(jql: string, maxResults = 30): Promise<Array<{ id: string; key: string; summary: string; issueType?: string; status?: string }>> {
+    const data = await this.request<{ issues?: any[] }>('/rest/api/3/search/jql', {
+      method: 'POST',
+      body: JSON.stringify({
+        jql,
+        fields: ['summary', 'issuetype', 'status'],
+        maxResults,
+      }),
+    });
+    return (Array.isArray(data?.issues) ? data.issues : []).flatMap((issue) => {
+      if (typeof issue?.key !== 'string' || typeof issue?.fields?.summary !== 'string') return [];
+      return [{
+        id: String(issue.id ?? issue.key),
+        key: issue.key,
+        summary: issue.fields.summary,
+        issueType: typeof issue.fields.issuetype?.name === 'string' ? issue.fields.issuetype.name : undefined,
+        status: typeof issue.fields.status?.name === 'string' ? issue.fields.status.name : undefined,
+      }];
+    });
+  }
+
+  async searchProjectIssues(projectKey: string, query: string): Promise<Array<{ id: string; key: string; summary: string; issueType?: string; status?: string }>> {
+    const normalizedProjectKey = projectKey.trim();
+    const normalizedQuery = query.trim();
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(normalizedProjectKey)) {
+      throw new JiraClientError('Invalid Jira project key', 400);
+    }
+    if (normalizedQuery.length < 2) {
+      throw new JiraClientError('Query must be at least 2 characters', 400);
+    }
+
+    const escapedQuery = normalizedQuery.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const exactKey = /^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(normalizedQuery)
+      ? `key = ${normalizedQuery.toUpperCase()} OR `
+      : '';
+    return this.searchByJql(
+      `project = ${normalizedProjectKey} AND (${exactKey}text ~ "${escapedQuery}") ORDER BY updated DESC`,
+    );
+  }
+
+  async searchIssues(query: string): Promise<Array<{ id: string; key: string; summary: string; issueType?: string; status?: string }>> {
+    const normalizedQuery = query.trim();
+    if (normalizedQuery.length < 2) {
+      throw new JiraClientError('Query must be at least 2 characters', 400);
+    }
+
+    const escapedQuery = normalizedQuery.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const exactKey = /^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(normalizedQuery)
+      ? `key = ${normalizedQuery.toUpperCase()} OR `
+      : '';
+    return this.searchByJql(`(${exactKey}text ~ "${escapedQuery}") ORDER BY updated DESC`);
+  }
+
   async createIssue(payload: {
     projectKey: string;
     summary: string;

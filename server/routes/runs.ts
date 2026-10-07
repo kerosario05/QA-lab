@@ -320,7 +320,11 @@ router.get('/:jobId/evidence-docx', async (req: Request, res: Response) => {
     return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
   }
 
-  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/evidence-docx`;
+  const requestedFormat = req.query.format;
+  const formatQuery = requestedFormat === 'pdf' || requestedFormat === 'docx'
+    ? `?format=${requestedFormat}`
+    : '';
+  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}/evidence-docx${formatQuery}`;
 
   try {
     const upstreamRes = await fetch(upstreamUrl, { headers: engineHeaders() });

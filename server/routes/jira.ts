@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { JiraClient } from '../jira-client';
+import { engineBaseUrl, engineHeaders } from '../engine-auth';
 
 const router = Router();
 const client = new JiraClient();
@@ -20,6 +21,55 @@ router.get('/projects', async (_req: Request, res: Response) => {
   } catch (err: any) {
     console.log(`[jira-api] projects error: ${err.message}`);
     sendError(res, err.status ?? 503, err.message ?? 'Failed to fetch Jira projects');
+  }
+});
+
+// GET /api/jira/issues/search?q=<issue key or title>; Jira permissions scope the results.
+router.get('/issues/search', async (req: Request, res: Response) => {
+  const query = String(req.query.q ?? '').trim();
+  if (query.length < 2) {
+    sendError(res, 400, 'Query must be at least 2 characters');
+    return;
+  }
+
+  try {
+    const engineUrl = engineBaseUrl();
+    if (engineUrl) {
+      const params = new URLSearchParams({ q: query });
+      const upstream = await fetch(`${engineUrl}/api/jira/issues/search?${params.toString()}`, {
+        headers: engineHeaders(),
+      });
+      const payload = await upstream.json().catch(() => ({ ok: false, error: 'Invalid Jira search response from automation engine' }));
+      console.log(`[jira-api] issue_search proxied status=${upstream.status}`);
+      res.status(upstream.status).json(payload);
+      return;
+    }
+
+    const issues = await client.searchIssues(query);
+    console.log(`[jira-api] issue_search resultCount=${issues.length} source=local`);
+    res.json({ ok: true, issues });
+  } catch (err: any) {
+    console.log(`[jira-api] issue_search error: ${err.message}`);
+    sendError(res, err.status ?? 503, err.message ?? 'Failed to search Jira issues');
+  }
+});
+
+// GET /api/jira/projects/:key/issues/search?q=<issue key or title>
+router.get('/projects/:key/issues/search', async (req: Request, res: Response) => {
+  const projectKey = String(req.params.key ?? '').trim();
+  const query = String(req.query.q ?? '').trim();
+  if (query.length < 2) {
+    sendError(res, 400, 'Query must be at least 2 characters');
+    return;
+  }
+
+  try {
+    const issues = await client.searchProjectIssues(projectKey, query);
+    console.log(`[jira-api] issue_search project=${projectKey} resultCount=${issues.length}`);
+    res.json({ ok: true, issues });
+  } catch (err: any) {
+    console.log(`[jira-api] issue_search error project=${projectKey}: ${err.message}`);
+    sendError(res, err.status ?? 503, err.message ?? 'Failed to search Jira issues');
   }
 });
 
