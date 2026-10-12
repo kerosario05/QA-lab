@@ -2,12 +2,36 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle, Archive, ClipboardList, Loader2, Plus } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { useAuth } from '../../auth/AuthContext';
-import { testDesignApi, type TestDesignDraftSummary } from '../../services/test-design';
+import { testDesignApi, type TestDesignDraftSummary, type TestDesignProject } from '../../services/test-design';
+import { initialProjectFilter } from './scenario-utils';
+import { ProjectFilter } from './ProjectFilter';
 
 interface DraftsListProps {
   onOpen: (draftId: string) => void;
-  onNew: () => void;
+  /** Opens a new design, preselecting the project currently filtered (if any). */
+  onNew: (projectSlug?: string) => void;
 }
+
+/** Remembered per browser: a convenience, never required (private windows and blocked storage just forget it). */
+const FILTER_STORAGE_KEY = 'qa-lab.test-design.project-filter';
+
+function readStoredFilter(): string {
+  try {
+    return localStorage.getItem(FILTER_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function storeFilter(value: string): void {
+  try {
+    if (value) localStorage.setItem(FILTER_STORAGE_KEY, value);
+    else localStorage.removeItem(FILTER_STORAGE_KEY);
+  } catch {
+    // storage unavailable: the filter simply is not remembered
+  }
+}
+
 
 const STATUS_LABELS: Record<TestDesignDraftSummary['status'], { text: string; className: string }> = {
   draft: { text: 'Borrador', className: 'bg-[#F4F1EA] text-[#58646D]' },
@@ -30,11 +54,36 @@ export function DraftsList({ onOpen, onNew }: DraftsListProps) {
   const [error, setError] = useState<string | null>(null);
   const [mine, setMine] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [projects, setProjects] = useState<TestDesignProject[] | null>(null);
+  /** '' = every project the user may see. null until the projects are known. */
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     testDesignApi
-      .listDrafts({ mine })
+      .listProjects()
+      .then((list) => {
+        if (cancelled) return;
+        setProjects(list);
+        setProjectFilter(initialProjectFilter(list, readStoredFilter()));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setProjects([]);
+        setProjectFilter('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Drafts load once the filter is settled, so a single-project user never fetches everything first.
+  useEffect(() => {
+    if (projectFilter === null) return;
+    let cancelled = false;
+    testDesignApi
+      .listDrafts({ mine, projectSlug: projectFilter || undefined })
       .then((list) => {
         if (!cancelled) setDrafts(list);
       })
@@ -44,7 +93,16 @@ export function DraftsList({ onOpen, onNew }: DraftsListProps) {
     return () => {
       cancelled = true;
     };
-  }, [mine]);
+  }, [mine, projectFilter]);
+
+  function chooseProject(value: string) {
+    if (value === projectFilter) return;
+    setDrafts(null);
+    setProjectFilter(value);
+    storeFilter(value);
+  }
+
+  const projectName = (slug: string | null) => projects?.find((p) => p.slug === slug)?.name ?? slug ?? '—';
 
   async function archive(draft: TestDesignDraftSummary) {
     if (!window.confirm(`¿Archivar el borrador de ${draft.issueKeys.join(', ')}? Lo publicado no se toca.`)) return;
@@ -62,7 +120,10 @@ export function DraftsList({ onOpen, onNew }: DraftsListProps) {
   return (
     <div className="p-7" style={{ background: C.canvas, minHeight: '100%' }}>
       <div className="max-w-5xl mx-auto">
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+          <div className="flex flex-wrap items-center gap-3">
+          {/* Project filter: fixed when the user has one project, a menu when several. */}
+          {projects && <ProjectFilter projects={projects} value={projectFilter ?? ''} onChange={chooseProject} />}
           <div className="flex items-center gap-1 bg-white border border-[#E8EBEC] rounded-full p-1">
             {[
               { value: false, label: 'Todos' },
@@ -84,9 +145,10 @@ export function DraftsList({ onOpen, onNew }: DraftsListProps) {
               </button>
             ))}
           </div>
+          </div>
           {can('testdesign.generate') && (
             <button
-              onClick={onNew}
+              onClick={() => onNew(projectFilter || undefined)}
               className="bg-[#1a1f2e] hover:bg-black text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5"
             >
               <Plus size={13} /> Nuevo diseño
@@ -109,13 +171,21 @@ export function DraftsList({ onOpen, onNew }: DraftsListProps) {
         {drafts && drafts.length === 0 && (
           <div className="bg-white rounded-2xl border border-[#E8EBEC] py-16 flex flex-col items-center gap-3 text-center">
             <ClipboardList size={28} className="text-[#BABEC3]" />
-            <div className="text-[14px] font-medium text-[#1a1f2e]">Todavía no hay diseños de prueba</div>
-            <div className="text-[12px] text-[#8B999D] max-w-sm">
-              Elige historias de Jira, genera los casos con IA, edítalos y publícalos en TestRail y Jira.
+            <div className="text-[14px] font-medium text-[#1a1f2e]">
+              {projects?.length === 0
+                ? 'No tienes proyectos asignados'
+                : projectFilter
+                  ? `Todavía no hay diseños de prueba en ${projectName(projectFilter)}`
+                  : 'Todavía no hay diseños de prueba'}
             </div>
-            {can('testdesign.generate') && (
+            <div className="text-[12px] text-[#8B999D] max-w-sm">
+              {projects?.length === 0
+                ? 'Pide a un administrador que te asigne un proyecto para diseñar pruebas.'
+                : 'Elige historias de Jira, genera los casos con IA, edítalos y publícalos en TestRail.'}
+            </div>
+            {can('testdesign.generate') && projects?.length !== 0 && (
               <button
-                onClick={onNew}
+                onClick={() => onNew(projectFilter || undefined)}
                 className="mt-2 bg-[#1a1f2e] hover:bg-black text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5"
               >
                 <Plus size={13} /> Nuevo diseño
@@ -147,7 +217,7 @@ export function DraftsList({ onOpen, onNew }: DraftsListProps) {
                       </span>
                     </div>
                     <div className="text-[11px] text-[#8B999D] mt-0.5">
-                      Jira {draft.jiraProjectKey} · {draft.storyCount} {draft.storyCount === 1 ? 'historia' : 'historias'} ·{' '}
+                      {!projectFilter && draft.projectSlug ? `${projectName(draft.projectSlug)} · ` : ''}Jira {draft.jiraProjectKey} · {draft.storyCount} {draft.storyCount === 1 ? 'historia' : 'historias'} ·{' '}
                       {draft.scenarioCount} casos · {draft.createdByName ?? '—'} · {formatDate(draft.updatedAt)}
                     </div>
                   </div>

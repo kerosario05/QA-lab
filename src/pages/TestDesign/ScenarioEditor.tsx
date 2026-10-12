@@ -5,19 +5,25 @@ import {
   ArrowUp,
   ChevronDown,
   ChevronRight,
+  KeyRound,
   Copy,
   Plus,
   Trash2,
 } from 'lucide-react';
 import { cn } from '../../constants/theme';
+import { HighlightedText, ScenarioDataSection } from './TestDataFields';
 import type {
+  TestDesignDataField,
   TestDesignPriority,
   TestDesignScenario,
   TestDesignScenarioType,
   TestDesignStep,
 } from '../../services/test-design';
 import {
+  hasPlaceholders,
   isSelectedForPublish,
+  missingDataCount,
+  syncDataFields,
   JIRA_PUBLISH_ENABLED,
   moveItem,
   PRIORITY_LABELS,
@@ -42,8 +48,11 @@ interface ScenarioEditorProps {
   onDelete: () => void;
 }
 
+/** The expanded detail is dark (panel ink); inputs are a step lighter so they read as fields. */
 const inputClass =
-  'w-full px-3 py-2 rounded-lg border border-[#E8EBEC] bg-white text-[12px] text-[#1a1f2e] outline-none focus:border-[#104B99] disabled:bg-[#FAFAF7] disabled:text-[#58646D]';
+  'w-full px-3 py-2 rounded-lg border border-[#2E3648] bg-[#232A3B] text-[12px] text-white placeholder:text-[#7D8798] outline-none focus:border-[#5B8FD6] disabled:bg-[#1F2535] disabled:text-[#A9B1BE] [&>option]:bg-[#232A3B]';
+
+const labelClass = 'text-[10px] uppercase tracking-wider text-[#A9B1BE] font-semibold';
 
 function Toggle({
   label,
@@ -81,12 +90,14 @@ function IconButton({
   onClick,
   disabled,
   danger,
+  dark,
   children,
 }: {
   title: string;
   onClick: () => void;
   disabled?: boolean;
   danger?: boolean;
+  dark?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -101,7 +112,13 @@ function IconButton({
       }}
       className={cn(
         'w-7 h-7 rounded-lg flex items-center justify-center text-[#8B999D] transition disabled:opacity-30 disabled:cursor-default',
-        danger ? 'hover:bg-[#FBEDEB] hover:text-[#B4463C]' : 'hover:bg-[#F4F1EA] hover:text-[#1a1f2e]',
+        danger
+          ? dark
+            ? 'hover:bg-[#3A2328] hover:text-[#F08A80]'
+            : 'hover:bg-[#FBEDEB] hover:text-[#B4463C]'
+          : dark
+            ? 'hover:bg-[#2E3648] hover:text-white'
+            : 'hover:bg-[#F4F1EA] hover:text-[#1a1f2e]',
       )}
     >
       {children}
@@ -109,12 +126,24 @@ function IconButton({
   );
 }
 
+/** Under a field that uses {{key}}: how the text reads with the data filled in. */
+function DataPreview({ text, data }: { text: string; data: TestDesignDataField[] }) {
+  if (!hasPlaceholders(text)) return null;
+  return (
+    <div className="mt-1 px-2 py-1 rounded-md bg-[#232A3B] text-[11px] text-[#C9D0DB] leading-relaxed">
+      <HighlightedText text={text} data={data} />
+    </div>
+  );
+}
+
 function StepsTable({
   steps,
+  data,
   readOnly,
   onChange,
 }: {
   steps: TestDesignStep[];
+  data: TestDesignDataField[];
   readOnly: boolean;
   onChange: (steps: TestDesignStep[]) => void;
 }) {
@@ -122,16 +151,16 @@ function StepsTable({
     onChange(steps.map((step, i) => (i === index ? { ...step, ...patch } : step)));
 
   return (
-    <div className="rounded-xl border border-[#E8EBEC] overflow-hidden">
-      <div className="grid grid-cols-[32px_1fr_1fr_88px] bg-[#FAFAF7] text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">
+    <div className="rounded-xl border border-[#2E3648] overflow-hidden">
+      <div className="grid grid-cols-[32px_1fr_1fr_88px] bg-[#202738] text-[10px] uppercase tracking-wider text-[#A9B1BE] font-semibold">
         <div className="px-2 py-2 text-center">#</div>
         <div className="px-2 py-2">Acción</div>
         <div className="px-2 py-2">Resultado esperado</div>
         <div />
       </div>
       {steps.map((step, index) => (
-        <div key={index} className="grid grid-cols-[32px_1fr_1fr_88px] border-t border-[#E8EBEC] items-start">
-          <div className="px-2 py-2.5 text-center text-[11px] font-semibold text-[#8B999D]">{index + 1}</div>
+        <div key={index} className="grid grid-cols-[32px_1fr_1fr_88px] border-t border-[#2E3648] items-start">
+          <div className="px-2 py-2.5 text-center text-[11px] font-semibold text-[#A9B1BE]">{index + 1}</div>
           <div className="p-1.5">
             <textarea
               value={step.action}
@@ -141,6 +170,7 @@ function StepsTable({
               placeholder="Qué hace quien prueba"
               className={cn(inputClass, 'resize-y')}
             />
+            <DataPreview text={step.action} data={data} />
           </div>
           <div className="p-1.5">
             <textarea
@@ -151,21 +181,23 @@ function StepsTable({
               placeholder="Qué debe pasar"
               className={cn(inputClass, 'resize-y')}
             />
+            <DataPreview text={step.expected} data={data} />
           </div>
           <div className="py-2 pr-1.5 flex items-center justify-end gap-0.5">
             {!readOnly && (
               <>
-                <IconButton title="Subir paso" disabled={index === 0} onClick={() => onChange(moveItem(steps, index, -1))}>
+                <IconButton dark title="Subir paso" disabled={index === 0} onClick={() => onChange(moveItem(steps, index, -1))}>
                   <ArrowUp size={12} />
                 </IconButton>
                 <IconButton
+                  dark
                   title="Bajar paso"
                   disabled={index === steps.length - 1}
                   onClick={() => onChange(moveItem(steps, index, 1))}
                 >
                   <ArrowDown size={12} />
                 </IconButton>
-                <IconButton title="Eliminar paso" danger onClick={() => onChange(steps.filter((_, i) => i !== index))}>
+                <IconButton dark title="Eliminar paso" danger onClick={() => onChange(steps.filter((_, i) => i !== index))}>
                   <Trash2 size={12} />
                 </IconButton>
               </>
@@ -177,7 +209,7 @@ function StepsTable({
         <button
           type="button"
           onClick={() => onChange([...steps, { action: '', expected: '' }])}
-          className="w-full border-t border-[#E8EBEC] px-3 py-2 text-[11px] font-semibold text-[#104B99] hover:bg-[#F4F7FB] flex items-center gap-1.5"
+          className="w-full border-t border-[#2E3648] px-3 py-2 text-[11px] font-semibold text-[#8DB4EA] hover:bg-[#232A3B] flex items-center gap-1.5"
         >
           <Plus size={12} /> Agregar paso
         </button>
@@ -200,12 +232,13 @@ export function ScenarioEditor({
   const [open, setOpen] = useState(defaultOpen);
   const problems = scenarioProblems(scenario);
   const selected = isSelectedForPublish(scenario);
-  const patch = (fields: Partial<TestDesignScenario>) => onChange({ ...scenario, ...fields });
+  const patch = (fields: Partial<TestDesignScenario>) => onChange(syncDataFields({ ...scenario, ...fields }));
+  const missingData = missingDataCount(scenario);
 
   return (
     <div
       className={cn(
-        'rounded-2xl border bg-white transition',
+        'rounded-2xl border bg-white transition overflow-hidden',
         selected ? 'border-[#E8EBEC]' : 'border-dashed border-[#E8EBEC] opacity-75',
       )}
     >
@@ -237,6 +270,20 @@ export function ScenarioEditor({
             <span>{scenario.origin === 'ai' ? (scenario.edited ? 'IA, editado' : 'IA') : 'Manual'}</span>
             {scenario.testRailCaseId !== null && (
               <span className="px-1.5 rounded bg-[#EEF3FA] text-[#104B99] font-semibold">C{scenario.testRailCaseId}</span>
+            )}
+            {scenario.data.length > 0 && (
+              <span
+                className={cn(
+                  'flex items-center gap-1 px-1.5 rounded font-semibold',
+                  missingData > 0 ? 'bg-[#FFF3D6] text-[#8A6300]' : 'bg-[#E9F5EB] text-[#2F7A3B]',
+                )}
+                title={scenario.data.map((f) => `${f.label}: ${f.value ? (f.sensitive ? '••••••' : f.value) : 'por completar'}`).join('\n')}
+              >
+                <KeyRound size={10} />
+                {missingData > 0
+                  ? `${missingData} ${missingData === 1 ? 'dato' : 'datos'} por completar`
+                  : `${scenario.data.length} ${scenario.data.length === 1 ? 'dato' : 'datos'} completos`}
+              </span>
             )}
             {selected && problems.length > 0 && (
               <span className="flex items-center gap-1 text-[#B4463C]" title={problems.join('\n')}>
@@ -272,9 +319,9 @@ export function ScenarioEditor({
       </div>
 
       {open && (
-        <div className="px-4 pb-4 pt-1 space-y-3 border-t border-[#F0F1F2]">
+        <div className="px-4 pb-4 pt-1 space-y-3 bg-[#1a1f2e]">
           <label className="block pt-3">
-            <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">Título</span>
+            <span className={labelClass}>Título</span>
             <input
               value={scenario.title}
               onChange={(e) => patch({ title: e.target.value })}
@@ -286,7 +333,7 @@ export function ScenarioEditor({
 
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">Tipo</span>
+              <span className={labelClass}>Tipo</span>
               <select
                 value={scenario.type}
                 onChange={(e) => patch({ type: e.target.value as TestDesignScenarioType })}
@@ -299,7 +346,7 @@ export function ScenarioEditor({
               </select>
             </label>
             <label className="block">
-              <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">Prioridad</span>
+              <span className={labelClass}>Prioridad</span>
               <select
                 value={scenario.priority}
                 onChange={(e) => patch({ priority: e.target.value as TestDesignPriority })}
@@ -314,7 +361,7 @@ export function ScenarioEditor({
           </div>
 
           <label className="block">
-            <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">Precondiciones</span>
+            <span className={labelClass}>Precondiciones</span>
             <textarea
               value={scenario.preconditions}
               onChange={(e) => patch({ preconditions: e.target.value })}
@@ -322,17 +369,20 @@ export function ScenarioEditor({
               rows={2}
               className={cn(inputClass, 'mt-1 resize-y')}
             />
+            <DataPreview text={scenario.preconditions} data={scenario.data} />
           </label>
 
+          <ScenarioDataSection tone="dark" scenario={scenario} readOnly={readOnly} onChange={(data) => patch({ data })} />
+
           <div>
-            <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">Pasos</span>
+            <span className={labelClass}>Pasos</span>
             <div className="mt-1">
-              <StepsTable steps={scenario.steps} readOnly={readOnly} onChange={(steps) => patch({ steps })} />
+              <StepsTable steps={scenario.steps} data={scenario.data} readOnly={readOnly} onChange={(steps) => patch({ steps })} />
             </div>
           </div>
 
           <label className="block">
-            <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">Resultado esperado</span>
+            <span className={labelClass}>Resultado esperado</span>
             <textarea
               value={scenario.expectedResult}
               onChange={(e) => patch({ expectedResult: e.target.value })}
@@ -340,6 +390,7 @@ export function ScenarioEditor({
               rows={2}
               className={cn(inputClass, 'mt-1 resize-y')}
             />
+            <DataPreview text={scenario.expectedResult} data={scenario.data} />
           </label>
         </div>
       )}

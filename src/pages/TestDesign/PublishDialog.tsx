@@ -28,6 +28,8 @@ interface PublishDialogProps {
   /** The editor's current lists (may be ahead of `draft` until saved). */
   scenarios: Record<string, TestDesignScenario[]>;
   sectionLabel: string;
+  /** Data values still empty across the draft; publishing is allowed but they go out as <Label>. */
+  missingData: number;
   /** Saves pending edits; publishing must send what the user sees. */
   beforePublish: () => Promise<void>;
   onPublished: (draft: TestDesignDraftWithStories) => void;
@@ -64,6 +66,7 @@ export function PublishDialog({
   draft,
   scenarios,
   sectionLabel,
+  missingData,
   beforePublish,
   onPublished,
   onClose,
@@ -149,7 +152,8 @@ export function PublishDialog({
               {destination === 'testrail' ? (
                 <p>
                   Destino: <span className="font-semibold text-[#1a1f2e]">{sectionLabel}</span>. Cada escenario seleccionado se
-                  crea como caso, con la historia en <i>refs</i>; los que ya tienen caso se actualizan.
+                  crea como caso, con la historia en <i>refs</i>; los que ya tienen caso se actualizan. Los datos de prueba se
+                  escriben en los pasos; los sensibles (contraseñas, PIN, OTP) se publican como <i>&lt;dato&gt;</i>, sin su valor.
                 </p>
               ) : (
                 <p>
@@ -161,6 +165,13 @@ export function PublishDialog({
                     <>Tipo de sub-tarea: <span className="font-semibold text-[#1a1f2e]">{subtaskType.issueType.name}</span>.</>
                   ) : null}
                 </p>
+              )}
+              {missingData > 0 && (
+                <div className="rounded-xl bg-[#FFF8E6] px-3 py-2 text-[#7A5B00] flex gap-2">
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                  Hay {missingData} {missingData === 1 ? 'dato de prueba' : 'datos de prueba'} sin completar: se publicarán como
+                  &lt;dato&gt; y podrás completarlos y volver a publicar.
+                </div>
               )}
               {jiraTypeMissing && needsNewSubtask && (
                 <div className="rounded-xl bg-[#FBEDEB] px-3 py-2 text-[#B4463C] flex gap-2">

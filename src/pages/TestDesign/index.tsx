@@ -8,7 +8,7 @@ import { NewDraftForm } from './NewDraftForm';
  * edit them, and publish the selected ones to TestRail and to a Jira sub-task.
  * Drafts are stored by the engine, so work survives reloads and can be resumed.
  */
-type Screen = { kind: 'list' } | { kind: 'new' } | { kind: 'draft'; draftId: string };
+type Screen = { kind: 'list' } | { kind: 'new'; projectSlug?: string } | { kind: 'draft'; draftId: string };
 
 export function TestDesign() {
   const [screen, setScreen] = useState<Screen>({ kind: 'list' });
@@ -16,6 +16,7 @@ export function TestDesign() {
   if (screen.kind === 'new') {
     return (
       <NewDraftForm
+        initialProjectSlug={screen.projectSlug}
         onCancel={() => setScreen({ kind: 'list' })}
         onCreated={(draft) => setScreen({ kind: 'draft', draftId: draft.id })}
       />
@@ -29,7 +30,7 @@ export function TestDesign() {
   return (
     <DraftsList
       onOpen={(draftId) => setScreen({ kind: 'draft', draftId })}
-      onNew={() => setScreen({ kind: 'new' })}
+      onNew={(projectSlug) => setScreen({ kind: 'new', projectSlug })}
     />
   );
 }

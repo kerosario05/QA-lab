@@ -1,5 +1,7 @@
 import { api } from '../http';
 import type {
+  TestDesignMetrics,
+  TestDesignProject,
   StoryJiraResult,
   StoryTestRailResult,
   SubtaskTypeInfo,
@@ -25,8 +27,9 @@ const BASE = '/api/test-design';
 export type DraftIssueInput = { issueKey: string; issueSummary?: string };
 
 export type CreateDraftPayload = {
-  jiraProjectKey: string;
-  projectSlug?: string | null;
+  projectSlug: string;
+  /** Defaults to the project Jira configuration. */
+  jiraProjectKey?: string;
   title?: string | null;
   testRail?: Partial<TestDesignTestRailTarget>;
   instructions?: string | null;
@@ -43,6 +46,7 @@ export type UpdateDraftPayload = {
 
 export type ListDraftsQuery = {
   mine?: boolean;
+  projectSlug?: string;
   jiraProjectKey?: string;
   includeArchived?: boolean;
 };
@@ -58,6 +62,20 @@ function query(params: Record<string, string | boolean | undefined>): string {
 }
 
 export const testDesignApi = {
+  /** Usage summary for the dashboard, limited to the user's projects (or one of them). */
+  metrics: async (options: { days?: number; projectSlug?: string } = {}): Promise<TestDesignMetrics> => {
+    const res = await api.get<{ metrics: TestDesignMetrics }>(
+      `${BASE}/metrics${query({ days: options.days ? String(options.days) : undefined, projectSlug: options.projectSlug })}`,
+    );
+    return res.metrics;
+  },
+
+  /** Projects the user may design tests for, with their Jira/TestRail defaults and knowledge size. */
+  listProjects: async (): Promise<TestDesignProject[]> => {
+    const res = await api.get<{ projects: TestDesignProject[] }>(`${BASE}/projects`);
+    return res.projects ?? [];
+  },
+
   searchStories: async (projectKey: string, q = ''): Promise<JiraStoryRef[]> => {
     const res = await api.get<{ issues: JiraStoryRef[] }>(
       `${BASE}/jira/issues/search${query({ projectKey, q: q.trim() })}`,
@@ -76,6 +94,7 @@ export const testDesignApi = {
     const res = await api.get<{ drafts: TestDesignDraftSummary[] }>(
       `${BASE}/drafts${query({
         mine: filter.mine,
+        projectSlug: filter.projectSlug,
         jiraProjectKey: filter.jiraProjectKey,
         includeArchived: filter.includeArchived,
       })}`,

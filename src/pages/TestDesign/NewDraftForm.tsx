@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, ChevronLeft, FileText, Loader2, Sparkles } from 'lucide-react';
-import { C } from '../../constants/theme';
+import { AlertTriangle, BookOpen, Boxes, ChevronLeft, FileText, Loader2, Sparkles } from 'lucide-react';
+import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
 import { SearchableSelect } from '../../components/ui/SearchableSelect';
 import { jiraProjectsProxy } from '../../services/jira/projects';
 import type { JiraProject } from '../../services/jira/types';
-import { projectsRefApi, type ProjectRef } from '../../services/identity';
-import { testDesignApi, type TestDesignDraftWithStories } from '../../services/test-design';
+import {
+  testDesignApi,
+  type TestDesignDraftWithStories,
+  type TestDesignKnowledgeSummary,
+  type TestDesignProject,
+} from '../../services/test-design';
 import { useTestRailDestination } from '../Recording/useTestRailDestination';
 import { TestRailDestinationPicker } from '../Recording/TestRailDestinationPicker';
 import { StoryMultiPicker, type PickedStory } from './StoryMultiPicker';
@@ -15,34 +19,88 @@ import { StoryMultiPicker, type PickedStory } from './StoryMultiPicker';
 export const MAX_STORIES = 10;
 
 interface NewDraftFormProps {
+  /** Preselected project (the one the list was filtered by). */
+  initialProjectSlug?: string;
   onCancel: () => void;
   onCreated: (draft: TestDesignDraftWithStories) => void;
 }
 
 const optionalNumber = (value?: string) => (value ? Number(value) : null);
+const asSeed = (value: number | null) => (value ? String(value) : null);
 
-export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
+function KnowledgeNote({ knowledge }: { knowledge: TestDesignKnowledgeSummary }) {
+  const has = knowledge.total > 0;
+  const parts = [
+    knowledge.screens > 0 && `${knowledge.screens} pantallas`,
+    knowledge.flows > 0 && `${knowledge.flows} recorridos validados`,
+    knowledge.behaviours > 0 && `${knowledge.behaviours} comportamientos de otras historias`,
+  ].filter(Boolean);
+  return (
+    <div
+      className={cn(
+        'rounded-xl px-3 py-2.5 text-[11px] flex items-start gap-2',
+        has ? 'bg-[#E9F5EB] text-[#2F7A3B]' : 'bg-[#FFF8E6] text-[#7A5B00]',
+      )}
+    >
+      <BookOpen size={13} className="mt-0.5 shrink-0" />
+      <span>
+        {has
+          ? `La IA usará el conocimiento del proyecto: ${parts.join(', ')}.`
+          : 'Este proyecto aún no tiene conocimiento aprendido: la IA usará el nombre y tipo de la aplicación y la historia.'}
+      </span>
+    </div>
+  );
+}
+
+export function NewDraftForm({ initialProjectSlug, onCancel, onCreated }: NewDraftFormProps) {
+  const [projects, setProjects] = useState<TestDesignProject[] | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const [projectSlug, setProjectSlug] = useState('');
   const [jiraProjects, setJiraProjects] = useState<JiraProject[]>([]);
   const [jiraError, setJiraError] = useState<string | null>(null);
   const [jiraProjectKey, setJiraProjectKey] = useState('');
   const [stories, setStories] = useState<PickedStory[]>([]);
-  const [automationProjects, setAutomationProjects] = useState<ProjectRef[]>([]);
-  const [projectSlug, setProjectSlug] = useState('');
   const [instructions, setInstructions] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const testRail = useTestRailDestination(null);
+
+  const project = projects?.find((p) => p.slug === projectSlug) ?? null;
+  // The project's TestRail configuration seeds the destination; it can still be changed.
+  const testRail = useTestRailDestination(
+    project
+      ? {
+          projectId: asSeed(project.testRail.projectId),
+          suiteId: asSeed(project.testRail.suiteId),
+          sectionId: asSeed(project.testRail.sectionId),
+        }
+      : null,
+  );
 
   useEffect(() => {
+    testDesignApi
+      .listProjects()
+      .then((list) => {
+        setProjects(list);
+        // The filtered project, or the only one the user has, comes preselected.
+        const preset = list.find((p) => p.slug === initialProjectSlug) ?? (list.length === 1 ? list[0] : undefined);
+        if (preset) {
+          setProjectSlug(preset.slug);
+          setJiraProjectKey(preset.jiraProjectKey ?? '');
+        }
+      })
+      .catch((err) => setProjectsError(err instanceof Error ? err.message : String(err)));
     jiraProjectsProxy
       .getAll()
       .then(setJiraProjects)
       .catch((err) => setJiraError(err instanceof Error ? err.message : String(err)));
-    projectsRefApi
-      .list()
-      .then((list) => setAutomationProjects(list.filter((p) => p.enabled)))
-      .catch(() => setAutomationProjects([]));
-  }, []);
+  }, [initialProjectSlug]);
+
+  function chooseProject(next: TestDesignProject) {
+    if (next.slug === projectSlug) return;
+    setProjectSlug(next.slug);
+    setJiraProjectKey(next.jiraProjectKey ?? '');
+    setStories([]);
+  }
 
   function chooseJiraProject(key: string) {
     if (key === jiraProjectKey) return;
@@ -50,11 +108,13 @@ export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
     setStories([]);
   }
 
-  const blockedReason = !jiraProjectKey
-    ? 'Selecciona un proyecto de Jira'
-    : stories.length === 0
-      ? 'Selecciona al menos una historia'
-      : undefined;
+  const blockedReason = !projectSlug
+    ? 'Selecciona el proyecto'
+    : !jiraProjectKey
+      ? 'Selecciona un proyecto de Jira'
+      : stories.length === 0
+        ? 'Selecciona al menos una historia'
+        : undefined;
 
   async function submit() {
     if (blockedReason || submitting) return;
@@ -62,8 +122,8 @@ export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
     setError(null);
     try {
       const draft = await testDesignApi.createDraft({
+        projectSlug,
         jiraProjectKey,
-        projectSlug: projectSlug || null,
         instructions: instructions.trim() || null,
         testRail: {
           projectId: optionalNumber(testRail.destination.projectId),
@@ -94,10 +154,38 @@ export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
             ¿De qué historias generamos los casos?
           </h2>
           <p className="text-[13px] text-[#58646D] mb-7">
-            Elige una o varias historias de Jira y la sección de TestRail donde quedarán los casos. Podrás editarlos antes de publicar.
+            Elige el proyecto, una o varias historias de Jira y la sección de TestRail donde quedarán los casos. Podrás editarlos antes de publicar.
           </p>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+          {/* Project first: it drives Jira, TestRail and the knowledge the AI uses. */}
+          <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4 mb-5">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-[#1a1f2e] flex items-center justify-center">
+                <Boxes size={15} className="text-white" />
+              </div>
+              <div className="text-[14px] font-semibold text-[#1a1f2e]">Proyecto</div>
+              {projects === null && !projectsError && <Loader2 size={13} className="animate-spin text-[#48A157] ml-auto" />}
+            </div>
+            <SearchableSelect
+              label="Proyecto configurado"
+              placeholder="Selecciona un proyecto…"
+              searchPlaceholder="Buscar proyecto..."
+              itemsNounPlural="proyectos"
+              items={projects ?? []}
+              selectedId={projectSlug || undefined}
+              onSelect={chooseProject}
+              getId={(p) => p.slug}
+              getLabel={(p) => p.name}
+              getBadge={(p) => (p.projectType === 2 ? 'Móvil' : 'Web')}
+              getSecondaryText={(p) => (p.knowledge.total > 0 ? `${p.knowledge.total} conocimientos` : undefined)}
+              loading={projects === null && !projectsError}
+              emptyText="No tienes proyectos asignados"
+              errorText={projectsError ?? undefined}
+            />
+            {project && <KnowledgeNote knowledge={project.knowledge} />}
+          </div>
+
+          <div className={cn('grid grid-cols-1 lg:grid-cols-2 gap-5 items-start', !project && 'opacity-50 pointer-events-none')}>
             <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-lg bg-[#104B99] flex items-center justify-center">
@@ -106,7 +194,7 @@ export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
                 <div className="text-[14px] font-semibold text-[#1a1f2e]">Jira</div>
               </div>
               <SearchableSelect
-                label="Proyecto"
+                label="Proyecto de Jira"
                 placeholder="Selecciona un proyecto…"
                 searchPlaceholder="Buscar proyecto..."
                 itemsNounPlural="proyectos"
@@ -117,6 +205,9 @@ export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
                 getLabel={(p) => `${p.key} · ${p.name}`}
                 errorText={jiraError ?? undefined}
               />
+              {project && !project.jiraProjectKey && (
+                <p className="text-[11px] text-[#8B999D]">Este proyecto no tiene Jira configurado: elige el proyecto de Jira.</p>
+              )}
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-2">Historias</div>
                 <StoryMultiPicker projectKey={jiraProjectKey} selected={stories} onChange={setStories} max={MAX_STORIES} />
@@ -126,26 +217,7 @@ export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
             <div className="space-y-5">
               <TestRailDestinationPicker testRail={testRail} />
 
-              <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
-                <label className="block">
-                  <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">
-                    Proyecto de automatización (opcional)
-                  </span>
-                  <select
-                    value={projectSlug}
-                    onChange={(e) => setProjectSlug(e.target.value)}
-                    className="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-[#E8EBEC] bg-white text-[12px] text-[#1a1f2e] outline-none focus:border-[#104B99]"
-                  >
-                    <option value="">Ninguno: el borrador solo lo ves tú</option>
-                    {automationProjects.map((p) => (
-                      <option key={p.slug} value={p.slug}>{p.name}</option>
-                    ))}
-                  </select>
-                  <span className="block mt-1 text-[11px] text-[#8B999D]">
-                    Con un proyecto, quienes tengan acceso a él también verán el borrador.
-                  </span>
-                </label>
-
+              <div className="bg-[#FAFAF7] rounded-2xl p-5">
                 <label className="block">
                   <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">
                     Indicaciones para la IA (opcional)

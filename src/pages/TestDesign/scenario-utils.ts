@@ -1,5 +1,6 @@
 import type {
   TestDesignDraftStory,
+  TestDesignProject,
   TestDesignPriority,
   TestDesignScenario,
   TestDesignScenarioType,
@@ -44,6 +45,7 @@ export function newScenario(): TestDesignScenario {
     preconditions: '',
     steps: [{ action: '', expected: '' }],
     expectedResult: '',
+    data: [],
     priority: 'medium',
     type: 'functional',
     selectedForTestRail: true,
@@ -61,10 +63,128 @@ export function duplicateScenario(source: TestDesignScenario): TestDesignScenari
     id: newId(),
     title: `${source.title} (copia)`.slice(0, 250),
     steps: source.steps.map((step) => ({ ...step })),
+    data: source.data.map((field) => ({ ...field })),
     testRailCaseId: null,
     origin: 'manual',
     edited: false,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Test data ({{key}} placeholders). Mirrors src/test-design/test-data.ts in the engine.
+// ---------------------------------------------------------------------------
+
+export const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
+
+const SENSITIVE = /(pass(word)?|contrase|clave|\bpin\b|otp|token|secret|secreto|cvv|cvc|tarjeta|card)/i;
+
+export function isSensitiveName(name: string): boolean {
+  return SENSITIVE.test(name);
+}
+
+export function keyFromLabel(label: string): string {
+  return label
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+}
+
+export function labelFromKey(key: string): string {
+  const words = key.replace(/_/g, ' ').trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : key;
+}
+
+export function hasPlaceholders(text: string): boolean {
+  return new RegExp(PLACEHOLDER.source).test(text);
+}
+
+export function placeholderKeys(texts: string[]): string[] {
+  const keys: string[] = [];
+  for (const text of texts) {
+    for (const match of text.matchAll(PLACEHOLDER)) {
+      const key = match[1].toLowerCase();
+      if (!keys.includes(key)) keys.push(key);
+    }
+  }
+  return keys;
+}
+
+function scenarioTexts(s: TestDesignScenario): string[] {
+  return [s.preconditions, s.expectedResult, ...s.steps.flatMap((step) => [step.action, step.expected])];
+}
+
+/** Adds a field for every {{key}} the user typed that has none yet. */
+export function syncDataFields(s: TestDesignScenario): TestDesignScenario {
+  const known = new Set(s.data.map((f) => f.key));
+  const added = placeholderKeys(scenarioTexts(s))
+    .filter((key) => !known.has(key))
+    .map((key) => {
+      const label = labelFromKey(key);
+      return { key, label, description: '', value: '', sensitive: isSensitiveName(`${key} ${label}`) };
+    });
+  return added.length === 0 ? s : { ...s, data: [...s.data, ...added] };
+}
+
+/** Keys used in the texts that the user can still remove safely (declared but unreferenced). */
+export function unusedDataKeys(s: TestDesignScenario): Set<string> {
+  const used = new Set(placeholderKeys(scenarioTexts(s)));
+  return new Set(s.data.filter((f) => !used.has(f.key)).map((f) => f.key));
+}
+
+export function missingDataCount(s: Pick<TestDesignScenario, 'data'>): number {
+  return s.data.filter((f) => !f.value.trim()).length;
+}
+
+/** One entry per key across a story's scenarios, for filling a value once for all of them. */
+export type StoryDataField = {
+  key: string;
+  label: string;
+  description: string;
+  sensitive: boolean;
+  /** The value when every scenario using the key agrees; '' when empty, null when they differ. */
+  value: string | null;
+  scenarioCount: number;
+  missing: number;
+};
+
+export function storyDataFields(scenarios: TestDesignScenario[]): StoryDataField[] {
+  const byKey = new Map<string, StoryDataField & { values: Set<string> }>();
+  for (const s of scenarios) {
+    for (const f of s.data) {
+      const entry = byKey.get(f.key) ?? {
+        key: f.key,
+        label: f.label,
+        description: f.description,
+        sensitive: false,
+        value: '',
+        scenarioCount: 0,
+        missing: 0,
+        values: new Set<string>(),
+      };
+      entry.sensitive = entry.sensitive || f.sensitive;
+      entry.description = entry.description || f.description;
+      entry.scenarioCount += 1;
+      if (!f.value.trim()) entry.missing += 1;
+      entry.values.add(f.value);
+      byKey.set(f.key, entry);
+    }
+  }
+  return [...byKey.values()].map(({ values, ...entry }) => ({
+    ...entry,
+    value: values.size === 1 ? [...values][0] : null,
+  }));
+}
+
+/** Sets one key's value in every scenario that declares it. */
+export function setStoryDataValue(scenarios: TestDesignScenario[], key: string, value: string): TestDesignScenario[] {
+  return scenarios.map((s) =>
+    s.data.some((f) => f.key === key)
+      ? { ...s, data: s.data.map((f) => (f.key === key ? { ...f, value } : f)) }
+      : s,
+  );
 }
 
 export function moveItem<T>(items: T[], index: number, delta: -1 | 1): T[] {
@@ -162,4 +282,13 @@ export function mergeServerScenarios(
     next[story.id] = dirty.has(story.id) && local[story.id] ? local[story.id] : story.scenarios;
   }
   return next;
+}
+
+/**
+ * Initial project filter: a user with a single project sees only that project; with
+ * several, the last choice if still granted, otherwise all of them.
+ */
+export function initialProjectFilter(projects: Pick<TestDesignProject, 'slug'>[], stored: string): string {
+  if (projects.length === 1) return projects[0].slug;
+  return projects.some((p) => p.slug === stored) ? stored : '';
 }

@@ -3,6 +3,7 @@ import { BentoCard } from '../../components/ui/BentoCard';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import type { DashboardExecution, DashboardProject } from '../../services/dashboard';
 import type { ActiveRun } from '../../types';
+import { TestDesignSection } from '../Dashboard/TestDesignSection';
 
 interface ProjectDashboardProps {
   project: DashboardProject;
@@ -54,6 +55,8 @@ export function ProjectDashboard({ project, executions, activeRuns, onBack }: Pr
       {activeRuns.length ? <div className="space-y-2">{activeRuns.map((run) => <div key={run.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#E8EBEC] p-3"><div><div className="text-[12px] font-medium text-[#1a1f2e]">{run.currentTest}</div><div className="mt-0.5 text-[10px] text-[#8B999D]">{run.id} · {run.startedAt}</div></div><div className="flex items-center gap-3 text-[10px] text-[#58646D]"><span>{run.completed}/{run.total || '—'} procesados</span><StatusBadge status="running" /></div></div>)}</div>
         : <p className="rounded-xl bg-[#F7F8F8] p-4 text-[11px] text-[#687680]">No hay jobs activos de este proyecto.</p>}
     </BentoCard>
+
+    <TestDesignSection projectSlug={project.slug} />
 
     <BentoCard>
       <div className="mb-4 flex items-center gap-2"><Play size={13} className="text-[#104B99]" /><h3 className="text-[17px] font-medium text-[#1a1f2e]">Historial de ejecuciones</h3><span className="ml-auto text-[10px] text-[#8B999D]">{executions.length}</span></div>

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Boxes,
   CheckCircle2,
   ChevronLeft,
   CircleDashed,
@@ -27,6 +28,7 @@ import { StoryMultiPicker, type PickedStory } from './StoryMultiPicker';
 import { MAX_STORIES } from './NewDraftForm';
 import { useDraftEditor, type SaveState } from './useDraftEditor';
 import { PublishDialog, type PublishDestination } from './PublishDialog';
+import { StoryDataPanel } from './TestDataFields';
 import {
   countSelection,
   duplicateScenario,
@@ -34,6 +36,8 @@ import {
   newScenario,
   JIRA_PUBLISH_ENABLED,
   setSelection,
+  setStoryDataValue,
+  storyDataFields,
   sumCounts,
   type Destination,
 } from './scenario-utils';
@@ -109,6 +113,18 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
     [draft, scenarios],
   );
   const totals = sumCounts(Object.values(perStory));
+  // Distinct keys left empty per story (a key shared by several cases counts once).
+  const missingByStory = useMemo(
+    () =>
+      Object.fromEntries(
+        (draft?.stories ?? []).map((s) => [
+          s.id,
+          storyDataFields(scenarios[s.id] ?? s.scenarios).filter((f) => f.missing > 0).length,
+        ]),
+      ),
+    [draft, scenarios],
+  );
+  const missingDataTotal = Object.values(missingByStory).reduce((sum, n) => sum + n, 0);
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -239,6 +255,11 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
             {draft.title || draft.stories.map((s) => s.issueKey).join(', ')}
           </h2>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-[#58646D]">
+            {draft.projectSlug && (
+              <span className="flex items-center gap-1.5">
+                <Boxes size={12} className="text-[#1a1f2e]" /> {draft.projectSlug}
+              </span>
+            )}
             <span className="flex items-center gap-1.5">
               <FileText size={12} className="text-[#104B99]" /> Jira {draft.jiraProjectKey}
             </span>
@@ -356,6 +377,9 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                     <div className="text-[10px] text-[#8B999D] mt-1">
                       {c.total} casos · {c.testrail} TestRail{JIRA_PUBLISH_ENABLED && ` · ${c.jira} Jira`}
                       {c.blocked > 0 && <span className="text-[#B4463C]"> · {c.blocked} incompletos</span>}
+                      {missingByStory[s.id] > 0 && (
+                        <span className="text-[#8A6300]"> · {missingByStory[s.id]} datos por completar</span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -493,6 +517,14 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                   )}
                 </div>
               )}
+
+              {story.generationStatus !== 'generating' && (
+                <StoryDataPanel
+                  fields={storyDataFields(storyScenarios)}
+                  readOnly={!editable}
+                  onChange={(key, value) => setStoryScenarios(setStoryDataValue(storyScenarios, key, value))}
+                />
+              )}
             </BentoCard>
           )}
 
@@ -550,6 +582,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
             </>
           )}
           {totals.blocked > 0 && <span className="text-[#B4463C]"> · {totals.blocked} seleccionados incompletos</span>}
+          {missingDataTotal > 0 && <span className="text-[#8A6300]"> · {missingDataTotal} datos de prueba por completar</span>}
         </div>
         <div className="flex items-center gap-2">
           {can('testdesign.publish_testrail') && (
@@ -581,6 +614,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
           draft={draft}
           scenarios={scenarios}
           sectionLabel={destinationLabel}
+          missingData={missingDataTotal}
           beforePublish={editor.flush}
           onPublished={editor.applyServerDraft}
           onClose={() => setPublishing(null)}

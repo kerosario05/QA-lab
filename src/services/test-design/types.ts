@@ -5,6 +5,15 @@ export interface TestDesignStep {
   expected: string;
 }
 
+/** A value a case needs typed in; steps reference it as {{key}}. Sensitive values are never published. */
+export interface TestDesignDataField {
+  key: string;
+  label: string;
+  description: string;
+  value: string;
+  sensitive: boolean;
+}
+
 export type TestDesignPriority = 'low' | 'medium' | 'high' | 'critical';
 
 export type TestDesignScenarioType = 'functional' | 'negative' | 'edge' | 'regression' | 'other';
@@ -15,6 +24,7 @@ export interface TestDesignScenario {
   preconditions: string;
   steps: TestDesignStep[];
   expectedResult: string;
+  data: TestDesignDataField[];
   priority: TestDesignPriority;
   type: TestDesignScenarioType;
   selectedForTestRail: boolean;
@@ -137,4 +147,52 @@ export interface SubtaskTypeInfo {
   issueType: { id: string; name: string } | null;
   message?: string;
   available?: string[];
+}
+
+export interface TestDesignKnowledgeSummary {
+  screens: number;
+  flows: number;
+  behaviours: number;
+  total: number;
+}
+
+/** A configured project, as the test design module offers it. */
+export interface TestDesignProject {
+  slug: string;
+  name: string;
+  projectType: 1 | 2;
+  jiraProjectKey: string | null;
+  testRail: TestDesignTestRailTarget;
+  knowledge: TestDesignKnowledgeSummary;
+  /** Active (not archived) drafts of the project. */
+  draftCount: number;
+}
+
+/** Dashboard summary (GET /api/test-design/metrics). Mirrors src/test-design/test-design-metrics.ts. */
+export interface TestDesignMetrics {
+  period: { from: string; to: string; days: number };
+  usage: { drafts: number; storiesCovered: number; people: number; projects: number };
+  testRail: {
+    casesNew: number;
+    casesUpdated: number;
+    casesFailed: number;
+    previousCasesNew: number;
+    weekly: Array<{ weekStart: string; casesNew: number; casesUpdated: number }>;
+  };
+  ai: { unchanged: number; edited: number; manual: number; generated: number; discarded: number };
+  types: Record<TestDesignScenarioType, number>;
+  data: { complete: number; pending: number };
+  byProject: Array<{ projectSlug: string; projectName: string; casesNew: number; stories: number; aiShare: number }>;
+  byPerson: Array<{ name: string; casesNew: number; drafts: number }>;
+  recent: Array<{
+    caseId: number;
+    caseUrl: string | null;
+    title: string;
+    issueKey: string | null;
+    projectSlug: string | null;
+    projectName: string | null;
+    origin: 'ai' | 'manual';
+    edited: boolean;
+    publishedAt: string;
+  }>;
 }

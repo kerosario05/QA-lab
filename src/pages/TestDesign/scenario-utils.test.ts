@@ -2,11 +2,17 @@ import { describe, expect, it } from 'vitest';
 import {
   countSelection,
   duplicateScenario,
+  initialProjectFilter,
   mergeServerScenarios,
   moveItem,
   newScenario,
   scenarioProblems,
   setSelection,
+  setStoryDataValue,
+  storyDataFields,
+  syncDataFields,
+  unusedDataKeys,
+  missingDataCount,
 } from './scenario-utils';
 
 const complete = () => ({
@@ -57,6 +63,55 @@ describe('scenario-utils', () => {
     expect(moveItem([1, 2, 3], 0, 1)).toEqual([2, 1, 3]);
     expect(moveItem([1, 2, 3], 0, -1)).toEqual([1, 2, 3]);
     expect(moveItem([1, 2, 3], 2, 1)).toEqual([1, 2, 3]);
+  });
+
+  it('typing {{key}} in a step creates its data field, sensitive when the name says so', () => {
+    const s = syncDataFields({
+      ...complete(),
+      steps: [{ action: 'Ingresar {{usuario}} y {{contrasena}}', expected: 'Entra' }],
+      data: [{ key: 'usuario', label: 'Usuario', description: '', value: 'ana', sensitive: false }],
+    });
+    expect(s.data.map((f) => [f.key, f.label, f.sensitive])).toEqual([
+      ['usuario', 'Usuario', false],
+      ['contrasena', 'Contrasena', true],
+    ]);
+    expect(missingDataCount(s)).toBe(1);
+    expect(unusedDataKeys({ ...s, steps: [{ action: 'Ingresar {{usuario}}', expected: '' }] })).toEqual(new Set(['contrasena']));
+  });
+
+  it('story data groups each key across cases and fills them all at once', () => {
+    const withData = (value: string, extra = false) => ({
+      ...complete(),
+      data: [
+        { key: 'usuario', label: 'Usuario', description: 'Cliente activo', value, sensitive: false },
+        ...(extra ? [{ key: 'otp', label: 'OTP', description: '', value: '', sensitive: true }] : []),
+      ],
+    });
+    const scenarios = [withData('ana'), withData('', true), complete()];
+    const fields = storyDataFields(scenarios);
+    expect(fields).toEqual([
+      { key: 'usuario', label: 'Usuario', description: 'Cliente activo', sensitive: false, value: null, scenarioCount: 2, missing: 1 },
+      { key: 'otp', label: 'OTP', description: '', sensitive: true, value: '', scenarioCount: 1, missing: 1 },
+    ]);
+    const filled = setStoryDataValue(scenarios, 'usuario', 'beto');
+    expect(filled.map((s) => s.data.find((f) => f.key === 'usuario')?.value)).toEqual(['beto', 'beto', undefined]);
+    expect(storyDataFields(filled)[0].value).toBe('beto');
+  });
+
+  it('a duplicate copies data values without sharing the objects', () => {
+    const source = { ...complete(), data: [{ key: 'usuario', label: 'Usuario', description: '', value: 'ana', sensitive: false }] };
+    const copy = duplicateScenario(source);
+    copy.data[0].value = 'otro';
+    expect(source.data[0].value).toBe('ana');
+  });
+
+  it('the project filter starts on the only project, or the remembered one if still granted', () => {
+    expect(initialProjectFilter([{ slug: 'kiosko' }], '')).toBe('kiosko');
+    expect(initialProjectFilter([{ slug: 'kiosko' }], 'fenix')).toBe('kiosko');
+    expect(initialProjectFilter([{ slug: 'kiosko' }, { slug: 'fenix' }], 'fenix')).toBe('fenix');
+    expect(initialProjectFilter([{ slug: 'kiosko' }, { slug: 'fenix' }], 'portal')).toBe('');
+    expect(initialProjectFilter([{ slug: 'kiosko' }, { slug: 'fenix' }], '')).toBe('');
+    expect(initialProjectFilter([], 'kiosko')).toBe('');
   });
 
   it('a poll keeps unsaved local edits and takes the server list otherwise', () => {
