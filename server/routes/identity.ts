@@ -13,7 +13,9 @@ import { engineBaseUrl, engineHeaders } from '../engine-auth';
 
 export const identityRouter = Router();
 
-const PREFIXES = ['/api/auth', '/api/users', '/api/roles', '/api/permissions'];
+// /api/test-design is not identity, but it is the same pass-through contract: the
+// engine owns the module (drafts, generation, publishing) and enforces its permissions.
+const PREFIXES = ['/api/auth', '/api/users', '/api/roles', '/api/permissions', '/api/test-design'];
 
 async function proxy(req: Request, res: Response): Promise<void> {
   const base = engineBaseUrl();

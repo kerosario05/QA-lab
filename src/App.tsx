@@ -13,6 +13,7 @@ import { parseChecklistRoute } from './pages/DefectChecklist/route';
 import { Ejecuciones } from './pages/Ejecuciones';
 import { Configuracion } from './pages/Configuracion';
 import { Usuarios } from './pages/Usuarios';
+import { TestDesign } from './pages/TestDesign';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
 import { useAuth } from './auth/AuthContext';
@@ -59,6 +60,7 @@ const LANDING_ORDER: { id: View; permissions: PermissionKey[] }[] = [
   { id: 'ejecuciones', permissions: ['executions.view'] },
   { id: 'execute', permissions: ['tests.launch'] },
   { id: 'grabacion', permissions: ['recordings.view', 'recordings.create'] },
+  { id: 'diseno', permissions: ['testdesign.view'] },
   { id: 'configuracion', permissions: ['projects.view'] },
   { id: 'usuarios', permissions: ['admin.users', 'admin.roles'] },
 ];
@@ -147,6 +149,7 @@ function Workspace() {
     checklist: 'Checklist de defectos',
     configuracion: 'Configuración',
     usuarios: 'Usuarios y roles',
+    diseno: 'Diseño de pruebas',
   };
 
   const subtitles: Record<string, string> = {
@@ -159,6 +162,7 @@ function Workspace() {
     checklist: 'Defectos detectados en la ejecución',
     configuracion: 'Administración de proyectos de automatización.',
     usuarios: 'Gestiona accesos, roles y permisos por proyecto',
+    diseno: 'Genera casos con IA desde historias de Jira, edítalos y publícalos',
   };
 
   return (
@@ -243,6 +247,9 @@ function Workspace() {
           )}
           {(view as string) === 'usuarios' && (
             <Usuarios />
+          )}
+          {view === 'diseno' && (
+            <TestDesign />
           )}
         </div>
       </main>
