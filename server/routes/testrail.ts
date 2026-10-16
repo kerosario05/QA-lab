@@ -129,7 +129,7 @@ router.get('/projects', async (req: Request, res: Response) => {
       return;
     }
     console.log(`[testrail-api] projects error: ${err.message}`);
-    sendError(res, err.status ?? 502, 'Failed to fetch TestRail projects');
+    sendError(res, err.status || 502, 'Failed to fetch TestRail projects');
   }
 });
 
@@ -203,7 +203,7 @@ router.get('/projects/:projectId/suites', async (req: Request, res: Response) =>
       return;
     }
     console.log(`[testrail-api] suites error project=${projectId} status=${err.status ?? 0} message=${err.message ?? 'unknown'}`);
-    sendError(res, err.status ?? 502, 'Failed to fetch suites', { projectId });
+    sendError(res, err.status || 502, 'Failed to fetch suites', { projectId });
   }
 });
 
@@ -242,7 +242,7 @@ router.get('/sections', async (req: Request, res: Response) => {
       return;
     }
     console.log(`[testrail-api] sections error project=${projectId} suite=${suiteId} status=${err.status ?? 0} message=${err.message ?? 'unknown'}`);
-    sendError(res, err.status ?? 502, 'Failed to fetch sections', { projectId, suiteId });
+    sendError(res, err.status || 502, 'Failed to fetch sections', { projectId, suiteId });
   }
 });
 
@@ -300,7 +300,7 @@ router.get('/sections/:sectionId/cases', async (req: Request, res: Response) => 
       return;
     }
     console.log(`[testrail-api] section-cases section=${sectionId}: ${err.message}`);
-    sendError(res, err.status ?? 502, 'Failed to fetch cases');
+    sendError(res, err.status || 502, 'Failed to fetch cases');
   }
 });
 
@@ -346,7 +346,7 @@ router.get('/projects/:projectId/suites/:suiteId/cases/count', async (req: Reque
       sendError(res, 429, err.message ?? 'TestRail rate limit exceeded', { retryAfterSeconds: err.retryAfterSeconds ?? 60 });
       return;
     }
-    sendError(res, err.status ?? 502, 'Failed to fetch suite case count');
+    sendError(res, err.status || 502, 'Failed to fetch suite case count');
   }
 });
 
