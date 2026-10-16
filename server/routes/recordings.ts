@@ -91,8 +91,11 @@ router.get('/:recordingId', async (req: Request, res: Response) => {
 });
 
 router.post('/:recordingId/stop', async (req: Request, res: Response) => {
+  // El motor exige el proyecto para usuarios con proyectos asignados (qa-engineer).
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
   console.log(`[recordings] stop request recordingId=${String(req.params.recordingId)}`);
-  forward(res, await stopRecording(String(req.params.recordingId)));
+  forward(res, await stopRecording(String(req.params.recordingId), projectSlug));
 });
 
 router.post('/:recordingId/derive', async (req: Request, res: Response) => {

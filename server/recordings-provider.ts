@@ -122,11 +122,11 @@ export function getRecordingStatus(recordingId: string, projectSlug: string): Pr
   );
 }
 
-export function stopRecording(recordingId: string): Promise<RecordingsProviderResponse> {
+export function stopRecording(recordingId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
   return callRecordingEndpoint(
     'recordings-stop',
     `/api/recordings/${encodeURIComponent(recordingId)}/stop`,
-    { method: 'POST', headers: jsonHeaders, body: '{}' },
+    { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ projectSlug }) },
     START_TIMEOUT_MS,
   );
 }
