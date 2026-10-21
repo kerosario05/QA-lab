@@ -1,3 +1,5 @@
+export interface JiraConditionRequirement {key:string;subject:string;sourceClause:string;stepIndices:number[]}
+export interface JiraReviewConfiguration {conditions?:Record<string,boolean>;uiTargets?:Record<string,string>}
 export interface ScenarioStep {
   content: string;
   expected: string;
@@ -15,9 +17,28 @@ export interface DataRequirement {
   optionsSource?: string;
 }
 
+export interface JiraInputRequirement {
+  key: string;
+  label: string;
+  stepIndex: number;
+  operation: 'fill' | 'select';
+  required: boolean;
+  editable: boolean;
+  sensitive: boolean;
+  controlType: 'text' | 'password' | 'number' | 'date' | 'select';
+  source: 'jira_step';
+  dataCondition?: 'valid' | 'invalid' | 'expired';
+}
+
 export type RouteProfile = Record<string, unknown>;
 
 export interface StoryScenario {
+  conditionRequirements?: JiraConditionRequirement[];
+  reviewConfiguration?: JiraReviewConfiguration;
+  unresolvedUiRequirements?: Array<{stepIndex:number;requirement:string}>;
+  validation?: { valid: boolean; errors: string[]; warnings: string[] };
+  acceptanceCriteriaRefs?: string[];
+  inputRequirements?: JiraInputRequirement[];
   scenarioId?: string;
   id?: string;
   sourceIssueKey?: string;
@@ -68,6 +89,9 @@ export interface ScenariosPreviewResponse {
 }
 
 export interface McpScenario {
+  conditionRequirements?: JiraConditionRequirement[];
+  reviewConfiguration?: JiraReviewConfiguration;
+  inputRequirements?: JiraInputRequirement[];
   scenarioId?: string;
   id?: string;
   caseId?: number;
@@ -139,6 +163,7 @@ export interface ScenarioReadinessSummary {
 }
 
 export interface ScenariosPreviewParams {
+  generationMode?: string;
   projectKey: string;
   status: string;
   maxResults: number;

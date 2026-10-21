@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getTestRailSelections, mergeTestRailSelections, setTestRailScenarioSelected, toggleTestRailSelection, type TestRailSelection } from './testRailSelection';
+import { getTestRailSelections, reconcileTestRailSelection, mergeTestRailSelections, setTestRailScenarioSelected, toggleTestRailSelection, type TestRailSelection } from './testRailSelection';
 import type { RecordedScenario } from '../../services/recordings/types';
 
 function entry(recordingId: string, scenarioId: string) {
@@ -12,6 +12,14 @@ function entry(recordingId: string, scenarioId: string) {
 }
 
 describe('TestRail selection across recordings', () => {
+  it('removes missing recordings and refreshes the current scenario without losing its edits', () => {
+    let selected = toggleTestRailSelection({}, entry('deleted', 'old'));
+    selected = toggleTestRailSelection(selected, { ...entry('current', 'new'), datasetValues: { field: 'edited' } });
+    const fresh = { ...entry('current', 'new').scenario, title: 'Fresh' };
+    const reconciled = reconcileTestRailSelection(selected, new Set(['current']), 'current', [fresh]);
+    expect(getTestRailSelections(reconciled)).toEqual([{ ...entry('current', 'new'), scenario: fresh, datasetValues: { field: 'edited' } }]);
+    expect(reconcileTestRailSelection(reconciled, new Set(['current']), 'current', [fresh])).toBe(reconciled);
+  });
   it('preserves both selections and order across recording identities', () => {
     let selected: TestRailSelection = {};
     selected = toggleTestRailSelection(selected, entry('recording-a', 'scenario-a'));

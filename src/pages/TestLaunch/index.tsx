@@ -1,4 +1,9 @@
+import {JiraScenarioReview,jiraReviewBlockingErrors} from './JiraScenarioReview';
+import {JiraScenarioStepEditor,applyReviewedLaunchScenario} from './JiraScenarioStepEditor';
+import {jiraPrerequisiteSummary} from './jira-prerequisites';
+import {useRetainedSourceLoad} from './use-retained-source-load';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { JiraStepInputs, JiraCommonInputs, JiraScenarioCommonAction, useJiraCommonValues, resolveJiraScenarioValues, buildJiraDataOverrides, missingJiraInputs, missingJiraTransportInputs } from './JiraStepInputs';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Check, Boxes, GitBranch, Database,
@@ -21,9 +26,11 @@ import type {
 } from '../../services/mobile';
 import type { ActiveRun, TestRailProject, JiraProject, JiraSprint } from '../../types';
 import { canContinueFromStep3 } from './step3-launch-gate';
-import { buildLaunchPayloadScenarios, computeLaunchSelectionSummary, normalizePublishedCasesForDiscovery } from './launch-selection';
+import { shouldLoadJiraScenarios } from './scenario-source-gate';
+import { buildLaunchPayloadScenarios, buildScenarioExecutionProvenance, computeLaunchSelectionSummary, normalizePublishedCasesForDiscovery } from './launch-selection';
 import { MobileScenarioSelectionPanel } from './MobileScenarioSelectionPanel';
 import { InlineInputRequirements } from './InputRequirementsPanel';
+import { buildActiveScenarioQueue, cleanScenarioText } from '../LiveExecution/active-scenario-queue';
 import { InputRequirementsEditor } from './InputRequirementsEditor';
 import { canonicalInputKey, composeSelectedInputRequirements } from './input-requirements';
 import {
@@ -78,6 +85,43 @@ interface LaunchProjectApiItem {
 }
 
 const LAUNCH_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const LAUNCH_SELECTION_STORAGE_KEY = 'qa-lab:test-launch:last-selection:v1';
+type RememberedLaunchSelection = {
+  source?: string;
+  jiraProject?: string;
+  status?: string;
+  statusByJiraProject?: Record<string, string>;
+  testRailProject?: string;
+  sectionBySuite?: Record<string, number>;
+};
+type RememberedLaunchSelections = { lastAutomationProject?: string; byAutomationProject?: Record<string, RememberedLaunchSelection> };
+function readRememberedLaunchSelections(): RememberedLaunchSelections {
+  try {
+    const raw = localStorage.getItem(LAUNCH_SELECTION_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed as RememberedLaunchSelections : {};
+  } catch { return {}; }
+}
+function updateRememberedLaunchSelection(appSlug: string, update: (current: RememberedLaunchSelection) => RememberedLaunchSelection) {
+  if (!appSlug) return;
+  try {
+    const saved = readRememberedLaunchSelections();
+    const current = saved.byAutomationProject?.[appSlug] ?? {};
+    localStorage.setItem(LAUNCH_SELECTION_STORAGE_KEY, JSON.stringify({
+      ...saved,
+      lastAutomationProject: appSlug,
+      byAutomationProject: { ...saved.byAutomationProject, [appSlug]: update(current) },
+    }));
+  } catch { /* selection memory is best-effort when browser storage is unavailable */ }
+}
+function clearRememberedAutomationProject() {
+  try {
+    const saved = readRememberedLaunchSelections();
+    const next = { ...saved };
+    delete next.lastAutomationProject;
+    localStorage.setItem(LAUNCH_SELECTION_STORAGE_KEY, JSON.stringify(next));
+  } catch { /* selection memory is best-effort when browser storage is unavailable */ }
+}
 
 export function mapLaunchProject(p: LaunchProjectApiItem): LaunchProjectOption {
   return {
@@ -130,14 +174,32 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       .replace(/^-+|-+$/g, "");
 
   const [step, setStep] = useState(1);
-  const [config, setConfig] = useState<LaunchConfig>({
-    automationProject: '', source: 'both', jiraProject: '', sprint: '',
-    status: 'Desestimado', testRailProject: '', selectedCases: [], runAll: false,
-    newmanCollection: '',
+  const [config, setConfig] = useState<LaunchConfig>(() => {
+    const saved = readRememberedLaunchSelections();
+    const appSlug = saved.lastAutomationProject ?? '';
+    const app = appSlug ? saved.byAutomationProject?.[appSlug] : undefined;
+    const jiraProject = app?.jiraProject ?? '';
+    return {
+      automationProject: appSlug, source: app?.source ?? 'both', jiraProject, sprint: '',
+      status: (jiraProject ? app?.statusByJiraProject?.[jiraProject] : undefined) ?? app?.status ?? 'Desestimado',
+      testRailProject: app?.testRailProject ?? '', selectedCases: [], runAll: false,
+      newmanCollection: '',
+    };
   });
+  useEffect(() => {
+    if (!config.automationProject) return;
+    updateRememberedLaunchSelection(config.automationProject, current => ({
+      ...current,
+      source: config.source,
+      jiraProject: config.jiraProject,
+      status: config.status,
+      statusByJiraProject: config.jiraProject
+        ? { ...current.statusByJiraProject, [config.jiraProject]: config.status }
+        : current.statusByJiraProject,
+      testRailProject: config.testRailProject,
+    }));
+  }, [config.automationProject, config.source, config.jiraProject, config.status, config.testRailProject]);
   const [isLaunching, setIsLaunching] = useState(false);
-  const [contextOnly, setContextOnly] = useState(false);
-  const [forceRediscovery, setForceRediscovery] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launchProjects, setLaunchProjects] = useState<LaunchProjectOption[]>([]);
   const [launchProjectsLoading, setLaunchProjectsLoading] = useState(true);
@@ -214,6 +276,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [trTotalCaseCount, setTrTotalCaseCount] = useState(0);
   const [inputRequirementsByCaseId, setInputRequirementsByCaseId] = useState<Record<number, InputRequirementLoadState>>({});
   const inputRequirementsLoadToken = useRef(0);
+  const manualTrCaseExpansionRef = useRef(false);
   const [runtimeInputValuesByCaseId, setRuntimeInputValuesByCaseId] = useState<RuntimeInputValuesByCaseId>({});
   const [editingInputRequirementsCaseId, setEditingInputRequirementsCaseId] = useState<number | null>(null);
 
@@ -250,6 +313,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const updateSelectedTestRailCases = (nextCaseIds: number[]) => {
     const newlySelectedCaseIds = nextCaseIds.filter((caseId) => !selectedTrCaseIds.includes(caseId));
     if (newlySelectedCaseIds.length > 0) {
+      manualTrCaseExpansionRef.current = false;
       const availableRequirementStates = { ...inputRequirementsByCaseId };
       for (const caseId of newlySelectedCaseIds) {
         const testCase = trCases.find((candidate) => candidate.id === caseId);
@@ -409,7 +473,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   // User-edited data values, keyed by scenarioId -> { stepIndex: value }.
   const [mobileDataValues, setMobileDataValues] = useState<Record<string, Record<number, string>>>({});
   // Web: generic dataRequirements values keyed by scenarioKey -> { requirementKey: value }
+  const [jiraCommonValues, setJiraCommonValues] = useState<Record<string, Record<string, string>>>({});
+  const preserveCommonValuesOnEdit = useRef(false);
+  useEffect(() => { if(preserveCommonValuesOnEdit.current){preserveCommonValuesOnEdit.current=false;return;} setJiraCommonValues({}); }, [stories]);
   const [webDataValues, setWebDataValues] = useState<Record<string, Record<string, string | boolean>>>({});
+  const [jiraEditing,setJiraEditing] = useState(false);
 
   const [mobilePublishing, setMobilePublishing] = useState(false);
   const [mobilePublishError, setMobilePublishError] = useState<string | null>(null);
@@ -559,7 +627,14 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   useEffect(() => {
     setLaunchProjectsLoading(true);
     fetchLaunchProjects()
-      .then(data => { setLaunchProjects(data); setLaunchProjectsError(null); })
+      .then(data => {
+        setLaunchProjects(data); setLaunchProjectsError(null);
+        const remembered = readRememberedLaunchSelections().lastAutomationProject;
+        if (remembered && !data.some(project => project.slug === remembered)) {
+          clearRememberedAutomationProject();
+          setConfig(current => current.automationProject === remembered ? { ...current, automationProject: '' } : current);
+        }
+      })
       .catch(e => setLaunchProjectsError(e.message))
       .finally(() => setLaunchProjectsLoading(false));
   }, []);
@@ -568,7 +643,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   useEffect(() => {
     setTrLoading(true);
     trProjectsProxy.getAll()
-      .then(data => { setTrProjects(data); setTrError(null); })
+      .then(data => {
+        setTrProjects(data); setTrError(null);
+        setConfig(current => current.testRailProject && !data.some(project => String(project.id) === current.testRailProject)
+          ? { ...current, testRailProject: '' } : current);
+      })
       .catch(e => setTrError(e.message))
       .finally(() => setTrLoading(false));
   }, []);
@@ -577,7 +656,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   useEffect(() => {
     setJiraLoading(true);
     jiraProjectsProxy.getAll()
-      .then(data => { setJiraProjects(data); setJiraError(null); })
+      .then(data => {
+        setJiraProjects(data); setJiraError(null);
+        setConfig(current => current.jiraProject && !data.some(project => project.key === current.jiraProject)
+          ? { ...current, jiraProject: '', sprint: '' } : current);
+      })
       .catch(e => setJiraError(e.message))
       .finally(() => setJiraLoading(false));
   }, []);
@@ -623,7 +706,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       return;
     }
     const projectId = Number(config.testRailProject);
-    const sectionKey = `${projectId}:${trSuiteId}`;
+    const sectionKey = `${config.automationProject}:${projectId}:${trSuiteId}`;
 
     if (lastSectionKeyRef.current === sectionKey && trSections.length > 0) {
       return;
@@ -635,7 +718,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     setTrSectionsError(null);
     setSelectedSection(null);
     trSectionsProxy.getSections(projectId, trSuiteId)
-      .then(data => { setTrSections(data); setTrSectionsError(null); })
+      .then(data => {
+        setTrSections(data); setTrSectionsError(null);
+        const savedSectionId = readRememberedLaunchSelections().byAutomationProject?.[config.automationProject]?.sectionBySuite?.[`${projectId}:${trSuiteId}`];
+        setSelectedSection(savedSectionId === undefined ? null : data.find(section => Number(section.id) === Number(savedSectionId)) ?? null);
+      })
       .catch(e => setTrSectionsError(e.message))
       .finally(() => setTrSectionsLoading(false));
 
@@ -649,24 +736,34 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     }, 60_000);
 
     return () => clearInterval(interval);
-  }, [config.testRailProject, trSuiteId]);
+  }, [config.automationProject, config.testRailProject, trSuiteId]);
 
   // ΓöÇΓöÇ Fetch stories when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  useEffect(() => {
-    if (step !== 3 || !config.jiraProject || !activeSprint || currentProjectType === 'mobile') return;
+  const {retry:retryStories}=useRetainedSourceLoad({
+    contextKey:JSON.stringify([config.automationProject,currentProjectType,config.source,config.jiraProject,config.status,activeSprint?.id??null]),
+    active:step===3&&shouldLoadJiraScenarios(config.source)&&!!config.jiraProject&&!!activeSprint&&currentProjectType!=='mobile',
+    onReset:()=>{
+      setStories([]);setStoriesLoading(false);setStoriesError(null);setTotalScenarios(0);
+      setBlockedScenarios([]);setAdaptiveScenarios([]);setExpandedStories([]);
+      setWebDataValues({});setJiraCommonValues({});
+      setConfig(c=>({...c,selectedCases:[]}));
+    },
+    onStart:()=>{
     setConfig(c => ({ ...c, selectedCases: [] }));
-    const sprintId = activeSprint.id;
-    console.log(`[scenario-preview-browser] automationProject=${config.automationProject} appSlug=${config.automationProject || 'undefined'}`);
     setStoriesLoading(true);
     setStoriesError(null);
-    scenariosProxy.post({
+    },
+    load:()=>{
+    const sprintId=activeSprint?.id;
+    return scenariosProxy.post({
+      generationMode: currentProjectType === 'web' ? 'jira_semantic' : undefined,
       projectKey: config.jiraProject,
       status: config.status,
       maxResults: 50,
       appSlug: config.automationProject || undefined,
       ...(sprintId ? { sprintId } : { activeSprint: true }),
-    })
-      .then(data => {
+    });},
+    onSuccess:data=>{
         for (const _s of (data.stories ?? [])) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
         for (const _sc of (data.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'flat-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
         console.info('[scenario-preview-shape]', {
@@ -686,23 +783,29 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         setBlockedScenarios(normalized.blockedScenarios ?? []);
         setAdaptiveScenarios(normalized.adaptiveScenarios ?? []);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
-      })
-      .catch(e => setStoriesError(e.message))
-      .finally(() => setStoriesLoading(false));
-  }, [step, config.jiraProject, config.status, config.automationProject, activeSprint]);
+      },
+    onError:error=>setStoriesError(error instanceof Error?error.message:String(error)),
+    onFinish:()=>setStoriesLoading(false),
+  });
 
   // ΓöÇΓöÇ Fetch TR cases when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-  useEffect(() => {
-    if (step !== 3 || !config.testRailProject || !selectedSection || !trSuiteId || currentProjectType === 'mobile') return;
+  useRetainedSourceLoad({
+    contextKey:JSON.stringify([config.automationProject,currentProjectType,config.testRailProject,selectedSection?.id??null,trSuiteId,launchProjects.find(project=>project.slug===config.automationProject)?.id??null]),
+    active:step===3&&!!config.testRailProject&&!!selectedSection&&!!trSuiteId&&currentProjectType!=='mobile',
+    onReset:()=>{setTrCases([]);setSelectedTrCaseIds([]);setTrCasesLoading(false);setTrCasesError(null);},
+    onStart:()=>{
     setSelectedTrCaseIds([]);
     setTrCasesLoading(true);
     setTrCasesError(null);
-    const selectedProject = launchProjects.find(project => project.slug === config.automationProject);
-    trSectionsProxy.getCases(selectedSection.id, Number(config.testRailProject), trSuiteId, undefined, selectedProject?.id)
-      .then(response => { setTrCases(response.cases ?? []); setTrCasesError(null); })
-      .catch(e => setTrCasesError(e.message))
-      .finally(() => setTrCasesLoading(false));
-  }, [step, config.testRailProject, config.automationProject, selectedSection, trSuiteId, launchProjects]);
+    },
+    load:()=>{
+      const selectedProject=launchProjects.find(project=>project.slug===config.automationProject);
+      return trSectionsProxy.getCases(selectedSection!.id,Number(config.testRailProject),trSuiteId!,undefined,selectedProject?.id);
+    },
+    onSuccess:response=>{setTrCases(response.cases??[]);setTrCasesError(null);},
+    onError:error=>setTrCasesError(error instanceof Error?error.message:String(error)),
+    onFinish:()=>setTrCasesLoading(false),
+  });
 
   useEffect(() => {
     const caseIds = trCases.map(testCase => testCase.id);
@@ -729,7 +832,28 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       selectedIds.map((caseId) => [caseId, { status: 'loading' }]),
     ));
     loadRequirementsAfterSelection(projectSlug, selectedIds, trCases).then((states) => {
-      if (token === inputRequirementsLoadToken.current) setInputRequirementsByCaseId(states);
+      if (token !== inputRequirementsLoadToken.current) return;
+      setInputRequirementsByCaseId(states);
+      setExpandedCaseId((current) => current ?? (manualTrCaseExpansionRef.current
+        ? null
+        : getAutoExpandedCaseId({
+          currentCaseIds: [],
+          nextCaseIds: selectedIds,
+          cases: trCases,
+          requirementStates: states,
+        }) ?? null));
+      setRuntimeInputValuesByCaseId((current) => {
+        const next = { ...current };
+        for (const [caseId, state] of Object.entries(states)) {
+          if (state.status !== 'loaded' || !state.runtimeValues) continue;
+          // Most recent successful or failed execution inputs are the default
+          // for this case. Synthetic autofill may have raced the network call.
+          next[caseId] = { ...(next[caseId] ?? {}), ...Object.fromEntries(
+            Object.entries(state.runtimeValues).map(([key, value]) => [key, String(value)]),
+          ) };
+        }
+        return next;
+      });
     });
   }, [config.automationProject, selectedTrCaseIds, trCases, launchProjects]);
 
@@ -738,6 +862,18 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     if (!projectSlug) return;
     const refreshed = await loadInputRequirementsByCaseId(projectSlug, [caseId]);
     setInputRequirementsByCaseId((current) => ({ ...current, [caseId]: refreshed[caseId] }));
+    const state = refreshed[caseId];
+    // Captured in a const: the narrowing of `state.runtimeValues` does not survive into the callback.
+    const runtimeValues = state?.status === 'loaded' ? state.runtimeValues : undefined;
+    if (runtimeValues) {
+      setRuntimeInputValuesByCaseId((current) => ({
+        ...current,
+        [String(caseId)]: {
+          ...(current[String(caseId)] ?? {}),
+          ...Object.fromEntries(Object.entries(runtimeValues).map(([key, value]) => [key, String(value)])),
+        },
+      }));
+    }
   };
 
   // ΓöÇΓöÇ Click-outside: close all dropdowns ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
@@ -1555,7 +1691,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                   const isSel = j.key === config.jiraProject;
                   return (
                     <button key={j.key} type="button"
-                      onClick={() => { setConfig(c => ({ ...c, jiraProject: j.key, sprint: '' })); setJiraDropdownOpen(false); setJiraSearch(''); }}
+                      onClick={() => {
+                        const remembered = readRememberedLaunchSelections().byAutomationProject?.[config.automationProject];
+                        setConfig(c => ({ ...c, jiraProject: j.key, sprint: '', status: remembered?.statusByJiraProject?.[j.key] ?? c.status }));
+                        setJiraDropdownOpen(false); setJiraSearch('');
+                      }}
                       className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#104B99]/5' : 'hover:bg-[#FAFAF7]')}
                     >
                       <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#104B99] bg-[#104B99]' : 'border-[#E8EBEC]')}>
@@ -1733,7 +1873,11 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
                       const isSel = selectedSection?.id === sec.id;
                       return (
                         <button key={sec.id} type="button"
-                          onClick={() => { setSelectedSection(sec); setTrSectionDropdownOpen(false); setTrSectionSearch(''); }}
+                          onClick={() => {
+                            setSelectedSection(sec);
+                            updateRememberedLaunchSelection(config.automationProject, current => ({ ...current, sectionBySuite: { ...current.sectionBySuite, [`${config.testRailProject}:${trSuiteId}`]: Number(sec.id) } }));
+                            setTrSectionDropdownOpen(false); setTrSectionSearch('');
+                          }}
                           className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
                         >
                           <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
@@ -1755,7 +1899,30 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     </div>
   );
 
+  const getStep3InputValidationMessage = (): string | null => {
+    if (launchSelection.selectedGeneratedScenarios.length > 0
+      && config.source !== 'testrail'
+      && missingJiraInputs(stories, config.selectedCases, webDataValues, jiraCommonValues).length > 0) {
+      return 'Completa los datos requeridos de los escenarios Jira seleccionados antes de continuar.';
+    }
+
+    if (launchSelection.existingTestRailCaseIds.length > 0 && config.source !== 'jira') {
+      const readiness = evaluateInputRequirementsReadiness(
+        launchSelection.existingTestRailCaseIds,
+        inputRequirementsByCaseId,
+        runtimeInputValuesByCaseId,
+      );
+      if (!readiness.ready) {
+        return readiness.unresolvedCaseIds.length > 0
+          ? 'Espera a que se carguen los datos requeridos de TestRail.'
+          : 'Completa los datos requeridos de los casos TestRail seleccionados antes de continuar.';
+      }
+    }
+    return null;
+  };
+
   const canAdvance = () => {
+    if(jiraEditing)return false;
     if (step === 1) return config.automationProject;
     const selectedProject = launchProjects.find(p => p.slug === config.automationProject);
     const isApiProject = selectedProject?.type === 'api';
@@ -1785,6 +1952,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         selectedScenarioKeys: config.selectedCases,
         selectedTestRailCaseIds: selectedTrCaseIds,
         source: config.source,
+        requiredInputsReady: getStep3InputValidationMessage() === null,
       });
     }
     if (step === 4 && isMobileProject) {
@@ -1841,6 +2009,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   };
 
   const handleLaunch = async () => {
+    if(jiraEditing){setLaunchError('Aplica y valida los pasos editados, o cancela la edición antes de ejecutar.');return;}
     const proj = launchProjects.find(p => p.slug === config.automationProject);
     if (proj?.type === 'api') {
       return handleNewmanLaunch();
@@ -1854,6 +2023,26 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     const selectedGeneratedScenarios = launchSelection.selectedGeneratedScenarios;
     const selectedExistingTestRailCaseIds = launchSelection.existingTestRailCaseIds;
     const totalSelected = launchSelection.totalSelected;
+
+    const invalidGenerated = selectedStories.flatMap(story => story.scenarios).find(scenario => scenario.validation?.valid === false && jiraReviewBlockingErrors(scenario).length>0);
+    if (invalidGenerated) {
+      setLaunchError(`Revisa ${invalidGenerated.title}: ${jiraReviewBlockingErrors(invalidGenerated).join('; ')}`);
+      return;
+    }
+
+    const missingInputs = missingJiraInputs(stories, config.selectedCases, webDataValues, jiraCommonValues);
+    if (missingInputs.length) {
+      const first = missingInputs[0];
+      setLaunchError(`Completa ${first.label} en el paso ${first.stepIndex} de ${first.scenarioTitle}.`);
+      return;
+    }
+    const webDataOverrides = buildJiraDataOverrides(stories, config.selectedCases, webDataValues, jiraCommonValues);
+    const missingTransportInputs = missingJiraTransportInputs(stories, config.selectedCases, webDataOverrides);
+    if (missingTransportInputs.length) {
+      const first = missingTransportInputs[0];
+      setLaunchError(`No se pudo asociar ${first.label} al escenario ${first.scenarioTitle}. Revisa los datos requeridos antes de lanzar.`);
+      return;
+    }
 
     const normalizeSectionSlug = (name: string): string =>
       name
@@ -1924,6 +2113,12 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     });
 
     const launchPayload: any = {
+      ...buildScenarioExecutionProvenance({
+        jiraSelectedCount: launchSelection.jiraSelectedCount,
+        testRailSelectedCount: launchSelection.testRailSelectedCount,
+        jiraKey: selectedStories[0]?.jiraKey,
+        projectType: currentProjectType,
+      }),
       appSlug: config.automationProject || '',
       projectId: projectIdValue,
       suiteId: suiteId ?? undefined,
@@ -1934,31 +2129,17 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       sprintName: undefined as string | undefined,
       selectedScenarios: buildLaunchPayloadScenarios(selectedGeneratedScenarios),
       existingTestRailCaseIds: selectedExistingTestRailCaseIds,
-      forceRediscovery,
       // Replace only the generated artifact for the admitted case; this does
       // not imply rediscovery and remains independent of case identity.
       overwrite: true,
-      contextOnly: forceRediscovery ? false : contextOnly,
       ...buildTestRailLaunchPayload({
         hasSelectedCases: selectedExistingTestRailCaseIds.length > 0,
         runtimeEntriesByCase: inputsRuntimeEntries,
-        contextOnly: forceRediscovery ? false : contextOnly,
       }),
       adaptiveScenarios: adaptiveScenarios.length > 0 ? adaptiveScenarios : undefined,
       publishStrategy: 'always_create' as const,
     };
     // Web: proyectar valores del formulario a dataOverrides usando requirement.key (aislado por escenario)
-    const webDataOverrides: Record<string, Record<string, string>> = {};
-    for (const k of config.selectedCases) {
-      const vals = (webDataValues as any)[k];
-      if (!vals) continue;
-      const filtered: Record<string, string> = {};
-      for (const [rk, v] of Object.entries(vals)) {
-        if (typeof v === 'boolean') filtered[rk] = String(v);
-        else if (String(v).trim() !== '') filtered[rk] = String(v);
-      }
-      if (Object.keys(filtered).length > 0) webDataOverrides[k] = filtered;
-    }
     if (Object.keys(webDataOverrides).length > 0) (launchPayload as any).dataOverrides = webDataOverrides;
 
     setIsLaunching(true);
@@ -1968,8 +2149,6 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
     // Fase 1: Publish + TestRun (launch-execution endpoint)
     try {
-      const contextOnlyPayload = (launchPayload as Record<string, unknown>).contextOnly;
-      console.log(`[context-only-trace] boundary=frontend_handle state=${contextOnly} payloadHasField=${Object.prototype.hasOwnProperty.call(launchPayload, 'contextOnly')} payloadValue=${contextOnlyPayload === undefined ? 'undefined' : contextOnlyPayload}`);
       console.log(`[context-only-trace] selectedCaseCount=${selectedExistingTestRailCaseIds.length} runtimeEntryCount=${Object.values(inputsRuntimeEntries ?? {}).reduce((count, entries) => count + (Array.isArray(entries) ? entries.length : 0), 0)}`);
       const launchResult = await runsProxy.launchExecution(launchPayload);
       if (!launchResult.ok) {
@@ -1982,11 +2161,37 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       // Fase 2: (futura) discovery job ΓÇö por ahora solo creamos el job para mantener compatibilidad
 try {
         const runJiraKey = launchPayload.jiraKey || selectedStories[0]?.jiraKey;
+        const executionProvenance = buildScenarioExecutionProvenance({
+          jiraSelectedCount: launchSelection.jiraSelectedCount,
+          testRailSelectedCount: launchSelection.testRailSelectedCount,
+          jiraKey: runJiraKey,
+          projectType: currentProjectType,
+        });
         const runtimeFragment = buildTestRailRuntimePayloadFragment({
           hasSelectedCases: selectedExistingTestRailCaseIds.length > 0,
           runtimeEntriesByCase: inputsRuntimeEntries,
         });
+        const activeTestRailScenarios = selectedExistingTestRailCaseIds.flatMap((caseId) => {
+          const testCase = trCases.find((candidate) => candidate.id === caseId);
+          if (!testCase) return [];
+          return [{
+            id: String(testCase.id),
+            title: testCase.title,
+            steps: cleanTestRailDetail(testCase.custom_steps).map(normalizeTestRailStep),
+            preconditions: cleanTestRailDetail(testCase.custom_preconds),
+            expectedResult: cleanTestRailDetail(testCase.custom_expected).join('\n') || null,
+          }];
+        });
+        const activeScenarios = buildActiveScenarioQueue([
+          ...selectedStories.flatMap((story) => story.scenarios.map((scenario, index) => ({
+            id: String(scenario.scenarioId || scenario.refs || `${story.jiraKey}-${index + 1}`),
+            title: cleanScenarioText(scenario.title),
+            steps: (scenario.custom_steps_separated ?? []).map((step) => cleanScenarioText(step.content)),
+          }))),
+          ...activeTestRailScenarios.map(({ id, title, steps }) => ({ id, title, steps })),
+        ]);
         const runPayload: any = {
+          ...(executionProvenance ?? {}),
           appSlug: config.automationProject || '',
           projectId: projectIdValue,
           suiteId: suiteId ?? 0,
@@ -1994,10 +2199,9 @@ try {
           sectionName: sectionNameValue,
           sectionSlug: sectionSlugValue,
            stories: selectedStories,
+          activeTestRailScenarios,
            routeProfile,
            existingCaseIds: selectedExistingTestRailCaseIds,
-           forceRediscovery,
-           ...(forceRediscovery ? { contextOnly: false } : (contextOnly ? { contextOnly: true } : {})),
           ...(runtimeFragment.runtimeEntriesByCase ? { runtimeEntriesByCase: runtimeFragment.runtimeEntriesByCase } : {}),
           launchId: launchResult.launchId,
           testRunId: launchResult.testRunId,
@@ -2005,7 +2209,7 @@ try {
           jiraKey: runJiraKey,
           ...(Object.keys(webDataOverrides).length > 0 ? { dataOverrides: webDataOverrides } : {}),
         };
-        console.log(`[launch] create discovery job jiraKey=${runJiraKey} launchId=${launchResult.launchId} testRunId=${launchResult.testRunId}`);
+        console.log(`[launch] create discovery job jiraKey=${runJiraKey} executionEngine=${executionProvenance?.executionEngine ?? 'legacy'} launchId=${launchResult.launchId} testRunId=${launchResult.testRunId}`);
         const { jobId, status, issueKey, checklistUrl, defectCount } = await runsProxy.create(runPayload);
         const newRun: ActiveRun = {
           id: jobId,
@@ -2022,6 +2226,7 @@ try {
           issueKey,
           checklistUrl,
           defectCount,
+          activeScenarios,
         };
         onLaunch(newRun);
       } catch (jobErr: any) {
@@ -2094,42 +2299,14 @@ try {
         { n: 4, label: 'Lanzar', icon: Rocket },
       ];
 
+  // "Solo Jira" no longer exists as an option; a draft saved with it would show no selected card.
+  const sourceIsRemovedJiraOnly = config.source === 'jira';
+  useEffect(() => {
+    if (sourceIsRemovedJiraOnly) setConfig(prev => ({ ...prev, source: 'both' }));
+  }, [sourceIsRemovedJiraOnly]);
+
   const showTrCasesTab = (config.source === 'testrail' || config.source === 'both') && !!selectedSection;
   const showScenariosTab = config.source === 'jira' || config.source === 'both';
-
-  const retryStories = () => {
-    if (!activeSprint) return;
-    const sprintId = activeSprint.id;
-    setStoriesLoading(true);
-    setStoriesError(null);
-    scenariosProxy.post({
-      projectKey: config.jiraProject,
-      status: config.status,
-      maxResults: 50,
-      appSlug: config.automationProject || undefined,
-      ...(sprintId ? { sprintId } : { activeSprint: true }),
-    })
-      .then(data => {
-        console.info('[scenario-preview-shape]', {
-          dataKeys: Object.keys(data ?? {}),
-          dataRouteProfileType: typeof data?.routeProfile,
-          routeProfilePresent: data?.routeProfile != null,
-          dataType: typeof data?.data,
-          nestedDataKeys: Object.keys(data?.data ?? {}),
-          nestedDataRouteProfileType: typeof data?.data?.routeProfile,
-        });
-        const normalized = normalizeScenarioPreviewResponse(data);
-         setStories(normalized.stories);
-         setRouteProfile(normalized.routeProfile);
-        setTotalScenarios(normalized.totalScenarios);
-        setSprintMeta(normalized.sprint ?? null);
-        setBlockedScenarios(normalized.blockedScenarios ?? []);
-        setAdaptiveScenarios(normalized.adaptiveScenarios ?? []);
-        setExpandedStories(normalized.stories.map(s => s.jiraKey));
-      })
-      .catch(e => setStoriesError(e.message))
-      .finally(() => setStoriesLoading(false));
-  };
 
   return (
     <div className="p-7" style={{ background: C.canvas, minHeight: '100%' }}>
@@ -2163,7 +2340,7 @@ try {
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto">
+      <div className={cn("mx-auto", step === 3 && !isMobileProject && !isApiProject ? "max-w-7xl" : "max-w-5xl")}>
 
         {/* ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ STEP 1 ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ */}
         {step === 1 && (
@@ -2194,7 +2371,20 @@ try {
                 return (
                   <button
                     key={p.id}
-                    onClick={() => setConfig({ ...config, automationProject: p.slug, newmanCollection: '', testRailProject: '' })}
+                    onClick={() => {
+                      const remembered = readRememberedLaunchSelections().byAutomationProject?.[p.slug];
+                      const jiraProject = remembered?.jiraProject ?? '';
+                      setConfig(current => ({
+                        ...current,
+                        automationProject: p.slug,
+                        source: remembered?.source ?? 'both',
+                        jiraProject,
+                        sprint: '',
+                        status: (jiraProject ? remembered?.statusByJiraProject?.[jiraProject] : undefined) ?? remembered?.status ?? 'Desestimado',
+                        testRailProject: remembered?.testRailProject ?? '',
+                        selectedCases: [], runAll: false, newmanCollection: '',
+                      }));
+                    }}
                     className={cn(
                       'text-left p-6 rounded-2xl border-2 transition-all relative overflow-hidden',
                       selected ? 'border-[#1a1f2e] bg-[#1a1f2e] text-white' : 'border-[#E8EBEC] hover:border-[#1a1f2e]/40 bg-white'
@@ -2421,7 +2611,11 @@ try {
                                 const isSel = selectedSection?.id === sec.id;
                                 return (
                                   <button key={sec.id} type="button"
-                                    onClick={() => { setSelectedSection(sec); setTrSectionDropdownOpen(false); setTrSectionSearch(''); }}
+                                onClick={() => {
+                                  setSelectedSection(sec);
+                                  updateRememberedLaunchSelection(config.automationProject, current => ({ ...current, sectionBySuite: { ...current.sectionBySuite, [`${config.testRailProject}:${trSuiteId}`]: Number(sec.id) } }));
+                                  setTrSectionDropdownOpen(false); setTrSectionSearch('');
+                                }}
                                     className={cn('w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-[#F4F1EA] last:border-b-0', isSel ? 'bg-[#48A157]/5' : 'hover:bg-[#FAFAF7]')}
                                   >
                                     <div className={cn('w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 border-2', isSel ? 'border-[#48A157] bg-[#48A157]' : 'border-[#E8EBEC]')}>
@@ -2453,16 +2647,15 @@ try {
             <p className="text-[13px] text-[#58646D] mb-7">Configura las herramientas que alimentarán la ejecución.</p>
 
             <div className="mb-7">
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 {[
-                  { v: 'jira', label: 'Solo Jira', desc: 'Tests del sprint activo', icon: GitBranch },
                   { v: 'testrail', label: 'Solo TestRail', desc: 'Suite completa', icon: Database },
                   { v: 'both', label: 'Ambos combinados', desc: 'Máxima cobertura', icon: Layers },
                 ].map(opt => {
                   const Ic = opt.icon;
                   const active = config.source === opt.v;
                   return (
-                    <button key={opt.v} onClick={() => setConfig({ ...config, source: opt.v })}
+                    <button key={opt.v} onClick={() => setConfig(c => ({ ...c, source: opt.v }))}
                       className={cn('text-left p-4 rounded-2xl border-2 transition-all', active ? 'border-[#48A157] bg-[#48A157]/5' : 'border-[#E8EBEC] hover:border-[#BABEC3]')}
                     >
                       <div className="flex items-center justify-between mb-2">
@@ -2482,7 +2675,7 @@ try {
               {(config.source === 'testrail' || config.source === 'both') && renderTestRailPanel(t => {
                 const appSlug = normalizeAppSlug(t.name);
                 console.log(`[testrail-select] projectId=${t.id} name="${t.name}" appSlug="${appSlug}"`);
-                setConfig({ ...config, testRailProject: String(t.id) });
+                setConfig(current => ({ ...current, testRailProject: String(t.id) }));
               })}
             </div>
           </BentoCard>
@@ -2742,13 +2935,14 @@ try {
                       )}
                     </div>
                   ) : (
-                    <div className="max-h-[520px] overflow-y-auto divide-y divide-[#F4F1EA]">
+                    <div className="divide-y divide-[#F4F1EA]">
                       {stories.map(story => {
                         const isStoryExpanded = expandedStories.includes(story.jiraKey);
                         const selState = storySelectionState(story);
 
                         return (
                           <div key={story.jiraKey}>
+                            <JiraCommonInputs story={story} values={jiraCommonValues[story.jiraKey] ?? {}} onChange={(fieldKey,value) => setJiraCommonValues(prev => ({...prev,[story.jiraKey]:{...prev[story.jiraKey],[fieldKey]:value}}))}/>
                             {/* ΓöÇΓöÇ Story header row ΓöÇΓöÇ */}
                             <div className={cn(
                               'flex items-center gap-3 px-6 py-3 bg-[#FAFAF9] border-b border-[#F4F1EA]',
@@ -2817,6 +3011,7 @@ try {
                               const isSelected = config.selectedCases.includes(key);
                               const isExpanded = expandedScenario === key;
                               const hasDetail = !!(sc.custom_preconds || sc.custom_steps_separated?.length || sc.custom_expected);
+                              const prerequisiteSummary=jiraPrerequisiteSummary(sc);
 
                               return (
                                 <div key={key} className={cn(isSelected ? 'bg-[#104B99]/4' : 'bg-white')}>
@@ -2872,14 +3067,32 @@ try {
                                           <span className="text-[10px] font-mono text-white/50 uppercase tracking-wider">
                                             {story.jiraKey} · {sc.custom_steps_separated?.length ?? 0} pasos
                                           </span>
+                                          {(sc.inputRequirements?.length ?? 0) > 0 && <JiraScenarioCommonAction available={Object.values(resolveJiraScenarioValues(story, story.scenarios.indexOf(sc), {}, jiraCommonValues)).some(value => String(value).trim())} onApply={() => setWebDataValues(prev => ({...prev,[key]:useJiraCommonValues(story,story.scenarios.indexOf(sc),prev[key] ?? {},jiraCommonValues)}))}/>}
                                           {sc.custom_preconds && <span className="ml-auto text-[10px] text-[#F4A261]/70 font-mono">con precondiciones</span>}
                                         </div>
                                         {/* Preconditions */}
-                                        {sc.custom_preconds && (
-                                          <div className="px-4 py-2.5 border-b border-white/10 bg-[#F4A261]/5">
-                                            <div className="text-[9px] uppercase tracking-wider text-[#F4A261]/70 mb-1.5">Precondiciones</div>
-                                            <p className="text-[11px] text-white/60 leading-relaxed font-mono whitespace-pre-wrap">{sc.custom_preconds}</p>
-                                          </div>
+                                        <JiraScenarioStepEditor key={sc.scenarioId??key} scenario={sc} scenarios={story.scenarios} issueKey={story.jiraKey} appSlug={config.automationProject} initialValues={webDataValues[key]??{}} onEditingChange={setJiraEditing} onApply={(reviewed,editedValues)=>{
+                                          preserveCommonValuesOnEdit.current=true;
+                                          setWebDataValues(previous=>{
+                                            const next={...previous};
+                                            reviewed.forEach((candidate,index)=>{
+                                              const valueKey=scenarioKey(story.jiraKey,index);
+                                              const allowed=new Set((candidate.inputRequirements??[]).map(field=>field.key));
+                                              next[valueKey]=Object.fromEntries(Object.entries(previous[valueKey]??{}).filter(([fieldKey])=>allowed.has(fieldKey)));
+                                            });
+                                            const editedScenarioKey=scenarioKey(story.jiraKey,story.scenarios.findIndex(candidate=>(candidate.scenarioId??candidate.id)===(sc.scenarioId??sc.id)));
+                                            next[editedScenarioKey]={...next[editedScenarioKey],...editedValues};
+                                            return next;
+                                          });
+                                          setStories(previous=>previous.map(item=>item.jiraKey===story.jiraKey?{...item,scenarios:item.scenarios.map((candidate,index)=>applyReviewedLaunchScenario(candidate,reviewed[index]))}:item));
+                                        }}/>
+                                        <JiraScenarioReview scenario={sc} onChange={reviewConfiguration=>setStories(previous=>previous.map(item=>item.jiraKey===story.jiraKey ? {...item,scenarios:item.scenarios.map(candidate=>candidate===sc ? {...candidate,reviewConfiguration} : candidate)} : item))}/>
+                                        {jiraReviewBlockingErrors(sc).length>0 && <div role="alert" className="px-4 py-2.5 text-[11px] text-red-300 bg-red-500/10">Requiere revisión: {jiraReviewBlockingErrors(sc).join('; ')}</div>}
+                                        {prerequisiteSummary && (
+                                          <details className="px-4 py-2.5 border-b border-white/10 bg-[#F4A261]/5">
+                                            <summary className="cursor-pointer text-[10px] text-[#F4A261]/80">Precondiciones · datos de prueba requeridos</summary>
+                                            <p className="mt-2 text-[11px] text-white/60 leading-relaxed font-mono whitespace-pre-wrap">{prerequisiteSummary}</p>
+                                          </details>
                                         )}
                                         {/* Datos de la prueba - generado dinámicamente desde scenario.dataRequirements */}
                                         {Array.isArray((sc as any).dataRequirements) && (sc as any).dataRequirements.length > 0 && (
@@ -2934,12 +3147,13 @@ try {
                                         )}
                                         {/* Steps */}
                                         {sc.custom_steps_separated?.length > 0 && (
-                                          <div className="p-4 max-h-[280px] overflow-y-auto space-y-2.5">
+                                          <div className="p-4 space-y-2.5">
                                             {sc.custom_steps_separated.map((s, idx) => (
                                               <div key={idx} className="flex gap-3">
                                                 <span className="text-[10px] font-mono text-white/30 flex-shrink-0 w-5 text-right mt-0.5">{idx + 1}</span>
                                                 <div className="flex-1 min-w-0">
                                                   <div className="text-[11px] font-mono text-white/75 leading-relaxed">{s.content}</div>
+                                                  <JiraStepInputs fields={(sc.inputRequirements ?? []).filter(field => field.stepIndex === idx + 1)} values={resolveJiraScenarioValues(story, story.scenarios.indexOf(sc), webDataValues[key] ?? {}, jiraCommonValues)} onChange={(fieldKey, value) => setWebFieldValue(key, fieldKey, value)} />
                                                   {s.expected && (
                                                     <div className="text-[10px] font-mono text-[#5EC470]/60 mt-0.5">ΓåÆ {s.expected}</div>
                                                   )}
@@ -2983,7 +3197,7 @@ try {
                   ) : trCases.length === 0 ? (
                     <div className="p-12 text-center"><div className="text-[13px] text-[#8B999D]">No hay casos en la sección "{selectedSection?.name}".</div></div>
                   ) : (
-                     <div className="max-h-[520px] overflow-y-auto divide-y divide-[#F4F1EA]">
+                     <div className="max-h-[calc(100vh-270px)] overflow-y-auto divide-y divide-[#F4F1EA]">
                        {trCases.map(tc => {
                         const isSelected = selectedTrCaseIds.includes(tc.id);
                         const isExpanded = expandedCaseId === tc.id;
@@ -3000,7 +3214,11 @@ try {
                                 {isSelected && <Check size={10} className="text-white" strokeWidth={3} />}
                               </button>
                               <span className={cn('inline-flex items-center text-[10px] font-mono font-bold px-2 py-0.5 rounded-full flex-shrink-0', isSelected ? 'bg-[#48A157] text-white' : 'bg-[#F4F1EA] text-[#58646D]')}>C{tc.id}</span>
-                              <button type="button" onClick={() => hasDetail && setExpandedCaseId(isExpanded ? null : tc.id)} className="flex-1 text-left min-w-0">
+                              <button type="button" onClick={() => {
+                                if (!hasDetail) return;
+                                manualTrCaseExpansionRef.current = true;
+                                setExpandedCaseId(isExpanded ? null : tc.id);
+                              }} className="flex-1 text-left min-w-0">
                                 <span className={cn('text-[13px] truncate block', isSelected ? 'font-semibold text-[#1a1f2e]' : 'font-medium text-[#1a1f2e]')}>{tc.title}</span>
                               </button>
                               <div className="flex items-center gap-2 flex-shrink-0">
@@ -3015,7 +3233,10 @@ try {
                                   />
                                 )}
                                 {hasDetail && (
-                                  <button type="button" onClick={() => setExpandedCaseId(isExpanded ? null : tc.id)} className="p-1 rounded-full hover:bg-[#E8EBEC] transition-colors">
+                                  <button type="button" onClick={() => {
+                                    manualTrCaseExpansionRef.current = true;
+                                    setExpandedCaseId(isExpanded ? null : tc.id);
+                                  }} className="p-1 rounded-full hover:bg-[#E8EBEC] transition-colors">
                                     <ChevronDown size={14} className={cn('text-[#8B999D] transition-transform duration-200', isExpanded && 'rotate-180')} />
                                   </button>
                                 )}
@@ -3042,6 +3263,7 @@ try {
                                        requirements={runtimeRequirements as any}
                                        runtimeInputValues={runtimeInputValuesByCaseId[String(tc.id)]}
                                        onRuntimeInput={updateRuntimeInput}
+                                       steps={steps.map(normalizeTestRailStep)}
                                      />
                                     {steps.length > 0 && (
                                      <div className="px-4 py-2.5 border-b border-white/10">
@@ -3342,30 +3564,30 @@ try {
             <ChevronLeft size={13} /> Atrás
           </button>
           {step < maxStep ? (
-            <button onClick={handleContinueAdvance} disabled={!canAdvance()}
-              className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5">
-              {step === 2 ? ((isApiProject || isMobileProject) ? 'Continuar' : 'Generar escenarios') : 'Continuar'} <ChevronRight size={13} />
-            </button>
+            <div className="flex flex-col items-end gap-2">
+              {step === 3 && launchSelection.totalSelected > 0 && getStep3InputValidationMessage() && (
+                <div role="status" className="flex items-center gap-1.5 text-[11px] text-[#E63946]">
+                  <AlertCircle size={12} /> {getStep3InputValidationMessage()}
+                </div>
+              )}
+              <button onClick={handleContinueAdvance} disabled={!canAdvance()}
+                className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5">
+                {step === 2 ? ((isApiProject || isMobileProject) ? 'Continuar' : 'Generar escenarios') : 'Continuar'} <ChevronRight size={13} />
+              </button>
+            </div>
           ) : isMobileProject ? null : (
             <div className="flex flex-col items-end gap-2">
+              {launchSelection.totalSelected > 0 && getStep3InputValidationMessage() && (
+                <div role="status" className="flex items-center gap-1.5 text-[11px] text-[#E63946]">
+                  <AlertCircle size={12} /> {getStep3InputValidationMessage()}
+                </div>
+              )}
               {launchError && (
                 <div className="flex items-center gap-1.5 text-[11px] text-[#E63946]">
                   <AlertCircle size={12} /> {launchError}
                 </div>
               )}
-              <label className="flex items-center gap-2 text-[11px] text-[#58646D]">
-                <input type="checkbox" checked={forceRediscovery} onChange={(event) => {
-                  const enabled = event.target.checked;
-                  setForceRediscovery(enabled);
-                  if (enabled) setContextOnly(false);
-                }} />
-                Rediscovery completo
-              </label>
-              <label className="flex items-center gap-2 text-[11px] text-[#58646D]">
-                <input type="checkbox" checked={contextOnly} disabled={forceRediscovery} onChange={(event) => setContextOnly(event.target.checked)} />
-                Solo materializar contexto
-              </label>
-              <button onClick={handleLaunch} disabled={isLaunching}
+              <button onClick={handleLaunch} disabled={isLaunching || Boolean(getStep3InputValidationMessage())}
                 className="bg-gradient-to-r from-[#48A157] to-[#357a42] hover:from-[#5EC470] hover:to-[#48A157] disabled:from-[#BABEC3] disabled:to-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5 shadow-lg shadow-[#48A157]/30 group">
                 {isLaunching ? <><Loader2 size={13} className="animate-spin" /> Enviando a ejecución...</> : <><Rocket size={13} className="group-hover:rotate-12 transition" /> Lanzar ejecución</>}
               </button>

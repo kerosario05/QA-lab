@@ -14,7 +14,13 @@ import type { useTestRailDestination } from './useTestRailDestination';
  * casos?" step, not a native `<select>` or a hand-built lookalike. Suite and Suite ID remain
  * internal TestRail routing details; choosing a section also resolves the suite that owns it.
  */
-export function TestRailDestinationPicker({ testRail }: { testRail: ReturnType<typeof useTestRailDestination> }) {
+export function TestRailDestinationPicker({
+  testRail,
+  showCaseCount = true,
+}: {
+  testRail: ReturnType<typeof useTestRailDestination>;
+  showCaseCount?: boolean;
+}) {
   return (
     <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-4">
       <div className="flex items-center gap-2">
@@ -35,7 +41,7 @@ export function TestRailDestinationPicker({ testRail }: { testRail: ReturnType<t
         onSelect={(p) => testRail.chooseProject(String(p.id))}
         getId={(p) => String(p.id)}
         getLabel={(p) => p.name}
-        getBadge={(p) => (typeof p.totalCaseCount === 'number' ? `${p.totalCaseCount} TCs` : undefined)}
+        getBadge={(p) => showCaseCount && typeof p.totalCaseCount === 'number' ? `${p.totalCaseCount} TCs` : undefined}
         errorText={testRail.error ?? undefined}
       />
 

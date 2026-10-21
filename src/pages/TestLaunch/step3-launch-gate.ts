@@ -8,6 +8,7 @@ export type Step3LaunchGateInput = {
   selectedScenarioKeys: string[];
   selectedTestRailCaseIds?: number[];
   source: string;
+  requiredInputsReady?: boolean;
 };
 
 export function canContinueFromStep3(input: Step3LaunchGateInput): boolean {
@@ -22,17 +23,16 @@ export function canContinueFromStep3(input: Step3LaunchGateInput): boolean {
 
   if (!hasJiraData && !hasTestRailData) return false;
 
+  let hasSelection = false;
   if (hasJiraData && hasTestRailData) {
-    return (input.selectedScenarioKeys?.length ?? 0) > 0 || (input.selectedTestRailCaseIds?.length ?? 0) > 0;
-  }
-  if (hasJiraData) {
-    return (input.selectedScenarioKeys?.length ?? 0) > 0;
-  }
-  if (hasTestRailData) {
-    return (input.selectedTestRailCaseIds?.length ?? 0) > 0;
+    hasSelection = (input.selectedScenarioKeys?.length ?? 0) > 0 || (input.selectedTestRailCaseIds?.length ?? 0) > 0;
+  } else if (hasJiraData) {
+    hasSelection = (input.selectedScenarioKeys?.length ?? 0) > 0;
+  } else if (hasTestRailData) {
+    hasSelection = (input.selectedTestRailCaseIds?.length ?? 0) > 0;
   }
 
-  return false;
+  return hasSelection && input.requiredInputsReady !== false;
 }
 
 export function getStep3SelectionMessage(input: Step3LaunchGateInput): string | null {

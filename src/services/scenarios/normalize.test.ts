@@ -351,3 +351,9 @@ describe('normalizeScenarioPreviewResponse', () => {
     expect(result.rejected).toHaveLength(2);
   });
 });
+
+it('preserves pending Jira observations through response normalization',()=>{
+ const observations=[{stepIndex:2,requirement:'Observe actual action label'}];
+ const result=normalizeScenarioPreviewResponse({scenarios:[{sourceIssueKey:'HU-2',title:'Review',steps:['Open','Check'],unresolvedUiRequirements:observations}]});
+ expect(result.stories[0].scenarios[0].unresolvedUiRequirements).toEqual(observations);
+});

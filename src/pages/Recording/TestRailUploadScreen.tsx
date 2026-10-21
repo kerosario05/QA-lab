@@ -1,11 +1,13 @@
-import { useState } from 'react';
-import { AlertTriangle, Boxes, CheckCircle2, ChevronLeft, GitBranch, Loader2, Rocket, ScanLine } from 'lucide-react';
-import { C, cn } from '../../constants/theme';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, ChevronLeft, Loader2, Rocket } from 'lucide-react';
+import { C } from '../../constants/theme';
+import { RecordingStepper } from './RecordingStepper';
 import { BentoCard } from '../../components/ui/BentoCard';
 import type { RecordedScenario } from '../../services/recordings/types';
 import type { ActiveRun } from '../../types';
 import type { JiraIssue } from '../../services/jira/types';
-import { useTestRailDestination } from './useTestRailDestination';
+import type { useTestRailDestination } from './useTestRailDestination';
+import { recordingsApi } from '../../services/recordings';
 import { TestRailDestinationPicker } from './TestRailDestinationPicker';
 import { JiraRequirementPicker } from './JiraRequirementPicker';
 import { useWebRecordingReplay } from './useWebRecordingReplay';
@@ -38,80 +40,89 @@ export interface TestRailUploadScreenProps {
   scenarios: RecordedScenario[];
   scenarioRecordingIds?: string[];
   scenarioDatasetValues?: Record<string, Record<string, string | undefined>>;
+  testRail: ReturnType<typeof useTestRailDestination>;
+  selectedIssue: JiraIssue | null;
+  onSelectIssue: (issue: JiraIssue | null) => void;
   dataOverrides: Record<string, Record<number, string>>;
   datasetValues: Record<string, string | undefined>;
   onBack: () => void;
   onLaunch?: (run: ActiveRun) => void;
 }
 
-/** Fixed for this screen — Recording is always past project selection, mid TestRail setup. */
-const STEPS = [
-  { n: 1, label: 'Proyecto', icon: Boxes, status: 'completed' as const },
-  { n: 2, label: 'Fuentes', icon: GitBranch, status: 'active' as const },
-  { n: 3, label: 'Casos', icon: ScanLine, status: 'inactive' as const },
-  { n: 4, label: 'Lanzar', icon: Rocket, status: 'inactive' as const },
-];
+const EMPTY_RECORDING_IDS: string[] = [];
 
+/** This screen is always past project, recording and scenario selection, mid TestRail setup. */
 function StepIndicator() {
-  return (
-    <div className="mb-5 flex items-center justify-center">
-      <div className="flex items-center gap-2">
-        {STEPS.map((s, i) => {
-          const Icon = s.icon;
-          return (
-            <div key={s.n} className="flex items-center gap-2">
-              <div
-                className={cn(
-                  'flex items-center gap-2 px-4 py-2 rounded-full transition-all',
-                  s.status === 'active' && 'bg-[#1a1f2e] text-white',
-                  s.status === 'completed' && 'bg-[#48A157] text-white',
-                  s.status === 'inactive' && 'bg-white border border-[#E8EBEC] text-[#8B999D]',
-                )}
-              >
-                {s.status === 'completed' ? <CheckCircle2 size={13} strokeWidth={3} /> : <Icon size={13} />}
-                <span className="text-[11px] font-semibold uppercase tracking-wider">{s.label}</span>
-              </div>
-              {i < STEPS.length - 1 && (
-                <div className={cn('w-6 h-px transition-all', s.status === 'completed' ? 'bg-[#48A157]' : 'bg-[#E8EBEC]')} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+  return <RecordingStepper current="fuentes" />;
 }
 
 export function TestRailUploadScreen({
   projectSlug,
   projectDetail,
   scenarios,
-  scenarioRecordingIds = [],
+  scenarioRecordingIds = EMPTY_RECORDING_IDS,
   scenarioDatasetValues = {},
+  testRail,
+  selectedIssue,
+  onSelectIssue,
   dataOverrides,
   datasetValues,
   recordingId,
   onBack,
   onLaunch,
 }: TestRailUploadScreenProps) {
-  const testRail = useTestRailDestination(projectDetail?.testRail);
   const replay = useWebRecordingReplay();
-  const [fastPathSummary, setFastPathSummary] = useState<string | null>(null);
-  const [jiraIssue, setJiraIssue] = useState<JiraIssue | null>(null);
+  const [traceReadiness, setTraceReadiness] = useState<{ checking: boolean; error: string | null }>({ checking: true, error: null });
 
   const destinationReady = Boolean(testRail.destination.projectId && testRail.destination.suiteId && testRail.destination.sectionId);
-  const recordingGroups = groupScenariosByRecording(scenarios, scenarioRecordingIds, recordingId);
-  const canExecute = Boolean(recordingId) && recordingGroups.length > 0 && destinationReady && Boolean(jiraIssue?.key);
-  const executionBlockedReason = !jiraIssue?.key
+  const recordingGroups = useMemo(
+    () => groupScenariosByRecording(scenarios, scenarioRecordingIds, recordingId),
+    [scenarios, scenarioRecordingIds, recordingId],
+  );
+  const recordingSelectionKey = recordingGroups
+    .map((group) => `${group.recordingId}:${group.scenarios.map((scenario) => scenario.scenarioId).sort().join(',')}`)
+    .sort()
+    .join('|');
+
+  useEffect(() => {
+    let current = true;
+    setTraceReadiness({ checking: true, error: null });
+    const checks = recordingGroups.map(async (group) => {
+      const response = await recordingsApi.scenarios(group.recordingId, projectSlug);
+      const lifecycle = response.lifecycle;
+      if (!lifecycle?.recordingExists) return `La grabación ${group.recordingId} ya no existe en QA Lab. Vuelve a cargar una grabación disponible.`;
+      if (!lifecycle.traceReady) return `La grabación ${group.recordingId} no tiene un trace detenido. Detén la grabación o vuelve a cargar los escenarios.`;
+      if (!lifecycle.semanticReady) return `La base semántica de la grabación ${group.recordingId} todavía no está lista.`;
+      if (!lifecycle.scenariosReady) return `La grabación ${group.recordingId} ya no tiene escenarios guardados.`;
+      const persistedIds = new Set(response.scenarios.map((scenario) => scenario.scenarioId));
+      const missingIds = group.scenarios.map((scenario) => scenario.scenarioId).filter((scenarioId) => !persistedIds.has(scenarioId));
+      if (missingIds.length > 0) return `La grabación ${group.recordingId} ya no contiene todos los escenarios seleccionados. Vuelve a cargarlos.`;
+      return null;
+    });
+
+    void Promise.allSettled(checks).then((results) => {
+      if (!current) return;
+      const error = results.map((result) => result.status === 'rejected'
+        ? `No se pudo validar una de las grabaciones seleccionadas: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+        : result.value).find((message): message is string => Boolean(message)) ?? null;
+      setTraceReadiness({ checking: false, error });
+    });
+
+    return () => { current = false; };
+  }, [projectSlug, recordingSelectionKey, recordingGroups]);
+
+  const canExecute = Boolean(recordingId) && recordingGroups.length > 0 && destinationReady && Boolean(selectedIssue?.key) && !traceReadiness.checking && !traceReadiness.error;
+  const executionBlockedReason = !selectedIssue?.key
     ? 'Selecciona un caso o requerimiento de Jira'
     : !destinationReady
       ? 'Completa Proyecto y Sección de TestRail'
-      : undefined;
+      : traceReadiness.checking
+        ? 'Validando las grabaciones seleccionadas'
+        : traceReadiness.error ?? undefined;
   const running = replay.starting;
 
   async function handleExecuteAutomation() {
     if (!canExecute || running) return;
-    setFastPathSummary(null);
     const selections = recordingGroups.flatMap((group) => group.scenarios.map((scenario) => {
       const overrides = dataOverrides[testRailSelectionKey(group.recordingId, scenario.scenarioId)]
         ?? dataOverrides[scenario.scenarioId];
@@ -129,10 +140,10 @@ export function TestRailUploadScreen({
       projectSlug,
       selections,
       testRail.destination,
-      jiraIssue ? { key: jiraIssue.key, summary: jiraIssue.summary } : undefined,
+      selectedIssue ? { key: selectedIssue.key, summary: selectedIssue.summary } : undefined,
     );
     if (!launch?.jobId) {
-      setFastPathSummary(replay.error ?? 'No se recibió un job de ejecución del backend.');
+      if (!replay.error) replay.setError('No se recibió un job de ejecución del backend.');
       return;
     }
     onLaunch?.({
@@ -180,7 +191,7 @@ export function TestRailUploadScreen({
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
             <TestRailDestinationPicker testRail={testRail} />
-            <JiraRequirementPicker selectedIssue={jiraIssue} onSelectIssue={setJiraIssue} />
+            <JiraRequirementPicker selectedIssue={selectedIssue} onSelectIssue={onSelectIssue} />
           </div>
 
           {/* Scenario summary follows the two source panels and sizes to its actual contents. */}
@@ -207,10 +218,13 @@ export function TestRailUploadScreen({
               </div>
           </div>
 
-          {fastPathSummary && (
+          {traceReadiness.checking && (
+            <div className="mt-5 text-[12px] text-[#58646D]">Validando que las grabaciones seleccionadas sigan disponibles…</div>
+          )}
+          {traceReadiness.error && (
             <div className="mt-5 flex items-start gap-2 text-[12px] text-[#B4463C]">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>{fastPathSummary}</span>
+              <span>{traceReadiness.error}</span>
             </div>
           )}
           {replay.error && (

@@ -15,6 +15,10 @@ export type PermissionKey =
   | 'recordings.promote'
   | 'executions.view'
   | 'executions.export'
+  | 'testdesign.view'
+  | 'testdesign.generate'
+  | 'testdesign.publish_testrail'
+  | 'testdesign.publish_jira'
   | 'admin.users'
   | 'admin.roles';
 

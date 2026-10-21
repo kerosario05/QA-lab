@@ -33,6 +33,14 @@ export interface ActiveScenario {
   stepResults?: Array<{ status?: string; state?: string }>;
 }
 
+export interface ActiveScenarioInput {
+  id: string;
+  title: string;
+  steps: string[];
+  preconditions?: string[];
+  expectedResult?: string | null;
+}
+
 const activeScenariosByJob = new Map<string, ActiveScenario[]>();
 
 function cleanScenarioText(value: string | null | undefined): string {
@@ -58,12 +66,53 @@ export function rememberActiveScenarios(jobId: string | undefined, stories: Stor
   activeScenariosByJob.set(jobId, normalizeActiveScenarios(stories));
 }
 
+export function rememberActiveScenariosWithCases(
+  jobId: string | undefined,
+  stories: Story[],
+  caseScenarios: ActiveScenarioInput[] = [],
+): void {
+  if (!jobId) return;
+  const jiraScenarios = normalizeActiveScenarios(stories);
+  const normalizedCases = caseScenarios
+    .filter((scenario) => typeof scenario.id === 'string' && scenario.id.trim() && typeof scenario.title === 'string' && scenario.title.trim())
+    .map((scenario, index) => ({
+      id: scenario.id.trim(),
+      title: cleanScenarioText(scenario.title),
+      steps: Array.isArray(scenario.steps) ? scenario.steps.map(cleanScenarioText).filter(Boolean) : [],
+      preconditions: Array.isArray(scenario.preconditions) ? scenario.preconditions.map(cleanScenarioText).filter(Boolean) : [],
+      expectedResult: scenario.expectedResult ? cleanScenarioText(scenario.expectedResult) : null,
+      index: index + 1,
+      total: caseScenarios.length,
+    }));
+  const all = [...jiraScenarios, ...normalizedCases];
+  activeScenariosByJob.set(jobId, all.map((scenario, index) => ({ ...scenario, index: index + 1, total: all.length })));
+}
+
+/** Carry presentation-only scenario metadata to the new job created by a rerun. */
+export function copyActiveScenariosToRerun(sourceJobId: string, rerunJobId: string): boolean {
+  if (!sourceJobId || !rerunJobId || sourceJobId === rerunJobId) return false;
+  const scenarios = activeScenariosByJob.get(sourceJobId);
+  if (!scenarios?.length) return false;
+  activeScenariosByJob.set(rerunJobId, scenarios.map((scenario) => ({
+    ...scenario,
+    steps: [...scenario.steps],
+    preconditions: scenario.preconditions ? [...scenario.preconditions] : undefined,
+    stepResults: scenario.stepResults?.map((step) => ({ ...step })),
+  })));
+  return true;
+}
+
+function normalizeScenarioId(value: string): string {
+  return value.trim().replace(/^C(?=\d+$)/i, '');
+}
+
 export function resolveActiveScenario(jobId: string, status: Record<string, unknown>): ActiveScenario | null {
   const scenarios = activeScenariosByJob.get(jobId) ?? [];
   if (scenarios.length === 0) return null;
   const current = String(status.currentCaseId ?? status.caseId ?? status.currentCase ?? status.currentTest ?? '').trim();
   if (!current) return null;
   const active = scenarios.find((scenario) => scenario.id === current)
+    ?? scenarios.find((scenario) => normalizeScenarioId(scenario.id) === normalizeScenarioId(current))
     ?? scenarios.find((scenario) => scenario.title === current || current.includes(scenario.id));
   if (!active) return null;
   const stepResults = Array.isArray(status.stepResults) ? status.stepResults : undefined;
@@ -88,6 +137,7 @@ export interface DiscoveryBatchRequestOptions {
   jiraKey?: string;
   contextOnly?: boolean;
   runtimeEntriesByCase?: Record<string, DataContextEntry[]>;
+  jiraSemantic?: { stories: Story[]; executionEngine: unknown; scenarioOrigin?: unknown; dataOverrides?: unknown };
   publishedCases?: Array<{
     scenarioId: string;
     caseId: number;
@@ -117,6 +167,10 @@ function normalizeRuntimeEntriesByCase(
 }
 
 export interface McpScenarioInput {
+  inputRequirements?: Story['scenarios'][number]['inputRequirements'];
+  unresolvedUiRequirements?: Story['scenarios'][number]['unresolvedUiRequirements'];
+  conditionRequirements?: Story['scenarios'][number]['conditionRequirements'];
+  reviewConfiguration?: Story['scenarios'][number]['reviewConfiguration'];
   scenarioId?: string;
   sourceIssueKey: string;
   title: string;
@@ -154,7 +208,7 @@ function extractRouteProfileFromPreconditions(preconds: string | null): string |
   return match ? match[1] : undefined;
 }
 
-function storiesToMcpScenarios(stories: Story[], appSlug?: string): McpScenarioInput[] {
+function storiesToMcpScenarios(stories: Story[], appSlug?: string, jiraSemantic = false): McpScenarioInput[] {
   const result: McpScenarioInput[] = [];
   for (const story of stories) {
     for (const sc of story.scenarios) {
@@ -183,10 +237,24 @@ function storiesToMcpScenarios(stories: Story[], appSlug?: string): McpScenarioI
         nonExecutableCriteria: '',
         mcpExecutable: true,
         authIntent: sc.authIntent,
+        ...(jiraSemantic ? {inputRequirements:sc.inputRequirements,unresolvedUiRequirements:sc.unresolvedUiRequirements,conditionRequirements:sc.conditionRequirements,reviewConfiguration:sc.reviewConfiguration} : {}),
       });
     }
   }
   return result;
+}
+
+/** Safe transport telemetry: counts only; never logs runtime values or field names. */
+export function countScenarioDataOverrides(value: unknown): { scenarios: number; fields: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { scenarios: 0, fields: 0 };
+  const entries = Object.entries(value as Record<string, unknown>).map(([scenario, fields]) => [
+    scenario,
+    fields && typeof fields === 'object' && !Array.isArray(fields)
+      ? Object.values(fields as Record<string, unknown>).filter(field => typeof field === 'string' && field.trim().length > 0).length
+      : 0,
+  ] as const);
+  return { scenarios: entries.filter(([, count]) => count > 0).length,
+    fields: entries.reduce((total, [, count]) => total + count, 0) };
 }
 
 async function fetchProvider(url: string, body: unknown, timeoutMs: number): Promise<RunProviderResponse> {
@@ -278,6 +346,37 @@ export async function requestDiscoveryBatch(
     body.testRunId = options.testRunId || undefined;
     body.jiraKey = options.jiraKey || undefined;
     body.publishedCases = options.publishedCases || undefined;
+
+    const jira = options.jiraSemantic;
+    if (jira?.executionEngine === 'jira_semantic') {
+      // Fail closed: each published Jira case must map to exactly one converted scenario, and vice versa.
+      const converted = storiesToMcpScenarios(jira.stories, options.appSlug, true);
+      const caseIdByScenario = new Map<McpScenarioInput, number>();
+      let invalidCases = 0;
+      for (const pc of options.publishedCases ?? []) {
+        if (pc.sourceType !== 'jira_preview') continue;
+        const ids = new Set([pc.launchScenarioId, pc.executionScenarioId, pc.scenarioId].filter(Boolean));
+        const matches = converted.filter(sc => sc.scenarioId && ids.has(sc.scenarioId));
+        if (matches.length !== 1 || caseIdByScenario.has(matches[0])) { invalidCases++; continue; }
+        caseIdByScenario.set(matches[0], pc.caseId);
+      }
+      if (invalidCases > 0) {
+        console.log(`[runs] error code=JIRA_SEMANTIC_SCENARIO_UNMATCHED unmatchedOrAmbiguousCases=${invalidCases}`);
+        return {
+          ok: false,
+          errorCode: 'JIRA_SEMANTIC_SCENARIO_UNMATCHED',
+          error: 'Published Jira case has no unique matching Jira semantic scenario',
+          message: `unmatchedOrAmbiguousCases=${invalidCases}`,
+        };
+      }
+      const jiraSemanticScenarios = [...caseIdByScenario].map(([sc, caseId]) => ({ ...sc, caseId }));
+      body.executionEngine = 'jira_semantic';
+      body.scenarioOrigin = jira.scenarioOrigin;
+      body.dataOverrides = jira.dataOverrides;
+      body.jiraSemanticScenarios = jiraSemanticScenarios;
+      const counts = countScenarioDataOverrides(jira.dataOverrides);
+      console.log(`[runs] jira semantic forwarded on discovery-batch scenarios=${jiraSemanticScenarios.length} overrideScenarios=${counts.scenarios} fields=${counts.fields}`);
+    }
   }
 
   if (testRailProjectName) {
@@ -306,19 +405,21 @@ export async function requestScenarioPreviewRun(
   jiraKey?: string,
   appSlug?: string,
   routeProfile?: Record<string, unknown>,
+  execution?: { executionEngine?: unknown; scenarioOrigin?: unknown; dataOverrides?: unknown },
 ): Promise<RunProviderResponse> {
   const config = getRunProviderConfig();
   if (!config.baseUrl) {
     return { ok: false, errorCode: 'RUN_PROVIDER_NOT_CONFIGURED', error: 'Run provider base URL is not set' };
   }
 
-  const scenarios = storiesToMcpScenarios(stories, appSlug);
+  const scenarios = storiesToMcpScenarios(stories, appSlug, execution?.executionEngine === 'jira_semantic');
   if (scenarios.length === 0) {
     return { ok: false, errorCode: 'INVALID_RUN_REQUEST', error: 'No valid scenarios to run after conversion' };
   }
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}${config.endpointPreview}`;
   const body: Record<string, unknown> = {
+    ...(execution ?? {}),
     scenarios,
     appSlug: appSlug || 'arquitectura-automatizacion',
     routeProfile: routeProfile || undefined,
@@ -348,7 +449,12 @@ export async function requestScenarioPreviewRun(
   const scenarioIds = scenarios.map(sc => sc.scenarioId ?? '').filter(Boolean).join(",");
   const caseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");
   const publishedScenarioIds = (publishedCases ?? []).map(pc => pc.scenarioId).join(",");
-  console.log(`[runs] provider request scenario-preview routeProfile presente=${Boolean(routeProfile)} stories=${stories.length} scenarios=${scenarios.length} launchId=${launchId ?? 'ΓÇö'} testRunId=${testRunId ?? 'ΓÇö'} publishedCases=${publishedCases?.length ?? 0} scenarioIds=${scenarioIds} publishedScenarioIds=${publishedScenarioIds} caseIds=${caseIds} jiraKey=${jiraKey ?? 'ΓÇö'}`);
+  const scenarioOrigin = execution?.scenarioOrigin && typeof execution.scenarioOrigin === 'object'
+    ? execution.scenarioOrigin as { kind?: unknown; jiraKey?: unknown }
+    : undefined;
+  const overrideCounts = countScenarioDataOverrides(execution?.dataOverrides);
+  console.log(`[runs] jira runtime data forwarded scenarios=${overrideCounts.scenarios} fields=${overrideCounts.fields}`);
+  console.log(`[runs] provider request scenario-preview engine=${String(execution?.executionEngine ?? 'legacy')} origin=${String(scenarioOrigin?.kind ?? 'none')} originJiraKey=${String(scenarioOrigin?.jiraKey ?? '—')} routeProfile presente=${Boolean(routeProfile)} stories=${stories.length} scenarios=${scenarios.length} launchId=${launchId ?? 'ΓÇö'} testRunId=${testRunId ?? 'ΓÇö'} publishedCases=${publishedCases?.length ?? 0} scenarioIds=${scenarioIds} publishedScenarioIds=${publishedScenarioIds} caseIds=${caseIds} jiraKey=${jiraKey ?? 'ΓÇö'}`);
   const result = await fetchProvider(url, body, config.timeoutMs);
   rememberActiveScenarios(result.jobId, stories);
   console.log(`[runs] provider response ok=${result.ok} jobId=${result.jobId ?? 'ΓÇö'} status=${result.status ?? 'ΓÇö'}`);

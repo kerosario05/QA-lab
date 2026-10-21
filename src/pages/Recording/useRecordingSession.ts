@@ -51,6 +51,7 @@ export function useRecordingSession(projectSlug: string) {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<RecordingSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyReady, setHistoryReady] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // A slow status request must not overlap with the next poll. The backend may take
@@ -67,6 +68,7 @@ export function useRecordingSession(projectSlug: string) {
   }, []);
 
   const refreshHistory = useCallback(async () => {
+    setHistoryReady(false);
     if (!projectSlug) {
       setHistory([]);
       setHistoryLoading(false);
@@ -79,6 +81,7 @@ export function useRecordingSession(projectSlug: string) {
       const res = await recordingsApi.list(projectSlug);
       if (historyRequestRef.current !== requestId) return;
       setHistory(res.recordings ?? []);
+      setHistoryReady(true);
     } catch {
       // A project with no recordings yet is not an error worth showing.
       if (historyRequestRef.current === requestId) setHistory([]);
@@ -435,6 +438,7 @@ export function useRecordingSession(projectSlug: string) {
     setError,
     history,
     historyLoading,
+    historyReady,
     start,
     stop,
     derive,

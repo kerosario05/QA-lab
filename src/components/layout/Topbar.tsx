@@ -1,14 +1,21 @@
 import { useState, useEffect } from 'react';
-import { Search, Bell, LogOut } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
+import { GlobalSearch } from './GlobalSearch';
+import { NotificationBell } from './NotificationBell';
+import type { ActiveRun, View } from '../../types';
 
 interface TopbarProps {
   title: string;
   subtitle?: string;
   action?: React.ReactNode;
+  /** Targets of the inline global search results. */
+  onNavigate: (view: View) => void;
+  onOpenRun: (run: ActiveRun) => void;
+  onOpenExecution: (launchId: string) => void;
 }
 
-export function Topbar({ title, subtitle, action }: TopbarProps) {
+export function Topbar({ title, subtitle, action, onNavigate, onOpenRun, onOpenExecution }: TopbarProps) {
   const { user, logout } = useAuth();
   const [time, setTime] = useState(new Date());
   useEffect(() => {
@@ -32,18 +39,8 @@ export function Topbar({ title, subtitle, action }: TopbarProps) {
         </h1>
       </div>
       <div className="flex items-center gap-2">
-        <div className="relative">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8B999D]" />
-          <input
-            placeholder="Buscar..."
-            className="bg-[#FAFAF7] border border-transparent focus:border-[#104B99] focus:bg-white rounded-full pl-9 pr-4 py-1.5 text-[12px] w-48 outline-none transition-all placeholder:text-[#BABEC3]"
-          />
-          <kbd className="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] text-[#BABEC3] border border-[#E8EBEC] rounded px-1 py-0.5 bg-white">⌘K</kbd>
-        </div>
-        <button className="relative p-1.5 hover:bg-[#FAFAF7] rounded-full transition">
-          <Bell size={15} className="text-[#58646D]" />
-          <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-[#48A157] rounded-full" />
-        </button>
+        <GlobalSearch onNavigate={onNavigate} onOpenRun={onOpenRun} onOpenExecution={onOpenExecution} />
+        <NotificationBell onOpenExecution={onOpenExecution} />
         {action}
         <button
           onClick={() => void logout()}

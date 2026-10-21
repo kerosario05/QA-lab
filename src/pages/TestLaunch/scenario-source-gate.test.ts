@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { canAdvanceFromSources, getJiraSourceSelectionMessage, isJiraSourceSelectionComplete } from './scenario-source-gate';
+import { canAdvanceFromSources, getJiraSourceSelectionMessage, isJiraSourceSelectionComplete, shouldLoadJiraScenarios } from './scenario-source-gate';
 
 describe('scenario source gate', () => {
+  it('loads Jira scenarios only when Jira is one of the selected sources', () => {
+    expect(shouldLoadJiraScenarios('testrail')).toBe(false);
+    expect(shouldLoadJiraScenarios('jira')).toBe(true);
+    expect(shouldLoadJiraScenarios('both')).toBe(true);
+  });
+
   it('blocks jira/both when no issue is selected', () => {
     expect(isJiraSourceSelectionComplete({ source: 'jira', jiraProject: 'QA', sprint: '12', jiraIssueKey: '' })).toBe(false);
     expect(isJiraSourceSelectionComplete({ source: 'both', jiraProject: 'QA', sprint: '12', jiraIssueKey: '' })).toBe(false);

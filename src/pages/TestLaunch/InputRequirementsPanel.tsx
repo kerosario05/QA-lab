@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { InputRequirement } from './input-requirements';
-import { composeSelectedInputRequirements, groupRuntimeInputRequirements, type RuntimeInputPresentation } from './input-requirements';
+import { composeSelectedInputRequirements, groupRuntimeInputRequirements, orderRuntimeInputsByStepOrder, type RuntimeInputPresentation } from './input-requirements';
 import {
   buildRuntimeEntriesByCase,
   createInputRequirementValues,
@@ -30,7 +30,33 @@ type InputRequirementsPanelProps = {
   onBlocked?: (blocked: boolean) => void;
 };
 
+const PASSWORD_LABEL = /(?:contrase(?:ñ|n)a|password)/i;
+const NON_PASSWORD_LABEL = /(?:\brnc\b|\busuario\b|\busername\b|\buser\b|\btoken\b|\botp\b|\bpin\b|c[oó]digo|\bcuenta\b|\baccount\b|\bmonto\b|\bamount\b|\bmoneda\b|\bcurrency\b|identificaci[oó]n|documento|\bemail\b|correo|tel[eé]fono|\bphone\b|\bfecha\b|\bdate\b)/i;
+
 function resolveControlType(requirement: InputRequirement): string {
+  const labels = [
+    requirement.displayLabel,
+    requirement.semanticField,
+    requirement.label,
+    requirement.technicalLabel,
+    requirement.key,
+  ].filter((label): label is string => typeof label === 'string' && label.trim() !== '');
+  const humanLabel = [requirement.displayLabel, requirement.semanticField, requirement.label]
+    .find((label): label is string => typeof label === 'string' && label.trim() !== '');
+  const declaredKind = requirement.fieldCapability?.kind
+    ?? requirement.controlType?.trim().toLowerCase();
+
+  // `sensitive` is used by the runtime for data handling and can include OTPs,
+  // tokens, user IDs, and account data. It must not decide the visual input mask.
+  // The human/semantic field name takes precedence over an over-broad password
+  // capability inferred upstream (for example, an RNC marked sensitive).
+  if (humanLabel && NON_PASSWORD_LABEL.test(humanLabel) && declaredKind === 'password') {
+    return 'text';
+  }
+  if ((humanLabel && PASSWORD_LABEL.test(humanLabel)) || (!humanLabel && labels.some((label) => PASSWORD_LABEL.test(label)))) {
+    return 'password';
+  }
+
   if (requirement.fieldCapability) {
     if (requirement.fieldCapability.kind === 'datetime') return 'datetime-local';
     if (requirement.fieldCapability.kind === 'unknown') return 'text';
@@ -69,21 +95,22 @@ function RequirementControl({
   };
   const commonProps = {
     className:
-      'w-full rounded-md border border-white/10 bg-[#0d1119] px-3 py-1.5 text-[13px] text-white/85 font-mono outline-none focus:border-[#48A157]',
+      'w-full rounded-md border border-white/10 bg-[#0d1119] px-2.5 py-1 text-[12px] text-white/85 font-mono outline-none focus:border-[#48A157]',
     value,
     'data-input-key': inputKey,
     onChange: (event: React.ChangeEvent<HTMLInputElement>) => onChange(event.target.value),
   };
   const syntheticSupporting = requirement.valuePolicy === 'safe_synthetic' && requirement.inputRole === 'supporting';
-  const emptyChoice = (capability?.kind === 'select' || capability?.kind === 'radio') && !(capability.allowedValues?.length);
+  const emptyChoice = (controlType === 'select' || controlType === 'radio')
+    && !((capability?.allowedValues ?? requirement.allowedValues)?.length);
 
   let control: React.ReactNode;
   if (syntheticSupporting) {
     control = <span data-input-policy="safe_synthetic" className="text-[11px] text-white/45">Se resolverá en ejecución</span>;
-  } else if (emptyChoice && requirement.valuePolicy === 'scenario_controlled' && requirement.required === true) {
-    control = <input {...commonProps} {...constraintProps} data-field-capability={capability?.kind} data-select-fallback="manual" type="text" />;
+  } else if (emptyChoice && requirement.required === true && (!capability || requirement.valuePolicy === 'scenario_controlled')) {
+    control = <input {...commonProps} {...constraintProps} data-field-capability={capability?.kind ?? controlType} data-select-fallback="manual" type="text" />;
   } else if (emptyChoice) {
-    control = <span data-field-capability={capability.kind} className="text-[11px] text-[#F4A261]/80">Opciones pendientes de resolución</span>;
+    control = <span data-field-capability={capability?.kind ?? controlType} className="text-[11px] text-[#F4A261]/80">Opciones pendientes de resolución</span>;
   } else if (controlType === 'radio') {
     control = (
       <div data-field-capability="radio" className="flex flex-col gap-1">
@@ -125,7 +152,9 @@ function RequirementControl({
   }
 
   return (
-    <div className="flex flex-col gap-1">
+    // The technical key only repeated the label under every field; it stays as a data attribute and
+    // tooltip for debugging instead of visible text.
+    <div className="flex flex-col gap-1" data-technical-input-key={inputKey} title={inputKey}>
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-medium text-white/75 flex items-center gap-1">
           {label}
@@ -133,7 +162,6 @@ function RequirementControl({
         </span>
         {control}
       </label>
-      <span data-technical-input-key={inputKey} className="text-[9px] font-mono text-white/35 truncate" title={inputKey}>{inputKey}</span>
     </div>
   );
 }
@@ -143,15 +171,18 @@ export function InlineInputRequirements({
   requirements,
   runtimeInputValues,
   onRuntimeInput,
+  steps,
 }: {
   caseId: number;
   requirements: InputRequirement[];
   runtimeInputValues?: Record<string, string>;
   onRuntimeInput?: (caseId: number, key: string, value: string) => void;
+  /** The scenario's steps: the inputs are listed in the order the steps use them. */
+  steps?: string[];
 }) {
   if (requirements.length === 0) return null;
 
-  const grouped = groupRuntimeInputRequirements(requirements);
+  const grouped = orderRuntimeInputsByStepOrder(groupRuntimeInputRequirements(requirements), steps);
   const renderRequirement = (presentation: RuntimeInputPresentation) => (
     <RequirementControl
       key={`${caseId}-${presentation.inputKey}`}
@@ -166,13 +197,13 @@ export function InlineInputRequirements({
     <div className="px-4 py-3 border-b border-white/10 bg-[#48A157]/5">
       <div className="text-[9px] uppercase tracking-wider text-[#48A157]/80 mb-2">DATOS DE EJECUCIÓN REQUERIDOS</div>
       <div className="flex flex-col gap-3">
-        {grouped.general.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{grouped.general.map(renderRequirement)}</div>}
+        {grouped.general.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-3 gap-y-2">{grouped.general.map(renderRequirement)}</div>}
         {grouped.groups.map((group) => (
           <details key={group.key} open className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
             <summary className="cursor-pointer text-[10px] uppercase tracking-[0.16em] text-[#48A157] font-semibold">
               {group.label}
             </summary>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">{group.requirements.map(renderRequirement)}</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-3 gap-y-2 mt-3">{group.requirements.map(renderRequirement)}</div>
           </details>
         ))}
       </div>
@@ -204,11 +235,11 @@ export function CommonInputRequirements({
     <div className="px-4 py-3 border-b border-white/10 bg-[#48A157]/5">
       <div className="text-[9px] uppercase tracking-wider text-[#48A157]/80 mb-2">DATOS COMUNES</div>
       <div className="flex flex-col gap-4">
-        {grouped.general.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{grouped.general.map(renderRequirement)}</div>}
+        {grouped.general.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-3 gap-y-2">{grouped.general.map(renderRequirement)}</div>}
         {grouped.groups.map((group) => (
           <details key={group.key} open className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
             <summary className="cursor-pointer text-[10px] uppercase tracking-[0.16em] text-[#48A157] font-semibold">{group.label}</summary>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">{group.requirements.map(renderRequirement)}</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-3 gap-y-2 mt-3">{group.requirements.map(renderRequirement)}</div>
           </details>
         ))}
       </div>
@@ -275,7 +306,7 @@ export function InputRequirementsPanel({
           <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold">
             Datos comunes
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-3 gap-y-2">
             {composition.shared.map((requirement) => (
               <RequirementControl
                 key={requirement.key}
@@ -304,7 +335,7 @@ export function InputRequirementsPanel({
               <span className="text-[10px] font-mono text-white/50 uppercase tracking-wider">
                 C{caseId} · {caseLabels[caseId] ?? ''}
               </span>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-3 gap-y-2">
                 {requirements.map((requirement) => (
                   <RequirementControl
                     key={requirement.key}

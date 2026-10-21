@@ -77,8 +77,8 @@ function groupExecutions(items: ExecutionListItem[]): Array<{ key: string; items
 
 // ── Component ────────────────────────────────────────────────────────────
 
-export function Ejecuciones() {
-  const [selectedLaunchId, setSelectedLaunchId] = useState<string | null>(null);
+export function Ejecuciones({ initialLaunchId = null }: { initialLaunchId?: string | null } = {}) {
+  const [selectedLaunchId, setSelectedLaunchId] = useState<string | null>(initialLaunchId);
 
   return (
     <div className="p-7 min-h-full" style={{ background: C.canvas }}>

@@ -231,3 +231,48 @@ export function groupRuntimeInputRequirements(requirements: InputRequirement[]):
 
   return { general, groups: [...groupsByKey.values()] };
 }
+
+const foldText = (value: string): string =>
+  value.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** Words of a label that identify it (short connectors like "de"/"en" carry no identity). */
+const significantWords = (label: string): string[] => foldText(label).split(' ').filter((word) => word.length >= 3);
+
+/**
+ * Index of the first scenario step that mentions every significant word of one of the labels, or
+ * `Infinity` when no step does. Matching is by words, so "Token transferencia" finds
+ * `Ingresar token de transferencia`. No match keeps the original order.
+ */
+function firstStepMentioning(labels: string[], foldedSteps: Set<string>[]): number {
+  const candidates = labels.map(significantWords).filter((words) => words.length > 0);
+  for (let index = 0; index < foldedSteps.length; index += 1) {
+    if (candidates.some((words) => words.every((word) => foldedSteps[index].has(word)))) return index;
+  }
+  return Infinity;
+}
+
+function presentationLabels(item: RuntimeInputPresentation): string[] {
+  const { requirement } = item;
+  return [item.displayLabel, requirement.label, requirement.semanticField, requirement.key.split('.').at(-1)?.replace(/[_-]+/g, ' ')]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+}
+
+/**
+ * Orders the runtime inputs the way the scenario's steps use them (RNC before user before password),
+ * instead of the order they arrived in. Inputs no step mentions keep their relative order, after
+ * the ones that do. Works for any scenario: it only reads the step text.
+ */
+export function orderRuntimeInputsByStepOrder(groups: RuntimeInputGroups, steps: string[] | undefined): RuntimeInputGroups {
+  if (!steps || steps.length === 0) return groups;
+  const foldedSteps = steps.map((step) => new Set(foldText(step).split(' ')));
+  const positionOf = (item: RuntimeInputPresentation) => firstStepMentioning(presentationLabels(item), foldedSteps);
+  const stableSort = <T,>(items: T[], position: (item: T) => number): T[] =>
+    items.map((item, index) => ({ item, index, position: position(item) }))
+      .sort((a, b) => (a.position === b.position ? a.index - b.index : a.position < b.position ? -1 : 1))
+      .map((entry) => entry.item);
+  const orderedGroups = groups.groups.map((group) => ({ ...group, requirements: stableSort(group.requirements, positionOf) }));
+  return {
+    general: stableSort(groups.general, positionOf),
+    groups: stableSort(orderedGroups, (group) => Math.min(...group.requirements.map(positionOf))),
+  };
+}

@@ -1,16 +1,17 @@
 import { DynamicListSelection } from "./DynamicListSelection";
+import { groupOtpDatasetRequirements, otpSegmentValues } from './otp-dataset';
 import { parseSelectionRule, selectionRuleDescription } from "../../services/recordings/dynamic-selection-rule";
 import { LiveBrowserView } from './LiveBrowserView';
 import { GenerationProgressIndicator } from './GenerationProgressIndicator';
+import { RecordingStepper } from './RecordingStepper';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
-  Circle,
   Clock,
   ChevronUp,
   Loader2,
-  MonitorSmartphone,
   Play,
   Sparkles,
   Square,
@@ -21,10 +22,11 @@ import { useRecordingSession, type RecordingBrowserMode, type RecordingPhase } f
 import { useRecordingExecution, type RecordingProjectDetail } from './useRecordingExecution';
 import { useTestRailDestination } from './useTestRailDestination';
 import { TestRailUploadScreen } from './TestRailUploadScreen';
-import { getTestRailSelections, setTestRailScenarioSelected, testRailSelectionKey, type TestRailSelection } from './testRailSelection';
+import { getTestRailSelections, reconcileTestRailSelection, setTestRailScenarioSelected, testRailSelectionKey, type TestRailSelection } from './testRailSelection';
 import { ApiError, recordingsApi } from '../../services/recordings';
 import { flushScenarioValueWrites, stageScenarioValueWrite } from '../../services/recordings/scenario-value-flush';
 import type { RecordedScenario, RecordedScenarioStep, RecordingSummary } from '../../services/recordings/types';
+import type { JiraIssue } from '../../services/jira/types';
 import type { ActiveRun } from '../../types';
 import { derivationFeedback } from './derivation-feedback';
 import { isQaOverridableRuntimeInput, missingInputLabel, readinessBadge, resolveScenarioReadiness, runtimeRequirementsForScenario } from './recording-readiness';
@@ -200,6 +202,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     datasetValues: Record<string, string | undefined>;
     scenarioDatasetValues: Record<string, Record<string, string | undefined>>;
   } | null>(null);
+  // Both source choices outlive the upload screen: that screen is unmounted when the user
+  // returns to Recording, so its local Jira selection cannot own this state.
+  const [selectedJiraIssue, setSelectedJiraIssue] = useState<JiraIssue | null>(null);
 
   const session = useRecordingSession(projectSlug);
   const [recordingBrowserMode, setRecordingBrowserMode] = useState<RecordingBrowserMode>('integrated');
@@ -343,10 +348,19 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   // implementation rebuilt it from the primary scenario on every refresh, collapsing N -> 1.
   const selectionRecordingRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
+    if (session.historyLoading || !session.historyReady) return;
+    const available = new Set(projectHistory.map((recording) => recording.recordingId));
+    if (session.recordingId && ['starting', 'recording', 'stopping'].includes(session.phase)) available.add(session.recordingId);
+    setSelected((previous) => reconcileTestRailSelection(previous, available, session.recordingId, session.scenarios));
+    setSelectedHistoryRecordingIds((previous) => previous.some((id) => !available.has(id)) ? previous.filter((id) => available.has(id)) : previous);
+    if (testRailUpload?.scenarioRecordingIds.some((id) => !available.has(id))) setTestRailUpload(null);
+  }, [projectHistory, session.historyLoading, session.historyReady, session.phase, session.recordingId, session.scenarios, testRailUpload, selected]);
+  useEffect(() => {
     const primaryId = session.scenarios.find((scenario) => scenario.primary)?.scenarioId ?? session.scenarios[0]?.scenarioId;
     const recordingChanged = selectionRecordingRef.current !== session.recordingId;
     const ids = new Set(session.scenarios.map((scenario) => scenario.scenarioId));
     if (recordingChanged) {
+      setTestRailUpload(null);
       setDatasetOverrides({});
       setPublishResult(null);
       // A pending save queued under a DIFFERENT recording must never retry against this one
@@ -741,6 +755,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         dataOverrides={testRailUpload.dataOverrides}
         datasetValues={testRailUpload.datasetValues}
         scenarioDatasetValues={testRailUpload.scenarioDatasetValues}
+        testRail={testRail}
+        selectedIssue={selectedJiraIssue}
+        onSelectIssue={setSelectedJiraIssue}
         onBack={() => setTestRailUpload(null)}
         onLaunch={onLaunch}
       />
@@ -749,6 +766,14 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
 
   return (
     <div className="p-6 max-w-[1180px] mx-auto space-y-4">
+      <RecordingStepper
+        current={!projectSlug
+          ? 'proyecto'
+          : session.phase === 'stopped' || session.phase === 'deriving' || session.phase === 'derived'
+            ? 'escenarios'
+            : 'grabar'}
+      />
+
       {/* ── Step 1: project ─────────────────────────────────────────── */}
       <section className="bg-white rounded-2xl border border-[#E8EBEC] p-5">
         <div className="flex items-center gap-2 mb-4">
@@ -762,7 +787,8 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
           <div className="text-[12px] text-[#B4463C] mb-3">{projectsError}</div>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+        {/* Same card as the test launcher's project step: dark card + green check when selected. */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 max-w-4xl">
           {projects.map((p) => {
             const active = p.slug === projectSlug;
             return (
@@ -772,31 +798,25 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 aria-pressed={active}
                 onClick={() => handleProjectChange(p.slug)}
                 className={cn(
-                  'group relative overflow-hidden text-left px-4 py-3.5 rounded-xl border transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#104B99]/30',
-                  active
-                    ? 'border-[#104B99] bg-gradient-to-br from-[#F4F8FE] to-[#EDF4FB] shadow-[0_5px_18px_-12px_rgba(16,75,153,0.65)]'
-                    : 'border-[#E8EBEC] bg-white hover:-translate-y-0.5 hover:border-[#104B99]/45 hover:bg-[#FAFCFF] hover:shadow-[0_7px_18px_-14px_rgba(16,75,153,0.45)]',
+                  'text-left p-6 rounded-2xl border-2 transition-all relative overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed',
+                  active ? 'border-[#1a1f2e] bg-[#1a1f2e] text-white' : 'border-[#E8EBEC] hover:border-[#1a1f2e]/40 bg-white',
                 )}
               >
-                {active && <span className="absolute bottom-0 left-0 top-0 w-[3px] bg-gradient-to-b from-[#104B99] to-[#48A157]" />}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors', active ? 'bg-[#104B99] text-white shadow-sm' : 'bg-[#F4F1EA] text-[#58646D] group-hover:bg-[#EEF4FB] group-hover:text-[#104B99]')}>
-                      <MonitorSmartphone size={15} />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-[13px] font-semibold text-[#1a1f2e]">{p.name}</span>
-                      <span className="mt-0.5 flex items-center gap-1 text-[10px] text-[#8B999D]">
-                        {p.type === 'mobile' ? 'Android · Appium' : 'Web · Playwright'}
-                        {!p.ready && <span className="text-[#C2872F]">· sin configurar</span>}
-                      </span>
-                    </span>
+                {active && <div className="absolute -right-4 -top-4 w-24 h-24 rounded-full opacity-20" style={{ background: C.green }} />}
+                <div className="flex items-start justify-between mb-3 relative">
+                  <div className={cn('text-[10px] uppercase tracking-wider font-semibold', active ? 'text-white/50' : 'text-[#8B999D]')}>
+                    {p.type === 'mobile' ? 'Mobile · Android' : 'Web · Playwright'}
                   </div>
-                  {active ? (
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#48A157] text-white shadow-sm"><CheckCircle2 size={14} /></span>
-                  ) : (
-                    <Circle size={17} className="shrink-0 text-[#C4CCCF] transition-colors group-hover:text-[#104B99]" />
+                  {active && (
+                    <div className="w-5 h-5 rounded-full bg-[#48A157] flex items-center justify-center">
+                      <Check size={12} className="text-white" strokeWidth={3} />
+                    </div>
                   )}
+                </div>
+                <div className={cn('text-[22px] font-medium leading-tight', active ? 'text-white' : 'text-[#1a1f2e]')} style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{p.name}</div>
+                <div className={cn('text-[12px] mt-1.5', active ? 'text-white/60' : 'text-[#8B999D]')}>
+                  {p.type === 'mobile' ? 'Android · Appium' : 'Web · Playwright'}
+                  {!p.ready && <span className={active ? 'text-[#F0C070]' : 'text-[#C2872F]'}> · sin configurar</span>}
                 </div>
               </button>
             );
@@ -1546,7 +1566,8 @@ export function ScenarioCard({
   const mutationType = undefined;
   const mutationDiagnostics = scenario.mutationDiagnostics;
   const metrics = scenarioMetrics(scenario);
-  const datasetRequirements = runtimeRequirementsForScenario(scenario).filter((requirement) => requirement.valueRole !== 'runtime_derived_oracle');
+  const [otpDrafts, setOtpDrafts] = useState<Record<string, string>>({});
+  const datasetRequirements = groupOtpDatasetRequirements(runtimeRequirementsForScenario(scenario).filter((requirement) => requirement.valueRole !== 'runtime_derived_oracle'));
   const datasetGroups = new Map<string, typeof datasetRequirements>();
   for (const requirement of datasetRequirements) {
     const group = requirement.entityScope ?? '__shared__';
@@ -1622,7 +1643,11 @@ export function ScenarioCard({
                     <div className="text-[10px] font-semibold text-[#1a1f2e]">{scope === '__shared__' ? 'Datos comunes' : humanEntityScopeLabel(scope)}</div>
                     <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
                       {requirements.map((requirement) => {
-                        const value = datasetValues[requirement.valueKey] ?? '';
+                        const segmentKeys = requirement.otpSegmentKeys;
+                        const otpDraftKey = JSON.stringify([scenario.sourceRecordingId, scenario.scenarioId, requirement.valueKey]);
+                        const value = segmentKeys
+                          ? otpDrafts[otpDraftKey] ?? segmentKeys.map((key) => datasetValues[key] ?? '').join('')
+                          : datasetValues[requirement.valueKey] ?? '';
                         const disabled = !isQaOverridableRuntimeInput(requirement) || requirement.editable === false;
                         const constraintDescription = requirementConstraintDescription(requirement);
                         const listMode = recordedListSelectionMode(scenario, requirement.valueKey);
@@ -1660,9 +1685,16 @@ export function ScenarioCard({
                               <input
                                 aria-label={humanRequirementLabel(requirement)}
                                 type={requirement.sensitive || requirement.masked ? 'password' : 'text'}
+                                maxLength={segmentKeys ? 6 : undefined}
+                                inputMode={segmentKeys ? 'numeric' : undefined}
                                 value={value}
-                                onChange={(event) => onDatasetValueChange(requirement.valueKey, event.target.value)}
-                                onBlur={(event) => onDatasetBlur(requirement.valueKey, event.currentTarget.value)}
+                                onChange={(event) => {
+                                  if (!segmentKeys) { onDatasetValueChange(requirement.valueKey, event.target.value); return; }
+                                  const token = event.target.value.replace(/\D/g, '').slice(0, 6);
+                                  setOtpDrafts((previous) => ({ ...previous, [otpDraftKey]: token }));
+                                  otpSegmentValues(segmentKeys, token).forEach(([key, digit]) => onDatasetValueChange(key, digit));
+                                }}
+                                onBlur={(event) => onDatasetBlur(requirement.valueKey, segmentKeys ? event.currentTarget.value[0] ?? '' : event.currentTarget.value)}
                                 disabled={disabled}
                                 placeholder={requirement.sensitive ? 'Valor seguro requerido' : 'Sin valor confirmado'}
                                 className="mt-0.5 w-full px-2 py-1 rounded border border-[#D9E2EC] bg-white text-[11px] outline-none focus:border-[#104B99] disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"

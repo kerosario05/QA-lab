@@ -215,6 +215,28 @@ describe('requestScenarioPreview', () => {
     expect(result.stories).toHaveLength(1);
   });
 
+  it('preserves Jira review metadata and blocking reason through the provider boundary', async () => {
+    process.env.SCENARIO_PREVIEW_BASE_URL = 'http://mcp:3000';
+    const unresolvedUiRequirements = [{ stepIndex: 2, requirement: 'Confirm the observed control label' }];
+    const conditionRequirements = [{ key: 'AC2:fee', subject: 'fee', sourceClause: 'fee if applicable', stepIndices: [3] }];
+    const providerResponse = {
+      ok: true,
+      scenarios: [{
+        scenarioId: 'HU-1:jira:1', sourceIssueKey: 'HU-1', title: 'Synthetic journey',
+        steps: ['Open configured application', 'Press "Unknown"', 'Validate "Fee"'],
+        validation: { valid: false, errors: ['JIRA_UI_OBSERVATION_REQUIRED', 'JIRA_SOURCE_CONDITION_REQUIRES_CONFIGURATION'], warnings: [] },
+        unresolvedUiRequirements, conditionRequirements,
+      }],
+    };
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(providerResponse), { status: 200 })) as any;
+
+    const result = await requestScenarioPreview({ projectKey: 'AA', activeSprint: true, generationMode: 'jira_semantic' });
+    const scenario = result.stories?.[0]?.scenarios?.[0];
+    expect(scenario?.unresolvedUiRequirements).toEqual(unresolvedUiRequirements);
+    expect(scenario?.conditionRequirements).toEqual(conditionRequirements);
+    expect(scenario?.validation?.errors).toEqual(providerResponse.scenarios[0].validation.errors);
+  });
+
   it('preserves Content-Type header in POST', async () => {
     process.env.SCENARIO_PREVIEW_BASE_URL = 'http://mcp:3000';
     let sentHeaders: any = null;

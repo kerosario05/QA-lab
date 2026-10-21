@@ -24,12 +24,15 @@ import {
   shouldResetDocumentStateForJob,
   withStableTerminalTimestamp,
   getCompactScenarioSteps,
+  getCurrentScenarioStepIndex,
   getScenarioStepState,
   normalizeCaseStartedScenario,
   resolveActiveScenarioUpdate,
   parseLiveScenarioProgress,
   parseLiveStepUpdate,
   applyLiveScenarioProgress,
+  reconcileJiraScenarioFromLogs,
+  mergeActiveScenarioSnapshot,
 } from './state';
 import type { ActiveRun } from '../../types';
 
@@ -71,6 +74,75 @@ describe('LiveExecution state', () => {
     expect(updated?.currentStepIndex).toBe(32);
   });
 
+  it('actualiza el paso actual desde eventos estructurados del motor Jira', () => {
+    const scenario = {
+      id: 'AA-97:jira:1', title: 'Transferencia exitosa', index: 1, total: 1,
+      steps: ['Abrir aplicación', 'Iniciar sesión', 'Transferir'],
+    };
+
+    const firstResolving = parseLiveScenarioProgress('16:49:50 {"executionEngine":"jira_semantic","type":"step_progress","caseId":"AA-97:jira:1","stepIndex":1,"phase":"resolving"}');
+    expect(applyLiveScenarioProgress(scenario, firstResolving!)?.currentStepIndex).toBe(0);
+    const firstPassed = parseLiveScenarioProgress('16:50:02 {"executionEngine":"jira_semantic","type":"step_progress","caseId":"AA-97:jira:1","stepIndex":1,"phase":"passed"}');
+    expect(applyLiveScenarioProgress(scenario, firstPassed!)?.currentStepIndex).toBe(1);
+
+    const resolving = parseLiveScenarioProgress('16:50:02 {"executionEngine":"jira_semantic","type":"step_progress","caseId":"AA-97:jira:1","stepIndex":2,"phase":"resolving"}');
+    expect(resolving).toEqual({ type: 'step', update: { index: 1, status: 'running' }, caseId: 'AA-97:jira:1' });
+    expect(applyLiveScenarioProgress(scenario, resolving!)?.currentStepIndex).toBe(1);
+
+    const passed = parseLiveScenarioProgress('{"executionEngine":"jira_semantic","type":"step_progress","caseId":"AA-97:jira:1","stepIndex":2,"phase":"passed"}');
+    expect(passed).toEqual({ type: 'step', update: { index: 1, status: 'passed' }, caseId: 'AA-97:jira:1' });
+    expect(applyLiveScenarioProgress(scenario, passed!)?.currentStepIndex).toBe(2);
+  });
+
+  it('no aplica al caso visible el progreso Jira de otro caso del mismo job', () => {
+    const active = {
+      id: 'AA-97:jira:1', title: 'Transferencia exitosa', index: 1, total: 4,
+      steps: ['Abrir aplicación', 'Continuar'], currentStepIndex: 0,
+    };
+    const otherCaseProgress = parseLiveScenarioProgress(
+      '{"executionEngine":"jira_semantic","type":"step_progress","caseId":"AA-97:jira:4","stepIndex":21,"phase":"resolving"}',
+    );
+
+    expect(applyLiveScenarioProgress(active, otherCaseProgress!)).toEqual(active);
+  });
+
+  it('muestra fase de generación del spec para eventos Jira y no procesa otros motores', () => {
+    const jiraEvent = '{"executionEngine":"jira_semantic","type":"spec_generation_started","caseId":"AA-97:jira:1"}';
+    expect(parseLiveScenarioProgress(jiraEvent)).toEqual({ type: 'promoting', caseId: 'AA-97:jira:1' });
+    expect(parseLiveScenarioProgress({ executionEngine: 'jira_semantic', type: 'spec_generation_started', caseId: 'AA-97:jira:1' }))
+      .toEqual({ type: 'promoting', caseId: 'AA-97:jira:1' });
+    expect(parseLiveScenarioProgress('{"executionEngine":"recording","type":"step_progress","stepIndex":2,"phase":"passed"}')).toBeNull();
+  });
+
+  it('reconcilia la tarjeta Jira con los eventos visibles en Live logs aunque el estado React quedara atrás', () => {
+    const scenario = {
+      id: 'AA-97:jira:1', title: 'Transferencia', index: 1, total: 4,
+      steps: Array.from({ length: 35 }, (_, index) => `Paso ${index + 1}`),
+      currentStepIndex: 0,
+    };
+    const logs = [
+      { msg: '{"executionEngine":"jira_semantic","type":"case_started","caseId":"AA-97:jira:1"}' },
+      ...Array.from({ length: 35 }, (_, index) => ({
+        msg: JSON.stringify({ executionEngine: 'jira_semantic', type: 'step_progress', caseId: 'AA-97:jira:1', stepIndex: index + 1, phase: 'passed' }),
+      })),
+      { msg: '{"executionEngine":"jira_semantic","type":"spec_generation_started","caseId":"AA-97:jira:1"}' },
+    ];
+
+    const reconciled = reconcileJiraScenarioFromLogs(scenario, logs);
+    expect(reconciled?.phase).toBe('promoting');
+    expect(getCurrentScenarioStepIndex(reconciled!)).toBe(34);
+    expect(reconciled?.stepResults?.every(result => result.status === 'passed')).toBe(true);
+  });
+
+  it('no reconcilia escenarios de otros motores ni cuando falta case_started Jira', () => {
+    const scenario = {
+      id: 'recording-case', title: 'Recording', index: 1, total: 1,
+      steps: ['Abrir', 'Guardar'], currentStepIndex: 0,
+    };
+    const logs = [{ msg: '{"executionEngine":"recording","type":"step_progress","caseId":"recording-case","stepIndex":2,"phase":"passed"}' }];
+    expect(reconcileJiraScenarioFromLogs(scenario, logs)).toBe(scenario);
+  });
+
   it('marca el último paso completado y muestra la fase de promoción al habilitarse el gate', () => {
     const scenario = {
       id: 'PREVIEW-001', title: 'Registro varios clientes', index: 1, total: 1,
@@ -95,20 +167,67 @@ describe('LiveExecution state', () => {
   it('mapea case_started a activeScenario y limpia case_finished sin afectar logs normales', () => {
     const started = resolveActiveScenarioUpdate({
       type: 'case_started',
-      caseId: 'PREVIEW-002',
-      title: 'Escenario activo',
-      index: 2,
-      total: 6,
+      caseId: '53821',
+      title: 'Transferencia promovida',
+      index: 1,
+      total: 1,
+      steps: ['Ingresar al portal empresarial', 'Seleccionar cuenta de origen', 'Autorizar la transferencia'],
     });
-    expect(started).toEqual({ id: 'PREVIEW-002', title: 'Escenario activo', index: 2, total: 6, steps: [] });
-    expect(normalizeCaseStartedScenario({ type: 'case_started', caseId: 'PREVIEW-002', title: 'Escenario activo', index: 2, total: 6 })).not.toBeNull();
-    expect(resolveActiveScenarioUpdate({ type: 'case_finished', caseId: 'PREVIEW-002' })).toBeNull();
+    expect(started).toEqual({
+      id: '53821',
+      title: 'Transferencia promovida',
+      index: 1,
+      total: 1,
+      steps: ['Ingresar al portal empresarial', 'Seleccionar cuenta de origen', 'Autorizar la transferencia'],
+      currentStepIndex: 0,
+    });
+    expect(normalizeCaseStartedScenario({
+      type: 'case_started',
+      caseId: '53821',
+      title: 'Transferencia promovida',
+      index: 1,
+      total: 1,
+      steps: ['Ingresar al portal empresarial', 'Seleccionar cuenta de origen', 'Autorizar la transferencia'],
+    })).not.toBeNull();
+    expect(resolveActiveScenarioUpdate({ type: 'case_finished', caseId: '53821' })).toBeNull();
     expect(resolveActiveScenarioUpdate({ message: 'log normal' })).toBeUndefined();
   });
 
   it('preserva activeScenario proveniente de polling', () => {
     const activeScenario = { id: 'PREVIEW-001', title: 'Polling', index: 1, total: 2, steps: [] };
     expect(resolveActiveScenarioUpdate({ activeScenario })).toEqual(activeScenario);
+  });
+
+  it('no retrocede el paso actual cuando un polling atrasado devuelve el inicio del mismo caso', () => {
+    const progressed = {
+      id: 'AA-97:jira:1', title: 'Transferencia', index: 1, total: 1,
+      steps: ['Abrir aplicación', 'Iniciar sesión', 'Transferir'],
+      currentStepIndex: 2,
+      stepResults: [{ status: 'passed' }, { status: 'passed' }, { status: 'running' }],
+    };
+    const staleSnapshot = {
+      id: 'AA-97:jira:1', title: 'Transferencia', index: 1, total: 1,
+      steps: ['Abrir aplicación', 'Iniciar sesión', 'Transferir'],
+      currentStepIndex: 0,
+    };
+
+    const merged = mergeActiveScenarioSnapshot(progressed, staleSnapshot);
+    expect(merged.currentStepIndex).toBe(2);
+    expect(merged.stepResults?.map((step) => step?.status)).toEqual(['passed', 'passed', 'running']);
+  });
+
+  it('no vuelve al primer paso cuando un polling atrasado llega después de completar el último', () => {
+    const completed = {
+      id: 'AA-97:jira:1', title: 'Transferencia', index: 1, total: 1,
+      steps: ['Abrir aplicación', 'Iniciar sesión', 'Transferir'],
+      stepResults: [{ status: 'passed' }, { status: 'passed' }, { status: 'passed' }],
+    };
+    const staleSnapshot = { ...completed, currentStepIndex: 0, stepResults: undefined };
+
+    const merged = mergeActiveScenarioSnapshot(completed, staleSnapshot);
+    expect(merged.currentStepIndex).toBeUndefined();
+    expect(getCurrentScenarioStepIndex(merged)).toBe(-1);
+    expect(merged.stepResults?.map((step) => step?.status)).toEqual(['passed', 'passed', 'passed']);
   });
 
   it('compacta pasos en orden, limita a cinco y conserva estados neutros sin resultados', () => {

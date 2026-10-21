@@ -12,6 +12,16 @@ describe('TestRail selection expansion', () => {
     expect(getAutoExpandedCaseId({ currentCaseIds: [], nextCaseIds: [1], cases, requirementStates: {} })).toBe(1);
   });
 
+  it('expands a selected case when its inputs arrive after TestRail details load', () => {
+    const caseWithoutInlineMetadata = [{ id: 3 }];
+    expect(getAutoExpandedCaseId({
+      currentCaseIds: [],
+      nextCaseIds: [3],
+      cases: caseWithoutInlineMetadata,
+      requirementStates: { 3: { status: 'loaded', inputRequirements: [{ key: 'login.username' }] } },
+    })).toBe(3);
+  });
+
   it('expands the latest newly selected case without clearing earlier selections', () => {
     expect(getAutoExpandedCaseId({ currentCaseIds: [1], nextCaseIds: [1, 2], cases, requirementStates: {} })).toBe(2);
   });

@@ -1,4 +1,5 @@
 import { engineHeaders } from './engine-auth';
+import { Agent } from 'undici';
 import { normalizeScenarioPreviewResponse } from '../src/services/scenarios/normalize';
 
 export interface ScenarioPreviewProviderConfig {
@@ -8,6 +9,7 @@ export interface ScenarioPreviewProviderConfig {
 }
 
 export interface ScenarioPreviewPayload {
+  generationMode?: string;
   projectKey: string;
   status?: string;
   maxResults?: number;
@@ -47,6 +49,11 @@ export function getScenarioPreviewConfig(): ScenarioPreviewProviderConfig {
   return { baseUrl, endpoint, timeoutMs };
 }
 
+export function scenarioPreviewTimeout(generationMode: string | undefined, configuredTimeout: number): number {
+  // Jira may perform one generation and one bounded syntax repair (360 seconds each).
+  return generationMode === 'jira_semantic' ? Math.max(configuredTimeout, 750000) : configuredTimeout;
+}
+
 export async function requestScenarioPreview(payload: ScenarioPreviewPayload): Promise<ProviderResponse> {
   const config = getScenarioPreviewConfig();
 
@@ -56,7 +63,10 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}${config.endpoint}`;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+  const timeoutMs = scenarioPreviewTimeout(payload.generationMode, config.timeoutMs);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  // The HTTP client's header/body limits are independent of AbortController.
+  const dispatcher = new Agent({ headersTimeout: timeoutMs, bodyTimeout: timeoutMs });
 
   console.log(
     `[scenario-preview] provider request projectKey=${payload.projectKey} sprintId=${payload.sprintId ?? '—'} activeSprint=${!!payload.activeSprint} ` +
@@ -64,14 +74,16 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
   );
 
   try {
-    const res = await fetch(url, {
+    const requestOptions: RequestInit = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...engineHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
+    };
+    // Node fetch supports this extension; its bundled Undici types may have a
+    // different version from the request-scoped Agent's package types.
+    Reflect.set(requestOptions, 'dispatcher', dispatcher);
+    const res = await fetch(url, requestOptions);
 
     const rawBody = await res.text();
 
@@ -111,9 +123,9 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
       console.log(`[scenario-preview] provider firstRejectedReasons=${firstReasons}`);
     }
 
-    for (const _sc of (parsed.scenarios ?? [])) { console.log('[scenario-id-trace] PROXY_IN=' + JSON.stringify({ bucket: 'scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
+    for (const _sc of (parsed.scenarios ?? [])) { console.log('[scenario-id-trace] PROXY_IN=' + JSON.stringify({ bucket: 'scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '', unresolvedUiCount: Array.isArray(_sc?.unresolvedUiRequirements) ? _sc.unresolvedUiRequirements.length : null, conditionRequirementCount: Array.isArray(_sc?.conditionRequirements) ? _sc.conditionRequirements.length : null, jiraUiBlocked: Array.isArray(_sc?.validation?.errors) && _sc.validation.errors.includes('JIRA_UI_OBSERVATION_REQUIRED') })); }
     const normalized = normalizeScenarioPreviewResponse(parsed);
-    for (const _s of normalized.stories) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] PROXY_OUT=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
+    for (const _s of normalized.stories) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] PROXY_OUT=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '', unresolvedUiCount: Array.isArray(_sc?.unresolvedUiRequirements) ? _sc.unresolvedUiRequirements.length : null, conditionRequirementCount: Array.isArray(_sc?.conditionRequirements) ? _sc.conditionRequirements.length : null, jiraUiBlocked: Array.isArray(_sc?.validation?.errors) && _sc.validation.errors.includes('JIRA_UI_OBSERVATION_REQUIRED') })); } }
     console.log(`[scenario-preview] normalized stories=${normalized.stories.length} totalScenarios=${normalized.totalScenarios}`);
 
     return {
@@ -125,16 +137,18 @@ export async function requestScenarioPreview(payload: ScenarioPreviewPayload): P
       rawEngineResponse: parsed, // Full engine response for downstream orchestration
     };
   } catch (err: any) {
-    clearTimeout(timeoutId);
-
-    if (err.name === 'AbortError') {
-      console.log(`[scenario-preview] provider error code=PREVIEW_TIMEOUT timeout=${config.timeoutMs}ms`);
-      return { ok: false, errorCode: 'PREVIEW_TIMEOUT', error: 'Provider request timed out', message: `Timeout after ${config.timeoutMs}ms` };
+    const causeCode=typeof err?.cause?.code==='string' && /^[A-Z0-9_]+$/.test(err.cause.code) ? err.cause.code : undefined;
+    if (err.name === 'AbortError' || causeCode==='UND_ERR_HEADERS_TIMEOUT' || causeCode==='UND_ERR_BODY_TIMEOUT') {
+      console.log(`[scenario-preview] provider error code=PREVIEW_TIMEOUT timeout=${timeoutMs}ms`);
+      return { ok: false, errorCode: 'PREVIEW_TIMEOUT', error: 'Provider request timed out', message: `Timeout after ${timeoutMs}ms` };
     }
 
-    const errMsg = err?.message ?? 'Unknown provider error';
+    const errMsg = `${err?.message ?? 'Unknown provider error'}${causeCode ? ` (${causeCode})` : ''}`;
     console.log(`[scenario-preview] provider error code=PREVIEW_PROVIDER_ERROR message=${errMsg.slice(0, 200)}`);
     return { ok: false, errorCode: 'PREVIEW_PROVIDER_ERROR', error: 'Provider request failed', message: errMsg };
+  } finally {
+    clearTimeout(timeoutId);
+    await dispatcher.close();
   }
 }
 

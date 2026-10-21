@@ -118,6 +118,15 @@ describe('inline TestRail input requirements', () => {
     });
   });
 
+  it('keeps a persisted required select editable when its option list is not stored', () => {
+    render(<InlineInputRequirements caseId={42} requirements={[
+      { key: 'origin', label: 'Origin', controlType: 'select', required: true, allowedValues: [] },
+      { key: 'destination', label: 'Destination', controlType: 'select', required: true, allowedValues: ['Observed option'] },
+    ]} />);
+    expect(container?.querySelector('input[data-input-key="origin"][data-select-fallback="manual"]')).not.toBeNull();
+    expect(container?.querySelector('select[data-input-key="destination"]')?.textContent).toContain('Observed option');
+  });
+
   it('renders repeated scoped keys once each and transports by key, never by label', () => {
     render(
       <InlineInputRequirements
@@ -154,7 +163,9 @@ describe('inline TestRail input requirements', () => {
     expect(container?.textContent).toContain('EMPLEADO 2');
     expect(container?.textContent).toContain('Cédula');
     expect(container?.textContent).not.toContain('Cédula empleado 1 ·');
-    expect(container?.textContent).toContain('employee_1.document');
+    // The technical key is no longer printed under the field (it repeated the label); it stays as a data attribute.
+    expect(container?.querySelector('[data-technical-input-key="employee_1.document"]')).not.toBeNull();
+    expect(container?.textContent).not.toContain('employee_1.document');
   });
 
   it('keeps sensitive requirements masked while exposing only the technical key', () => {
@@ -165,7 +176,8 @@ describe('inline TestRail input requirements', () => {
       />,
     );
     expect(container?.querySelector('input[type="password"]')).not.toBeNull();
-    expect(container?.textContent).toContain('auth.password');
+    expect(container?.querySelector('[data-technical-input-key="auth.password"]')).not.toBeNull();
+    expect(container?.textContent).not.toContain('auth.password');
   });
 
   it('renders the complete repeated-dataset fixture contract at the required-data screen', () => {

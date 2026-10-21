@@ -1,7 +1,7 @@
 import { engineHeaders } from '../engine-auth';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { getRunProviderConfig, requestDiscoveryBatch, requestScenarioPreviewRun, rememberActiveScenarios, resolveActiveScenario } from '../runs-provider';
+import { copyActiveScenariosToRerun, getRunProviderConfig, requestDiscoveryBatch, requestScenarioPreviewRun, rememberActiveScenariosWithCases, resolveActiveScenario } from '../runs-provider';
 import type { DataContextEntry } from '../runs-provider';
 import { resolveTestRailProjectName, shouldMigrateAppConfig, normalizeAppSlug } from '../app-config-service';
 import { TestRailClient } from '../testrail-client';
@@ -10,6 +10,15 @@ const router = Router();
 
 function sendJson(res: Response, status: number, body: Record<string, unknown>): void {
   res.status(status).json(body);
+}
+
+function runtimeOverrideCounts(value: unknown): { scenarios: number; fields: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { scenarios: 0, fields: 0 };
+  const entries = Object.values(value as Record<string, unknown>).filter(
+    (fields): fields is Record<string, unknown> => Boolean(fields) && typeof fields === 'object' && !Array.isArray(fields),
+  );
+  const counts = entries.map(fields => Object.values(fields).filter(field => typeof field === 'string' && field.trim().length > 0).length);
+  return { scenarios: counts.filter(count => count > 0).length, fields: counts.reduce((sum, count) => sum + count, 0) };
 }
 
 function enrichSseLine(line: string, jobId: string): string {
@@ -56,6 +65,20 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
 
   const stories: Array<Record<string, unknown>> = Array.isArray(body?.stories) ? body.stories : [];
+  const activeTestRailScenarios = Array.isArray(body?.activeTestRailScenarios)
+    ? body.activeTestRailScenarios.flatMap((value: unknown) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+        const item = value as Record<string, unknown>;
+        if (typeof item.id !== 'string' || !item.id.trim() || typeof item.title !== 'string' || !item.title.trim()) return [];
+        return [{
+          id: item.id,
+          title: item.title,
+          steps: Array.isArray(item.steps) ? item.steps.filter((step): step is string => typeof step === 'string') : [],
+          preconditions: Array.isArray(item.preconditions) ? item.preconditions.filter((step): step is string => typeof step === 'string') : [],
+          expectedResult: typeof item.expectedResult === 'string' ? item.expectedResult : null,
+        }];
+      })
+    : [];
   const existingCaseIds: number[] = Array.isArray(body?.existingCaseIds) ? body.existingCaseIds.filter((id: unknown) => typeof id === 'number') : [];
   const launchId = body?.launchId as string | undefined;
   const testRunId = body?.testRunId ? Number(body.testRunId) : undefined;
@@ -79,6 +102,7 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
   const runtimeEntriesByCase = body?.runtimeEntriesByCase && typeof body.runtimeEntriesByCase === 'object' && !Array.isArray(body.runtimeEntriesByCase)
     ? body.runtimeEntriesByCase as Record<string, DataContextEntry[]>
     : undefined;
+  const dataOverrideCounts = runtimeOverrideCounts(body?.dataOverrides);
 
   const hasStoriesWithScenarios = stories.some(s => Array.isArray(s.scenarios) && (s.scenarios as unknown[]).length > 0);
   const hasCaseIds = existingCaseIds.length > 0;
@@ -88,6 +112,9 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
   const executionCaseIds = Array.from(new Set([...existingCaseIds, ...publishedCaseIds]));
 
   console.log(`[runs] from-scenarios request stories=${stories.length} existingCaseIds=${existingCaseIds.length} publishedCaseIds=${publishedCaseIds.length}`);
+  if (body?.executionEngine === 'jira_semantic' || body?.scenarioOrigin && typeof body.scenarioOrigin === 'object') {
+    console.log(`[runs] jira runtime data received scenarios=${dataOverrideCounts.scenarios} fields=${dataOverrideCounts.fields}`);
+  }
 
   if (!hasStoriesWithScenarios && !hasCaseIds) {
     return sendJson(res, 400, { ok: false, error: 'No hay escenarios ni casos seleccionados', errorCode: 'INVALID_RUN_REQUEST' });
@@ -147,6 +174,9 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
                contextOnly,
                runtimeEntriesByCase,
               publishedCases,
+              ...(body?.executionEngine === 'jira_semantic'
+                ? { jiraSemantic: { stories: stories as any, executionEngine: body.executionEngine, scenarioOrigin: body.scenarioOrigin, dataOverrides: body.dataOverrides } }
+                : {}),
             }
           : {
               appSlug,
@@ -163,11 +193,13 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
       const sectionId = body?.sectionId ? Number(body.sectionId) : undefined;
       const pubCaseIds = (publishedCases ?? []).map(pc => pc.caseId).join(",");
       console.log(`[runs] forwarding launch metadata launchId=${launchId ?? '—'} testRunId=${testRunId ?? '—'} publishedCases=${publishedCases?.length ?? 0} caseIds=${pubCaseIds} jiraKey=${jiraKey ?? '—'}`);
-      result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId, testRailProjectName, sectionName, sectionSlug, launchId, testRunId, publishedCases, jiraKey, appSlug, body?.routeProfile as Record<string, unknown> | undefined);
+      result = await requestScenarioPreviewRun(stories as any, projectId, suiteId, sectionId, testRailProjectName, sectionName, sectionSlug, launchId, testRunId, publishedCases, jiraKey, appSlug, body?.routeProfile as Record<string, unknown> | undefined,
+        { executionEngine: body?.executionEngine, scenarioOrigin: body?.scenarioOrigin, dataOverrides: body?.dataOverrides });
     }
 
     if (!result.ok) {
       const statusCode = result.errorCode === 'RUN_PROVIDER_NOT_CONFIGURED' ? 503
+        : result.errorCode === 'JIRA_SEMANTIC_SCENARIO_UNMATCHED' ? 422
         : result.errorCode === 'RUN_PROVIDER_TIMEOUT' ? 504
         : result.errorCode === 'RUN_PROVIDER_ERROR' ? 502
         : 502;
@@ -175,7 +207,7 @@ router.post('/from-scenarios', async (req: Request, res: Response) => {
       return sendJson(res, statusCode, { ok: false, errorCode: result.errorCode, error: result.error, message: result.message });
     }
 
-    rememberActiveScenarios(result.jobId, stories as any);
+    rememberActiveScenariosWithCases(result.jobId, stories as any, activeTestRailScenarios);
     console.log(`[runs] provider response jobId=${result.jobId} status=${result.status} issueKey=${result.issueKey ?? '—'}`);
     return sendJson(res, 200, {
       ok: true,
@@ -251,6 +283,8 @@ router.post('/:jobId/rerun', async (req: Request, res: Response) => {
     if (!upstreamRes.ok) {
       return sendJson(res, upstreamRes.status, parsed ?? { ok: false, error: 'Provider error' });
     }
+    const rerunJobId = typeof parsed?.jobId === 'string' ? parsed.jobId : '';
+    if (rerunJobId) copyActiveScenariosToRerun(String(req.params.jobId), rerunJobId);
     return sendJson(res, 200, parsed);
   } catch (err: any) {
     return sendJson(res, 502, { ok: false, error: 'rerun_proxy_error', message: err?.message ?? '' });
@@ -463,7 +497,10 @@ router.get('/:jobId', async (req: Request, res: Response) => {
     return sendJson(res, 503, { ok: false, error: 'Run provider not configured', errorCode: 'RUN_PROVIDER_NOT_CONFIGURED' });
   }
 
-  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}`;
+  const query = new URLSearchParams();
+  if (typeof req.query.logsAfter === 'string') query.set('logsAfter', req.query.logsAfter);
+  const queryString = query.size > 0 ? `?${query.toString()}` : '';
+  const upstreamUrl = `${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}${queryString}`;
 
   try {
     const upstreamRes = await fetch(upstreamUrl, { headers: engineHeaders() });

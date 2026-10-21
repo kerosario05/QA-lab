@@ -2,8 +2,29 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requestScenarioPreview, getScenarioPreviewConfig } from '../scenario-preview-provider';
 import type { ScenarioPreviewPayload } from '../scenario-preview-provider';
+import { ScenarioPreviewTasks } from '../scenario-preview-tasks';
+import {engineHeaders} from '../engine-auth';
 
 const router = Router();
+const previewTasks = new ScenarioPreviewTasks(requestScenarioPreview);
+
+router.post('/jira/review-edit',async(req:Request,res:Response)=>{
+ const {baseUrl}=getScenarioPreviewConfig();
+ if(!baseUrl){res.status(503).json({ok:false,error:'PREVIEW_NOT_CONFIGURED'});return;}
+ try{
+  const upstream=await fetch(`${baseUrl.replace(/\/+$/,'')}/api/scenarios/jira/review-edit`,{
+   method:'POST',headers:{'Content-Type':'application/json',...engineHeaders()},body:JSON.stringify(req.body),signal:AbortSignal.timeout(45000)});
+  res.setHeader('Cache-Control','no-store');
+  res.status(upstream.status).json(await upstream.json());
+ }catch{res.status(502).json({ok:false,error:'JIRA_EDIT_REVIEW_UNAVAILABLE'});}
+});
+
+router.get('/preview/tasks/:taskId', (req: Request, res: Response) => {
+  const task = previewTasks.get(String(req.params.taskId));
+  if (!task) { res.status(404).json({ ok: false, error: 'PREVIEW_TASK_NOT_FOUND' }); return; }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(task);
+});
 
 function sendJson(res: Response, status: number, body: Record<string, unknown>): void {
   res.status(status).json(body);
@@ -41,6 +62,7 @@ router.post('/preview', async (req: Request, res: Response) => {
   }
 
   const payload: ScenarioPreviewPayload = {
+    generationMode: body?.generationMode === 'jira_semantic' ? 'jira_semantic' : undefined,
     projectKey,
     ...(sprintId ? { sprintId } : { activeSprint: true }),
     ...(status ? { status } : {}),
@@ -55,9 +77,18 @@ router.post('/preview', async (req: Request, res: Response) => {
     appSlug: String(body?.appSlug ?? '') || undefined,
     effectiveTargetAppSlug: String(body?.effectiveTargetAppSlug ?? '') || undefined,
     maxResults: body?.maxResults ? Number(body.maxResults) : 50,
+    selectedIssueKeys: Array.isArray(body?.selectedIssueKeys) ? body.selectedIssueKeys.filter((key): key is string => typeof key === 'string') : undefined,
   };
 
   console.log(`[scenario-preview-proxy-out] payloadAppSlug=${payload.appSlug ?? 'undefined'}`);
+  if (body?.async === true && payload.generationMode === 'jira_semantic') {
+    try {
+      res.status(202).json({ taskId: previewTasks.start(payload), state: 'running' });
+    } catch {
+      res.status(503).json({ ok: false, error: 'PREVIEW_QUEUE_FULL' });
+    }
+    return;
+  }
   const providerResponse = await requestScenarioPreview(payload);
 
   if (!providerResponse.ok) {

@@ -9,6 +9,26 @@ export interface TestRailScenarioSelection {
 
 export type TestRailSelection = Record<string, TestRailScenarioSelection>;
 
+export function reconcileTestRailSelection(
+  previous: TestRailSelection,
+  availableRecordingIds: ReadonlySet<string>,
+  currentRecordingId: string | null | undefined,
+  currentScenarios: RecordedScenario[],
+): TestRailSelection {
+  let changed = false;
+  const entries = Object.entries(previous).flatMap(([key, entry]) => {
+    if (!availableRecordingIds.has(entry.recordingId)) { changed = true; return []; }
+    if (entry.recordingId !== currentRecordingId) return [[key, entry] as const];
+    if (currentScenarios.length === 0) return [[key, entry] as const];
+    const scenario = currentScenarios.find((candidate) => candidate.scenarioId === entry.scenario.scenarioId);
+    if (!scenario) { changed = true; return []; }
+    if (scenario === entry.scenario) return [[key, entry] as const];
+    changed = true;
+    return [[key, { ...entry, scenario }] as const];
+  });
+  return changed ? Object.fromEntries(entries) : previous;
+}
+
 export function testRailSelectionKey(recordingId: string, scenarioId: string): string {
   return JSON.stringify([recordingId, scenarioId]);
 }

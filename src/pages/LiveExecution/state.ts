@@ -72,10 +72,47 @@ export type ActiveScenarioLike = {
 export type LiveStepUpdate = { index: number; status: 'running' | 'passed' | 'failed' };
 
 export type LiveScenarioProgressUpdate =
-  | { type: 'step'; update: LiveStepUpdate }
-  | { type: 'promoting' };
+  | { type: 'step'; update: LiveStepUpdate; caseId?: string }
+  | { type: 'promoting'; caseId?: string };
+
+export type LiveScenarioLogLike = { msg?: unknown };
+
+function parseJiraSemanticProgressEvent(message: unknown): LiveScenarioProgressUpdate | null {
+  try {
+    let event: Record<string, unknown>;
+    if (typeof message === 'string') {
+      const jsonStart = message.indexOf('{');
+      const jsonEnd = message.lastIndexOf('}');
+      if (jsonStart < 0 || jsonEnd <= jsonStart) return null;
+      event = JSON.parse(message.slice(jsonStart, jsonEnd + 1)) as Record<string, unknown>;
+    } else if (message && typeof message === 'object' && !Array.isArray(message)) {
+      event = message as Record<string, unknown>;
+    } else {
+      return null;
+    }
+
+    if (event.executionEngine !== 'jira_semantic') return null;
+    const caseId = typeof event.caseId === 'string' ? event.caseId.trim() : undefined;
+    if (event.type === 'spec_generation_started') return { type: 'promoting', ...(caseId ? { caseId } : {}) };
+    if (event.type !== 'step_progress') return null;
+
+    const stepIndex = Number(event.stepIndex);
+    const index = stepIndex - 1;
+    if (!Number.isInteger(stepIndex) || stepIndex < 1) return null;
+
+    const phase = String(event.phase ?? '').toLowerCase();
+    if (phase === 'resolving') return { type: 'step', update: { index, status: 'running' }, ...(caseId ? { caseId } : {}) };
+    if (phase === 'passed') return { type: 'step', update: { index, status: 'passed' }, ...(caseId ? { caseId } : {}) };
+    if (phase === 'failed') return { type: 'step', update: { index, status: 'failed' }, ...(caseId ? { caseId } : {}) };
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 export function parseLiveScenarioProgress(message: unknown): LiveScenarioProgressUpdate | null {
+  const jiraSemanticProgress = parseJiraSemanticProgressEvent(message);
+  if (jiraSemanticProgress) return jiraSemanticProgress;
   if (typeof message !== 'string') return null;
 
   if (/\bPromotion gate:\s*allowed\s*=\s*true\b/i.test(message) || /(?:^|\s)\[promote\]/i.test(message)) {
@@ -97,6 +134,54 @@ export function parseLiveScenarioProgress(message: unknown): LiveScenarioProgres
 
   const step = parseLiveStepUpdate(message);
   return step ? { type: 'step', update: step } : null;
+}
+
+/** Reconciles the Jira panel from the same event history shown in Live logs.
+ * This is a display fallback for missed/stale React state updates; non-Jira
+ * runs and scenarios without a matching Jira case_started event are untouched.
+ */
+export function reconcileJiraScenarioFromLogs<T extends ActiveScenarioLike>(
+  scenario: T | null,
+  entries: LiveScenarioLogLike[],
+): T | null {
+  if (!scenario?.steps.length) return scenario;
+
+  const parsed = entries.map(entry => {
+    const message = typeof entry?.msg === 'string' ? entry.msg : '';
+    try {
+      const start = message.indexOf('{');
+      const end = message.lastIndexOf('}');
+      if (start < 0 || end <= start) return null;
+      return JSON.parse(message.slice(start, end + 1)) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  });
+
+  let startIndex = -1;
+  for (let index = parsed.length - 1; index >= 0; index -= 1) {
+    const event = parsed[index];
+    if (event?.executionEngine === 'jira_semantic' && event.type === 'case_started' && event.caseId === scenario.id) {
+      startIndex = index;
+      break;
+    }
+  }
+  if (startIndex < 0) return scenario;
+
+  let reconciled: ActiveScenarioLike = {
+    ...scenario,
+    stepResults: scenario.steps.map(() => ({ status: 'pending' })),
+    currentStepIndex: 0,
+    phase: 'executing',
+    status: 'running',
+  };
+  for (let index = startIndex + 1; index < parsed.length; index += 1) {
+    const event = parsed[index];
+    if (event?.executionEngine !== 'jira_semantic' || event.caseId !== scenario.id) continue;
+    const progress = parseJiraSemanticProgressEvent(event);
+    if (progress) reconciled = applyLiveScenarioProgress(reconciled, progress) ?? reconciled;
+  }
+  return reconciled as T;
 }
 
 export function parseLiveStepUpdate(message: unknown): LiveStepUpdate | null {
@@ -147,7 +232,7 @@ export function applyLiveScenarioProgress(
   scenario: ActiveScenarioLike | null,
   progress: LiveScenarioProgressUpdate,
 ): ActiveScenarioLike | null {
-  if (!scenario) return scenario;
+  if (!scenario || (progress.caseId && progress.caseId !== scenario.id)) return scenario;
   if (progress.type === 'step') {
     return applyLiveStepUpdate(scenario, progress.update);
   }
@@ -230,6 +315,53 @@ export function resolveActiveScenarioUpdate(value: unknown): ActiveScenarioLike 
     return (event.activeScenario as ActiveScenarioLike | null | undefined) ?? null;
   }
   return undefined;
+}
+
+/** Merge a possibly stale status-poll snapshot without moving the live panel
+ * backwards for the same scenario. Step progress events are the authoritative
+ * source while a case is running; snapshots can lag behind them.
+ */
+export function mergeActiveScenarioSnapshot(
+  previous: ActiveScenarioLike | null,
+  incoming: ActiveScenarioLike,
+): ActiveScenarioLike {
+  if (!previous || previous.id !== incoming.id) return incoming;
+
+  const steps = incoming.steps.length ? incoming.steps : previous.steps;
+  const hasStepResults = Boolean(previous.stepResults?.length || incoming.stepResults?.length);
+  const stepResults = steps.map((_, index) => {
+    const oldResult = previous.stepResults?.[index];
+    const newResult = incoming.stepResults?.[index];
+    const oldState = getScenarioStepState(previous.stepResults, index);
+    const newState = getScenarioStepState(incoming.stepResults, index);
+    const rank = { pending: 0, running: 1, completed: 2, failed: 2 } as const;
+    return oldResult && rank[oldState] >= rank[newState]
+      ? oldResult
+      : newResult ?? oldResult ?? { status: 'pending' };
+  });
+
+  const previousIndex = previous.currentStepIndex;
+  const incomingIndex = incoming.currentStepIndex;
+  const previousCompletedAllSteps = steps.length > 0
+    && previous.stepResults?.length === steps.length
+    && previous.stepResults.every((_, index) => getScenarioStepState(previous.stepResults, index) === 'completed');
+  // Passing the final step clears currentStepIndex. An older polling snapshot
+  // can still carry zero, so do not resurrect the first step from that state.
+  const currentStepIndex = previousCompletedAllSteps && previous.phase !== 'promoting'
+    ? undefined
+    : previousIndex == null
+      ? incomingIndex
+      : incomingIndex == null ? previousIndex : Math.max(previousIndex, incomingIndex);
+  const previousTerminal = previous.status === 'passed' || previous.status === 'failed';
+
+  return {
+    ...incoming,
+    steps,
+    stepResults: hasStepResults ? stepResults : undefined,
+    currentStepIndex,
+    status: previousTerminal ? previous.status : incoming.status ?? previous.status,
+    phase: previous.phase === 'promoting' ? previous.phase : incoming.phase ?? previous.phase,
+  };
 }
 
 export function cleanActiveScenarioText(value: unknown): string {

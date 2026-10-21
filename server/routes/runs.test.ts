@@ -11,6 +11,7 @@ let server: Server;
 let mockProvider: Server;
 let lastDiscoveryBatchPayload: Record<string, unknown> | null = null;
 let lastEvidenceDocumentFormat: string | undefined;
+let lastRunLogsAfter: string | undefined;
 
 const api = (path: string) => `http://localhost:${PORT}${path}`;
 
@@ -56,6 +57,7 @@ beforeAll(async () => {
     res.end();
   });
   mockApp.get('/api/runs/:jobId', (req, res) => {
+    lastRunLogsAfter = typeof req.query.logsAfter === 'string' ? req.query.logsAfter : undefined;
     res.json({ jobId: req.params.jobId, status: 'running' });
   });
   mockApp.get('/api/runs/:jobId/evidence-docx/status', (req, res) => {
@@ -312,6 +314,89 @@ describe('runs router — provider configured', () => {
     });
   });
 
+  it('forwards jira_semantic provenance, overrides and only matching Jira scenarios on promoted discovery-batch', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const scenario = (scenarioId: string, title: string) => ({
+      scenarioId,
+      title,
+      custom_steps_separated: [{ content: 'Abrir', expected: 'OK' }],
+      custom_preconds: null,
+      custom_expected: 'OK',
+    });
+    const scenarioOrigin = { kind: 'jira', jiraKey: 'AA-1' };
+    const dataOverrides = { 'PREVIEW-001': { 'auth.username': 'redacted-fixture' } };
+    const res = await fetch(api('/api/runs/from-scenarios'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        appSlug: 'app-a',
+        stories: [{ jiraKey: 'AA-1', title: 'AA-1', scenarios: [scenario('PREVIEW-001', 'Jira'), scenario('TR-CASE-100', 'TestRail'), scenario('UNPUBLISHED', 'Otro')] }],
+        existingCaseIds: [100],
+        launchId: 'launch-1',
+        testRunId: 9999,
+        jiraKey: 'AA-1',
+        executionEngine: 'jira_semantic',
+        scenarioOrigin,
+        dataOverrides,
+        publishedCases: [
+          { scenarioId: 'TR-CASE-100', caseId: 100, sourceType: 'testrail_case' },
+          { scenarioId: 'L-abc-001', caseId: 300, sourceType: 'jira_preview', launchScenarioId: 'LAUNCH-001', executionScenarioId: 'PREVIEW-001' },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(lastDiscoveryBatchPayload?.executionEngine).toBe('jira_semantic');
+    expect(lastDiscoveryBatchPayload?.scenarioOrigin).toEqual(scenarioOrigin);
+    expect(lastDiscoveryBatchPayload?.dataOverrides).toEqual(dataOverrides);
+    const forwarded = lastDiscoveryBatchPayload?.jiraSemanticScenarios as Array<Record<string, unknown>>;
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]).toMatchObject({ scenarioId: 'PREVIEW-001', caseId: 300 });
+  });
+
+  it('fails closed before upstream when a published Jira case has no unique semantic scenario', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    const scenario = (scenarioId: string) => ({
+      scenarioId,
+      title: 't',
+      custom_steps_separated: [{ content: 'Abrir', expected: 'OK' }],
+      custom_preconds: null,
+      custom_expected: 'OK',
+    });
+    const post = (scenarios: unknown[], jiraCase: Record<string, unknown>) => fetch(api('/api/runs/from-scenarios'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        appSlug: 'app-a',
+        stories: [{ jiraKey: 'AA-1', title: 'AA-1', scenarios }],
+        existingCaseIds: [100],
+        launchId: 'launch-1',
+        testRunId: 9999,
+        executionEngine: 'jira_semantic',
+        publishedCases: [
+          { scenarioId: 'TR-CASE-100', caseId: 100, sourceType: 'testrail_case' },
+          { sourceType: 'jira_preview', ...jiraCase },
+        ],
+      }),
+    });
+
+    // unmatched
+    let res = await post([scenario('TR-CASE-100')], { scenarioId: 'L-1', caseId: 300, executionScenarioId: 'PREVIEW-001' });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as any).errorCode).toBe('JIRA_SEMANTIC_SCENARIO_UNMATCHED');
+    expect(lastDiscoveryBatchPayload).toBeNull();
+
+    // ambiguous: two ids of the same case match two converted scenarios
+    res = await post([scenario('LAUNCH-001'), scenario('PREVIEW-001')], { scenarioId: 'L-1', caseId: 300, launchScenarioId: 'LAUNCH-001', executionScenarioId: 'PREVIEW-001' });
+    expect(res.status).toBe(422);
+    expect(lastDiscoveryBatchPayload).toBeNull();
+
+    // matched still forwards; TestRail-only case untouched
+    res = await post([scenario('PREVIEW-001')], { scenarioId: 'L-1', caseId: 300, executionScenarioId: 'PREVIEW-001' });
+    expect(res.status).toBe(200);
+    expect(lastDiscoveryBatchPayload?.caseIds).toEqual([100, 300]);
+    expect((lastDiscoveryBatchPayload?.jiraSemanticScenarios as unknown[])).toHaveLength(1);
+  });
+
   it('propaga checklistUrl y defectCount en discovery-batch sin issueKey obligatorio', async () => {
     process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
     process.env.RUN_PROVIDER_ENDPOINT_DISCOVERY = '/api/runs/discovery-batch-checklist';
@@ -416,6 +501,14 @@ describe('runs router — GET endpoints', () => {
     const body = await res.json() as any;
     expect(body.jobId).toBe('job-1');
     expect(body.status).toBe('running');
+  });
+
+  it('GET /:jobId forwards incremental log cursor when provided', async () => {
+    process.env.RUN_PROVIDER_BASE_URL = `http://localhost:${MOCK_PROVIDER_PORT}`;
+    lastRunLogsAfter = undefined;
+    const res = await fetch(api('/api/runs/job-1?logsAfter=1250'));
+    expect(res.status).toBe(200);
+    expect(lastRunLogsAfter).toBe('1250');
   });
 
   it('GET /:jobId/evidence-docx/status devuelve ready cuando provider responde ready', async () => {

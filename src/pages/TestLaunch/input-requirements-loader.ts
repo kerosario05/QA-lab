@@ -4,7 +4,7 @@ const PROXY = import.meta.env.VITE_API_URL ?? '';
 
 export type InputRequirementLoadState =
   | { status: 'loading' }
-  | { status: 'loaded'; inputRequirements: InputRequirement[] }
+  | { status: 'loaded'; inputRequirements: InputRequirement[]; runtimeValues?: Record<string, string | number | boolean>; inputRequirementsSyncVersion?: number }
   | { status: 'error'; error: string };
 
 export type EnrichedInputRequirementCase<T> = T & {
@@ -15,13 +15,22 @@ export type EnrichedInputRequirementCase<T> = T & {
 
 type InputRequirementsResponse = {
   inputRequirements?: InputRequirement[];
+  runtimeValues?: Record<string, string | number | boolean>;
+  inputRequirementsSyncVersion?: number;
 };
 
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
-type RawTestRailCase = { id: number; [key: string]: unknown };
+type RawTestRailCase = {
+  id: number;
+  title?: unknown;
+  custom_preconds?: unknown;
+  custom_steps?: unknown;
+  custom_expected?: unknown;
+  custom_steps_separated?: unknown;
+};
 
-type RuntimeTestRailCase = {
+type RuntimeTestRailCase = RawTestRailCase & {
   id: number;
   runtimeTransformStatus?: 'success' | 'error';
   runtimeTransformErrorCode?: string;
@@ -44,6 +53,10 @@ export async function loadInputRequirementsByCaseId(
       return [caseId, {
         status: 'loaded',
         inputRequirements: Array.isArray(body.inputRequirements) ? body.inputRequirements : [],
+        ...(body.inputRequirementsSyncVersion === 2 ? { inputRequirementsSyncVersion: 2 } : {}),
+        ...(body.runtimeValues && typeof body.runtimeValues === 'object' && !Array.isArray(body.runtimeValues)
+          ? { runtimeValues: body.runtimeValues }
+          : {}),
       }] as const;
     } catch (error) {
       return [caseId, {
@@ -81,11 +94,16 @@ export async function syncInputRequirementsByCaseId(
   const results = await Promise.all(cases.map(async (rawTestRailCase) => {
     const caseId = rawTestRailCase.id;
     const url = `${PROXY}/api/projects/${encodeURIComponent(projectSlug)}/cases/${caseId}/input-requirements/sync`;
+    const rawFields = rawTestRailCase as unknown as Record<string, unknown>;
+    const sourceCase = Object.fromEntries(
+      ['id', 'title', 'custom_preconds', 'custom_steps', 'custom_expected', 'custom_steps_separated']
+        .flatMap((key) => rawFields[key] === undefined ? [] : [[key, rawFields[key]]]),
+    );
     try {
       const response = await fetcher(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ rawTestRailCase }),
+        body: JSON.stringify({ rawTestRailCase: sourceCase }),
       });
       const body = await response.json().catch(() => ({})) as InputRequirementsResponse & { message?: string; error?: string };
       if (!response.ok) throw new Error(body.message || body.error || `${response.status} ${response.statusText}`);
@@ -107,16 +125,82 @@ export async function loadRequirementsAfterSelection(
   projectSlug: string,
   caseIds: number[],
   rawCases: RuntimeTestRailCase[],
+  // `init` must be forwarded: the sync step POSTs the case text. Dropping it turned that POST into
+  // a bodyless GET (403 route_not_authorized), so a case with no persisted requirements never got any.
+  fetcher: Fetcher = (url, init) => fetch(url, init),
 ): Promise<Record<number, InputRequirementLoadState>> {
-  void projectSlug;
+  const persistedStates = await loadInputRequirementsByCaseId(projectSlug, caseIds, fetcher);
+  const casesNeedingSync = caseIds.flatMap((caseId) => {
+    const rawCase = rawCases.find((candidate) => candidate.id === caseId);
+    const persistedState = persistedStates[caseId];
+    const hasCaseText = Boolean(rawCase && (
+      rawCase.custom_preconds || rawCase.custom_steps || rawCase.custom_expected || rawCase.custom_steps_separated
+    ));
+    return persistedState?.status === 'loaded'
+      // Older engines replace the whole contract with fill-only inference. Only
+      // ask them to initialize an empty contract; v2 safely completes partial ones.
+      && (persistedState.inputRequirementsSyncVersion === 2
+        || (persistedState.inputRequirements.length === 0 && (rawCase?.inputRequirements?.length ?? 0) === 0))
+      && hasCaseText
+      && rawCase
+      ? [rawCase]
+      : [];
+  });
+  const syncedStates = casesNeedingSync.length > 0
+    ? await syncInputRequirementsByCaseId(projectSlug, casesNeedingSync, fetcher)
+    : {};
+  const syncedCaseIds = casesNeedingSync
+    .filter((rawCase) => syncedStates[rawCase.id]?.status === 'loaded'
+      && (syncedStates[rawCase.id] as Extract<InputRequirementLoadState, { status: 'loaded' }>).inputRequirements.length > 0)
+    .map((rawCase) => rawCase.id);
+  const refreshedStates = syncedCaseIds.length > 0
+    ? await loadInputRequirementsByCaseId(projectSlug, syncedCaseIds, fetcher)
+    : {};
   const states: Record<number, InputRequirementLoadState> = {};
   for (const caseId of caseIds) {
     const rawCase = rawCases.find((candidate) => candidate.id === caseId);
-    if (rawCase?.runtimeTransformStatus === 'success') {
+    const persistedState = persistedStates[caseId];
+    const syncedState = syncedStates[caseId];
+    const refreshedState = refreshedStates[caseId];
+    if (syncedState?.status === 'error') {
+      states[caseId] = syncedState;
+      continue;
+    }
+    const mergedRequirements = new Map<string, InputRequirement>();
+    for (const requirement of persistedState?.status === 'loaded' ? persistedState.inputRequirements : []) {
+      mergedRequirements.set(requirement.key.trim().toLowerCase(), requirement);
+    }
+    for (const requirement of syncedState?.status === 'loaded' ? syncedState.inputRequirements : []) {
+      mergedRequirements.set(requirement.key.trim().toLowerCase(), requirement);
+    }
+    for (const requirement of refreshedState?.status === 'loaded' ? refreshedState.inputRequirements : []) {
+      mergedRequirements.set(requirement.key.trim().toLowerCase(), requirement);
+    }
+    for (const requirement of rawCase?.inputRequirements ?? []) {
+      mergedRequirements.set(requirement.key.trim().toLowerCase(), requirement);
+    }
+    // A successful sync returns the current complete contract, including any
+    // removal of inferred aliases. Older snapshots must not resurrect them.
+    if (syncedState?.status === 'loaded' && syncedState.inputRequirements.length > 0) {
+      mergedRequirements.clear();
+      for (const requirement of syncedState.inputRequirements) {
+        mergedRequirements.set(requirement.key.trim().toLowerCase(), requirement);
+      }
+    }
+    if (rawCase?.runtimeTransformStatus === 'success' || mergedRequirements.size > 0) {
+      const runtimeValues = (refreshedState?.status === 'loaded' ? refreshedState.runtimeValues : undefined)
+        ?? (persistedState?.status === 'loaded' ? persistedState.runtimeValues : undefined);
       states[caseId] = {
         status: 'loaded',
-        inputRequirements: rawCase.inputRequirements ?? [],
+        inputRequirements: [...mergedRequirements.values()],
+        ...(runtimeValues && Object.keys(runtimeValues).length > 0
+          ? { runtimeValues }
+          : {}),
       };
+      continue;
+    }
+    if (refreshedState?.status === 'error') {
+      states[caseId] = refreshedState;
       continue;
     }
     states[caseId] = {

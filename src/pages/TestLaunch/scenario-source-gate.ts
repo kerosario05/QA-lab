@@ -1,3 +1,7 @@
+export function shouldLoadJiraScenarios(source: string): boolean {
+  return source === 'jira' || source === 'both';
+}
+
 export function isJiraSourceSelectionComplete(input: {
   source: string;
   jiraProject?: string;

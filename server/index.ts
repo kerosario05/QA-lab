@@ -93,8 +93,33 @@ async function proxyProjects(req: any, res: any) {
   }
 }
 
+// Plain JSON passthrough to the engine (same auth headers as proxyProjects).
+async function proxyEngineJson(req: any, res: any) {
+  const base = engineBaseUrl();
+  if (!base) return res.status(503).json({ ok: false, errorCode: 'ENGINE_NOT_CONFIGURED', message: 'SCENARIO_PREVIEW_BASE_URL is not set' });
+  try {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers as Record<string, any>)) {
+      const lk = k.toLowerCase();
+      if (!v || ['host', 'content-length', 'content-type', 'connection', 'transfer-encoding', 'expect'].includes(lk)) continue;
+      headers[k] = Array.isArray(v) ? v.join(',') : String(v);
+    }
+    const init: any = { method: req.method, headers };
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(req.body ?? {});
+    }
+    const r: any = await fetch(`${base}${req.originalUrl}`, init);
+    const body = await r.json().catch(() => ({}));
+    res.status(r.status).json(body);
+  } catch (err: any) {
+    res.status(502).json({ ok: false, errorCode: 'PROXY_ERROR', message: err.message });
+  }
+}
+
 // /api/projects → automation engine (SQL-backed multi-project storage)
 app.use(identityRouter);
+app.use('/api/test-design', (req, res) => proxyEngineJson(req, res));
 
 app.all('/api/projects', async (req, res) => proxyProjects(req, res));
 app.all('/api/projects/*splat', async (req, res) => proxyProjects(req, res));

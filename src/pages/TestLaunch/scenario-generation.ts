@@ -76,6 +76,14 @@ function buildStoriesFromMcpScenarios(scenarios: McpScenario[], selectedIssueKey
     };
 
     const mappedScenario: StoryScenario & Record<string, unknown> = {
+      scenarioId: scenario.scenarioId,
+      authIntent: scenario.authIntent === 'gate_observation' || scenario.authIntent === 'full_authentication' ? scenario.authIntent : undefined,
+      inputRequirements: scenario.inputRequirements,
+      validation: scenario.validation as StoryScenario['validation'],
+      acceptanceCriteriaRefs: scenario.acceptanceCriteriaRefs as string[] | undefined,
+      unresolvedUiRequirements: scenario.unresolvedUiRequirements as StoryScenario['unresolvedUiRequirements'],
+      conditionRequirements: scenario.conditionRequirements,
+      reviewConfiguration: scenario.reviewConfiguration,
       title: scenario.title,
       refs: `${storyKey}-${scenario.scenarioId ?? scenario.caseId ?? index + 1}`,
       custom_preconds: Array.isArray(scenario.preconditions) && scenario.preconditions.length > 0 ? scenario.preconditions.join('\n') : null,

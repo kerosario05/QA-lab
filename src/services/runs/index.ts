@@ -57,6 +57,18 @@ export interface RunPayload {
   testRunId?: number;
   publishedCases?: PublishedCaseEntry[];
   jiraKey?: string;
+  executionEngine?: 'jira_semantic' | 'recording_replay';
+  scenarioOrigin?: { kind: 'jira_generated' | 'recorded_session'; jiraKey?: string; recordingId?: string };
+  /** Presentation-only TestRail case lineage for the LiveExecution panel. */
+  activeTestRailScenarios?: Array<{
+    id: string;
+    title: string;
+    steps: string[];
+    preconditions?: string[];
+    expectedResult?: string | null;
+  }>;
+  /** Jira runtime data is scoped by the canonical scenarioId. Values are transient and never logged. */
+  dataOverrides?: Record<string, Record<string, string>>;
 }
 
 export interface RunCreateResponse {

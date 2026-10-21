@@ -111,6 +111,29 @@ function Harness({ present, s }: { present: boolean; s: RecordedScenario }) {
 }
 
 describe('ScenarioCard steps expansion', () => {
+  it('OTP shows one secure dataset field while preserving the six original steps', () => {
+    const fields = Array.from({ length: 6 }, (_, index) => ({
+      valueKey: `code_${index + 1}`, semanticField: index === 0 ? 'Please enter verification code. Digit 1' : `OTP digit ${index + 1}`,
+      valueRole: 'secure_input' as const, required: true, resolved: false, value: null, source: 'unresolved' as const, stepIndex: index + 4,
+    }));
+    const s = scenario({ runtimeInputRequirements: fields, testRailSteps: fields.map((field) => ({ content: `Ingresar en ${field.semanticField}`, expected: '' })) });
+    const changes: Array<[string, string]> = [];
+    render(<ScenarioCard {...cardProps(s, true, noop)} onDatasetValueChange={(key, value) => changes.push([key, value])} />);
+    const inputs = Array.from(container!.querySelectorAll('input')).filter((input) => input.type !== 'checkbox');
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].getAttribute('aria-label')).toContain('OTP');
+    expect(inputs[0].type).toBe('password');
+    expect(inputs[0].maxLength).toBe(6);
+    for (const field of fields) expect(container!.textContent).toContain(`Ingresar en ${field.semanticField}`);
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(inputs[0], '739205');
+      inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(changes).toEqual(fields.map((field, index) => [field.valueKey, '739205'[index]]));
+    const other = { ...s, sourceRecordingId: 'other', scenarioId: 'REC-OTHER' };
+    render(<ScenarioCard {...cardProps(other, true, noop)} datasetValues={Object.fromEntries(fields.map((field, index) => [field.valueKey, '654321'[index]]))} />);
+    expect(container!.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe('654321');
+  });
   it('1/expand. clicking "Ver pasos" expands the steps panel', () => {
     render(<Harness present s={scenario()} />);
     act(() => findButton('Ver')?.click());

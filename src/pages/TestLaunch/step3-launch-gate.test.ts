@@ -43,6 +43,14 @@ describe('step 3 launch gate - Jira source', () => {
     })).toBe(true);
   });
 
+  it('blocks continue while any selected scenario has a required input missing', () => {
+    expect(canContinueFromStep3({
+      storiesLoading: false, storiesError: null, totalScenarios: 3,
+      trCasesLoading: false, trCasesError: null, trCasesCount: 0,
+      selectedScenarioKeys: ['AA-1::0'], source: 'jira', requiredInputsReady: false,
+    })).toBe(false);
+  });
+
   it('disables continue again when all deselected', () => {
     expect(canContinueFromStep3({
       storiesLoading: false, storiesError: null, totalScenarios: 3,

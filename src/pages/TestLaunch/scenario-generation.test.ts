@@ -49,6 +49,7 @@ describe('scenario generation normalization', () => {
         {
           sourceIssueKey: 'AA-82',
           title: 'Validar detalle visible',
+          unresolvedUiRequirements: [{stepIndex:2,requirement:'Observe exact detail label'}],
           steps: ['Abrir listado', 'Abrir detalle'],
           preconditions: ['Usuario autenticado'],
           expectedResult: 'El detalle debe verse',
@@ -87,6 +88,7 @@ describe('scenario generation normalization', () => {
     expect(result.stories[0].scenarios).toHaveLength(1);
     expect(result.stories[0].scenarios[0].title).toBe('Validar detalle visible');
     expect(result.cached).toBe(true);
+    expect(result.stories[0].scenarios[0].unresolvedUiRequirements).toEqual([{stepIndex:2,requirement:'Observe exact detail label'}]);
   });
 
   it('returns empty stories when the preview has no generated scenarios', () => {

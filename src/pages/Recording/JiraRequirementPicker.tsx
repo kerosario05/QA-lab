@@ -47,6 +47,12 @@ export function JiraRequirementPicker({
     return () => window.clearTimeout(timer);
   }, [query, selectedIssue]);
 
+  // The picker can unmount when the user returns to the recording; its selected issue is
+  // owned by the parent, so rehydrate the visible query from that retained selection.
+  useEffect(() => {
+    if (selectedIssue) setQuery(`${selectedIssue.key} — ${selectedIssue.summary}`);
+  }, [selectedIssue?.key, selectedIssue?.summary]);
+
   function clearSelectedIssue() {
     onSelectIssue(null);
     setQuery('');

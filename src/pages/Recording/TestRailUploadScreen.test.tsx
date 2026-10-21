@@ -1,7 +1,9 @@
-import { act, type ReactNode } from 'react';
+import { act, useState, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TestRailUploadScreen } from './TestRailUploadScreen';
+import { useTestRailDestination } from './useTestRailDestination';
+import type { JiraIssue } from '../../services/jira/types';
 import type { RecordedScenario } from '../../services/recordings/types';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -13,6 +15,7 @@ function stubFetch() {
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes('/api/recordings/') && url.includes('/scenarios?')) return readyRecordingResponse();
       if (url.includes('/api/testrail/projects/') && url.includes('/suites')) {
         return jsonResponse({ suites: [{ id: 501, name: 'Suite QA', is_master: false }] });
       }
@@ -21,6 +24,9 @@ function stubFetch() {
       }
       if (url.includes('/sections')) {
         return jsonResponse({ sections: [{ id: 601, name: 'Sección QA', depth: 0 }] });
+      }
+      if (url.includes('/api/jira/issues/search')) {
+        return jsonResponse({ issues: [{ key: 'QA-42', summary: 'Synthetic issue' }] });
       }
       return jsonResponse({});
     }),
@@ -32,6 +38,46 @@ const scenario: RecordedScenario = {
   title: 'Kiosko2',
   functionalActionCount: 5,
 } as unknown as RecordedScenario;
+const secondScenarioId = 'REC-B2DCF6A5-01';
+
+function readyRecordingResponse(ids = [scenario.scenarioId, secondScenarioId]) {
+  return jsonResponse({
+    ok: true,
+    scenarios: ids.map((scenarioId) => ({ ...scenario, scenarioId })),
+    lifecycle: { recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: true },
+  });
+}
+
+type UploadScreenHarnessProps = Omit<ComponentProps<typeof TestRailUploadScreen>, 'testRail' | 'selectedIssue' | 'onSelectIssue'> & {
+  initialSelectedIssue?: JiraIssue | null;
+};
+
+function TestRailUploadScreenHarness(props: UploadScreenHarnessProps) {
+  const { initialSelectedIssue = null, ...screenProps } = props;
+  const testRail = useTestRailDestination(screenProps.projectDetail?.testRail);
+  const [selectedIssue, setSelectedIssue] = useState<JiraIssue | null>(initialSelectedIssue);
+  return <TestRailUploadScreen {...screenProps} testRail={testRail} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} />;
+}
+
+function PersistentSourceSelectionHarness() {
+  const testRail = useTestRailDestination(null);
+  const [selectedIssue, setSelectedIssue] = useState<JiraIssue | null>(null);
+  const [uploadVisible, setUploadVisible] = useState(true);
+  const props: UploadScreenHarnessProps = {
+    recordingId: 'recording-1', projectSlug: 'project', projectDetail: null,
+    scenarios: [scenario], dataOverrides: {}, datasetValues: {},
+    onBack: () => setUploadVisible(false),
+  };
+  return (
+    <>
+      <button type="button" onClick={() => setUploadVisible(false)}>Volver a grabación</button>
+      {!uploadVisible && <button type="button" onClick={() => setUploadVisible(true)}>Volver a fuentes</button>}
+      {uploadVisible && (
+        <TestRailUploadScreen {...props} testRail={testRail} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} />
+      )}
+    </>
+  );
+}
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -95,11 +141,12 @@ describe('TestRailUploadScreen', () => {
   it('shows the dedicated destination title', async () => {
     stubFetch();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="a1dcf6a5-4a69-4015-8e44-cfb3ab75fd66"
         projectSlug="project"
         projectDetail={null}
         scenarios={[scenario]}
+        initialSelectedIssue={{ key: 'QA-1', summary: 'Synthetic selected issue' }}
         dataOverrides={{}}
         datasetValues={{}}
         onBack={vi.fn()}
@@ -121,7 +168,7 @@ describe('TestRailUploadScreen', () => {
       functionalActionCount: 7,
     } as unknown as RecordedScenario;
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="a1dcf6a5-4a69-4015-8e44-cfb3ab75fd66"
         projectSlug="project"
         projectDetail={null}
@@ -137,10 +184,48 @@ describe('TestRailUploadScreen', () => {
     expect(container?.textContent).toContain('Kiosko3');
   });
 
+  it('blocks launch when selected scenarios outlive their persisted recording trace', async () => {
+    const executeCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/recordings/') && url.includes('/scenarios?')) {
+        return jsonResponse({
+          ok: true,
+          scenarios: [],
+          lifecycle: { recordingExists: false, traceReady: false, semanticReady: false, scenariosReady: false },
+        });
+      }
+      if (url.includes('/api/testrail/projects/') && url.includes('/suites')) return jsonResponse({ suites: [{ id: 501, name: 'Suite QA', is_master: false }] });
+      if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 401, name: 'Proyecto QA' }] });
+      if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 601, name: 'Sección QA', depth: 0 }] });
+      if (url.includes('/execute-batch')) executeCalls.push(url);
+      return jsonResponse({});
+    }));
+    render(
+      <TestRailUploadScreenHarness
+        recordingId="recording-gone"
+        projectSlug="project"
+        projectDetail={{ slug: 'project', name: 'Project', type: 'web', testRail: { projectId: '401', projectIdTr: '401', suiteId: '501', sectionId: '601' } } as any}
+        scenarios={[scenario]}
+        initialSelectedIssue={{ key: 'QA-1', summary: 'Synthetic selected issue' }}
+        dataOverrides={{}}
+        datasetValues={{}}
+        onBack={vi.fn()}
+      />,
+    );
+    await flush();
+    await flush();
+    expect(container?.textContent).toContain('La grabación recording-gone ya no existe en QA Lab');
+    expect(findButton('Ejecutar Automatización')?.disabled).toBe(true);
+    await act(async () => { findButton('Ejecutar Automatización')?.click(); await flush(); });
+    expect(executeCalls).toHaveLength(0);
+  });
+
   it('starts one batch job for selected scenarios from different recordings', async () => {
     const executeCalls: Array<{ url: string; body: any }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes('/api/recordings/') && url.includes('/scenarios?')) return readyRecordingResponse();
       if (url.includes('/api/testrail/projects/') && url.includes('/suites')) return jsonResponse({ suites: [{ id: 1501, name: 'Suite QA', is_master: false }] });
       if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 1401, name: 'Proyecto QA' }] });
       if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 1601, name: 'Secci?n QA', depth: 0 }] });
@@ -157,11 +242,12 @@ describe('TestRailUploadScreen', () => {
     } as unknown as RecordedScenario;
     const onLaunch = vi.fn();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="recording-b"
         projectSlug="project"
         projectDetail={{ slug: 'project', name: 'Project', type: 'web', testRail: { projectId: '1401', projectIdTr: '1401', suiteId: '1501', sectionId: '1601' } } as any}
         scenarios={[scenario, secondScenario]}
+        initialSelectedIssue={{ key: 'QA-1', summary: 'Synthetic selected issue' }}
         scenarioRecordingIds={['recording-a', 'recording-b']}
         dataOverrides={{}}
         datasetValues={{}}
@@ -187,24 +273,23 @@ describe('TestRailUploadScreen', () => {
     }));
   });
 
-  // CASE 4, 5, 6: only the "Solo TestRail" source card is shown — Recording's origin is
-  // already known, so Jira and the combined option (both from the unrelated Jira/TestRail
-  // "sources" flow) never appear here.
-  it('shows only the "Solo TestRail" source card, never Jira or the combined option', async () => {
+  it('shows the TestRail destination and Jira requirement panels without legacy source-mode cards', async () => {
     stubFetch();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
         scenarios={[scenario]}
+        initialSelectedIssue={{ key: 'QA-1', summary: 'Synthetic selected issue' }}
         dataOverrides={{}}
         datasetValues={{}}
         onBack={vi.fn()}
       />,
     );
     await flush();
-    expect(container?.textContent).toContain('Solo TestRail');
+    expect(container?.textContent).toContain('TestRail');
+    expect(container?.textContent).toContain('Jira');
     expect(container?.textContent).not.toContain('Solo Jira');
     expect(container?.textContent).not.toContain('Ambos combinados');
   });
@@ -214,7 +299,7 @@ describe('TestRailUploadScreen', () => {
   it('shows Proyecto/Suite/Sección controls sourced from the API, not hardcoded, with no native <select> for Proyecto/Sección', async () => {
     stubFetch();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
@@ -227,8 +312,11 @@ describe('TestRailUploadScreen', () => {
     await flush();
     expect(container?.querySelectorAll('select').length).toBe(0);
     expect(findButton('Selecciona un proyecto…')).toBeTruthy();
-    expect(findButton('Selecciona una sección…')).toBeTruthy();
+    expect(document.body.textContent).toContain('Selecciona un proyecto primero');
     await openDropdown('Selecciona un proyecto…');
+    await pickOption('Proyecto QA');
+    await flush();
+    expect(findButton('Selecciona una sección…')).toBeTruthy();
     expect(document.body.textContent).toContain('Proyecto QA'); // CASE 8: from mocked API, not a literal
     expect(document.body.textContent).not.toContain('Portal Empresarial');
   });
@@ -237,7 +325,7 @@ describe('TestRailUploadScreen', () => {
   it('CASE UI-1/UI-2: project selector opens a custom popup with "Buscar proyecto..."', async () => {
     stubFetch();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
@@ -258,6 +346,7 @@ describe('TestRailUploadScreen', () => {
   it('CASE UI-3/UI-4: project search filters, and the selected project shows a check', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes('/api/recordings/') && url.includes('/scenarios?')) return readyRecordingResponse();
       if (url.includes('/suites')) return jsonResponse({ suites: [{ id: 501, name: 'Suite QA', is_master: false }] });
       if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 401, name: 'Proyecto QA' }, { id: 402, name: 'Otro proyecto' }] });
       if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 601, name: 'Sección QA', depth: 0 }] });
@@ -265,7 +354,7 @@ describe('TestRailUploadScreen', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
@@ -297,14 +386,15 @@ describe('TestRailUploadScreen', () => {
   it('CASE UI-5..8: section selector opens a popup, filters by search, and shows selected state', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/suites')) return jsonResponse({ suites: [{ id: 501, name: 'Suite QA', is_master: false }] });
-      if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 401, name: 'Proyecto QA' }] });
-      if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 601, name: 'Sección QA', depth: 0 }, { id: 602, name: 'Subsección', depth: 1 }] });
+      if (url.includes('/api/recordings/') && url.includes('/scenarios?')) return readyRecordingResponse();
+      if (url.includes('/suites')) return jsonResponse({ suites: [{ id: 551, name: 'Suite QA', is_master: false }] });
+      if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 451, name: 'Proyecto QA' }] });
+      if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 651, name: 'Sección QA', depth: 0 }, { id: 652, name: 'Subsección', depth: 1 }] });
       return jsonResponse({});
     });
     vi.stubGlobal('fetch', fetchMock);
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
@@ -336,11 +426,46 @@ describe('TestRailUploadScreen', () => {
     expect(selectedRow?.className).toContain('bg-[#48A157]/5');
   });
 
+  it('retains the selected TestRail project/section and Jira issue after returning and reopening the source screen', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/recordings/') && url.includes('/scenarios?')) return readyRecordingResponse();
+      if (url.includes('/api/jira/issues/search')) return jsonResponse({ issues: [{ key: 'GDD-1364', summary: 'Validate selector behavior' }] });
+      if (url.includes('/api/testrail/projects/') && url.includes('/suites')) return jsonResponse({ suites: [{ id: 501, name: 'Suite QA', is_master: false }] });
+      if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 401, name: 'Proyecto QA' }] });
+      if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 601, name: 'Sección QA', depth: 0 }] });
+      return jsonResponse({});
+    }));
+    render(<PersistentSourceSelectionHarness />);
+    await flush();
+
+    await openDropdown('Selecciona un proyecto');
+    await pickOption('Proyecto QA');
+    await flush();
+    await openDropdown('Selecciona una sección');
+    await pickOption('Sección QA');
+
+    const jiraSearch = document.querySelector<HTMLInputElement>('#jira-issue-search');
+    expect(jiraSearch).toBeTruthy();
+    await typeIntoSearch(jiraSearch!, 'GDD-1364');
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 350)); });
+    await pickOption('GDD-1364');
+
+    await act(async () => { findButton('Volver a grabación')?.click(); });
+    await act(async () => { findButton('Volver a fuentes')?.click(); });
+    await flush();
+
+    expect(document.body.textContent).toContain('Proyecto QA');
+    expect(document.body.textContent).toContain('Sección QA');
+    expect(document.body.textContent).toContain('Validate selector behavior');
+    expect(document.querySelector<HTMLInputElement>('#jira-issue-search')?.value).toContain('GDD-1364');
+  });
+
   // CASE 7
   it('renders the TestRail panel header', async () => {
     stubFetch();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
@@ -358,7 +483,7 @@ describe('TestRailUploadScreen', () => {
   it('disables Ejecutar Automatización until the TestRail destination is complete, then enables it', async () => {
     stubFetch();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
@@ -379,15 +504,22 @@ describe('TestRailUploadScreen', () => {
     await openDropdown('Selecciona una sección…');
     await pickOption('Sección QA');
 
-    const buttonAfter = Array.from(container?.querySelectorAll('button') ?? []).find((b) => b.textContent?.includes('Ejecutar Automatización'));
-    expect(buttonAfter?.disabled).toBe(false);
+    const buttonAfterTestRail = Array.from(container?.querySelectorAll('button') ?? []).find((b) => b.textContent?.includes('Ejecutar Automatización'));
+    expect(buttonAfterTestRail?.disabled).toBe(true);
+    const jiraSearch = document.querySelector<HTMLInputElement>('#jira-issue-search');
+    expect(jiraSearch).toBeTruthy();
+    await typeIntoSearch(jiraSearch!, 'QA-42');
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 350)); });
+    await pickOption('QA-42');
+    const buttonAfterJira = Array.from(container?.querySelectorAll('button') ?? []).find((b) => b.textContent?.includes('Ejecutar Automatización'));
+    expect(buttonAfterJira?.disabled).toBe(false);
   });
 
   // Scenario summary (Phase 6)
   it('shows a compact selected-scenarios summary with functional action counts', async () => {
     stubFetch();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
@@ -408,7 +540,7 @@ describe('TestRailUploadScreen', () => {
     stubFetch();
     const onBack = vi.fn();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
@@ -441,6 +573,7 @@ describe('TestRailUploadScreen', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+        if (url.includes('/api/recordings/') && url.includes('/scenarios?')) return readyRecordingResponse();
         if (url.includes('/api/testrail/projects/') && url.includes('/suites')) return jsonResponse({ suites: [{ id: 501, name: 'Suite QA', is_master: false }] });
         if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 401, name: 'Proyecto QA' }] });
         if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 601, name: 'Sección QA', depth: 0 }] });
@@ -454,11 +587,12 @@ describe('TestRailUploadScreen', () => {
     );
     const onLaunch = vi.fn();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
         scenarios={[scenario]}
+        initialSelectedIssue={{ key: 'QA-1', summary: 'Synthetic selected issue' }}
         dataOverrides={{}}
         datasetValues={{}}
         onBack={vi.fn()}
@@ -493,6 +627,8 @@ describe('TestRailUploadScreen', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.includes('/api/recordings/') && url.includes('/scenarios?')) return readyRecordingResponse();
+      if (url.includes('/api/recordings/') && url.includes('/scenarios?')) return readyRecordingResponse();
         if (url.includes('/api/testrail/projects/') && url.includes('/suites')) return jsonResponse({ suites: [{ id: 501, name: 'Suite QA', is_master: false }] });
         if (url.includes('/api/testrail/projects')) return jsonResponse({ projects: [{ id: 401, name: 'Proyecto QA' }] });
         if (url.includes('/sections')) return jsonResponse({ sections: [{ id: 601, name: 'Sección QA', depth: 0 }] });
@@ -512,11 +648,12 @@ describe('TestRailUploadScreen', () => {
     );
     const onLaunch = vi.fn();
     render(
-      <TestRailUploadScreen
+      <TestRailUploadScreenHarness
         recordingId="rec-1"
         projectSlug="project"
         projectDetail={null}
         scenarios={[scenario]}
+        initialSelectedIssue={{ key: 'QA-1', summary: 'Synthetic selected issue' }}
         dataOverrides={{}}
         datasetValues={{}}
         onBack={vi.fn()}

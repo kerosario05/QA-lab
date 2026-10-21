@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ChevronLeft, FileText, Lock, Pause, Square, CheckCircle2,
   Loader2, Terminal, Maximize2, AlertCircle, Download,
@@ -13,6 +13,7 @@ import { BentoCard } from '../../components/ui/BentoCard';
 import { runsProxy } from '../../services/runs';
 import { flushScenarioValueWrites } from '../../services/recordings/scenario-value-flush';
 import type { ActiveRun } from '../../types';
+import { getInitialActiveScenario } from './active-scenario-queue';
 import {
   computeLiveExecutionElapsedMs,
   getLiveExecutionElapsedSeconds,
@@ -33,12 +34,14 @@ import {
   shouldShowDefectChecklistButton,
   withStableTerminalTimestamp,
   resolveActiveScenarioUpdate,
+  mergeActiveScenarioSnapshot,
   type EvidenceDocumentAvailability,
   type LiveExecutionStatusLike,
   type ActiveScenarioLike,
   getScenarioStepState,
   parseLiveScenarioProgress,
   applyLiveScenarioProgress,
+  reconcileJiraScenarioFromLogs,
   finishActiveScenario,
   getCurrentScenarioStepIndex,
 } from './state';
@@ -50,6 +53,8 @@ import {
 
 interface LiveExecutionScreenProps {
   run: ActiveRun | null;
+  /** Back-button text; defaults to the dashboard wording. */
+  closeLabel?: string;
   onClose: () => void;
   onComplete?: () => void;
   onCloseExecution?: (execution: any) => void;
@@ -79,6 +84,10 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   try { return document.execCommand('copy'); } finally { document.body.removeChild(area); }
 }
 
+/** runs `request` throws `Error("404 Not Found")` for an unknown job. */
+const isRunNotFoundError = (error: unknown): boolean =>
+  error instanceof Error && /^404\b/.test(error.message);
+
 const formatTime = (s: number) => {
   const m   = Math.floor(s / 60);
   const sec = s % 60;
@@ -87,6 +96,17 @@ const formatTime = (s: number) => {
 
 const formatNow = () => new Date().toTimeString().slice(0, 8);
 
+/** ISO timestamps (UTC, `...Z`) become local `dd/mm/yyyy hh:mm:ss a. m.`; relative text ("hace 3m") passes through. */
+const formatStartedAt = (value?: string): string => {
+  if (!value) return 'hace 0m';
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(value)) return value;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date
+    .toLocaleString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
+    .replace(', ', ' ');
+};
+
 const mapLevel = (level?: string): DisplayLog['type'] => {
   if (!level) return 'info';
   if (level === 'success' || level === 'pass' || level === 'passed') return 'success';
@@ -94,7 +114,7 @@ const mapLevel = (level?: string): DisplayLog['type'] => {
   return 'info';
 };
 
-export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution }: LiveExecutionScreenProps) {
+export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', onClose, onComplete, onCloseExecution }: LiveExecutionScreenProps) {
   const [progress,        setProgress]        = useState(run?.progress ?? 0);
   const [total,           setTotal]           = useState(run?.total ?? 0);
   const [requested,       setRequested]       = useState(run?.total ?? 0);
@@ -107,7 +127,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [currentTestName, setCurrentTestName] = useState(run?.currentTest || '');
   const [activeScenario, setActiveScenario] = useState<ActiveScenarioLike | null>(
     ((run as (ActiveRun & { activeScenario?: ActiveScenarioLike | null }) | null)?.activeScenario)
-      ?? run?.activeScenarios?.[0]
+      ?? getInitialActiveScenario(run)
       ?? null,
   );
   const [jobStatus,       setJobStatus]       = useState(run?.status || 'queued');
@@ -120,6 +140,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const [issueKey,        setIssueKey]        = useState<string | null>(run?.issueKey ?? null);
   const [defectCount,     setDefectCount]     = useState<number>(typeof run?.defectCount === 'number' ? run.defectCount : 0);
   const [rerunning,       setRerunning]        = useState(false);
+  const [rerunError,      setRerunError]       = useState<string | null>(null);
   const [downloadingDocx,  setDownloadingDocx]  = useState(false);
   const [docxError,      setDocxError]      = useState<string | null>(null);
   const [documentReady,  setDocumentReady]  = useState(false);
@@ -166,9 +187,13 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const functionalPassRate = computeFunctionalPassRatePercent(passed, failed);
   const functionalPassRateLabel = formatFunctionalPassRateLabel({ passed, failed, status: jobStatus });
   const finalUserMessage = getTerminalUserMessage(jobStatus);
-  const currentScenarioStepIndex = getCurrentScenarioStepIndex(activeScenario);
+  const displayActiveScenario = useMemo(
+    () => reconcileJiraScenarioFromLogs(activeScenario, logs),
+    [activeScenario, logs],
+  );
+  const currentScenarioStepIndex = getCurrentScenarioStepIndex(displayActiveScenario);
   const currentScenarioStep = currentScenarioStepIndex >= 0
-    ? activeScenario?.steps[currentScenarioStepIndex]?.replace(/^\s*\d+\s*[.)-]\s*/, '').trim()
+    ? displayActiveScenario?.steps[currentScenarioStepIndex]?.replace(/^\s*\d+\s*[.)-]\s*/, '').trim()
     : '';
   const canDownloadDocument = isTerminalStatus(jobStatus) && documentReady && Boolean(currentJobId);
 
@@ -224,6 +249,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
   const handleRerun = async () => {
     if (!run?.jobId || rerunning) return;
     setRerunning(true);
+    setRerunError(null);
     try {
       if (run.recordingId) {
         const flush = await flushScenarioValueWrites(run.recordingId, run.scenarioIds);
@@ -252,7 +278,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         setSkipped(0);
         setPassRate(null);
         setCurrentTestName('');
-        setActiveScenario(null);
+        setActiveScenario(getInitialActiveScenario(run));
         setLogs([]);
         setJobStatus('queued');
         setChecklistUrl(newChecklistUrl);
@@ -277,6 +303,9 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       }
     } catch (err) {
       console.error('[rerun] error:', err);
+      if (!run.recordingId && run.issueKey) {
+        setRerunError('No se inició la reejecución. Verifica y completa los datos requeridos antes de volver a intentarlo.');
+      }
     } finally {
       setRerunning(false);
     }
@@ -478,7 +507,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
     setDocxError(null);
     setDownloadingDocx(false);
     setChecklistUrl(run?.checklistUrl ?? null);
-    setActiveScenario(null);
+    setActiveScenario(getInitialActiveScenario(run));
     setIssueKey(run?.issueKey ?? null);
     setDefectCount(typeof run?.defectCount === 'number' ? run.defectCount : 0);
     setLogs([]);
@@ -545,6 +574,11 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
 
     const applyStatus = (data: any) => {
       if (activeJobIdRef.current !== streamJobId) return;
+      const jiraProgress = parseLiveScenarioProgress(data);
+      if (jiraProgress) {
+        setActiveScenario(previous => applyLiveScenarioProgress(previous, jiraProgress));
+        return;
+      }
       // A case lifecycle event has a case-level `status` (for example, failed),
       // which must never be interpreted as the status of the whole queued job.
       // Handle it before terminal-status filtering so the next case can become
@@ -594,16 +628,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       if (stableStatus.currentTest) setCurrentTestName(stableStatus.currentTest);
       const activeScenarioUpdate = resolveActiveScenarioUpdate(data);
       if (activeScenarioUpdate && activeScenarioUpdate !== undefined) {
-        setActiveScenario(previous => previous?.id === activeScenarioUpdate.id
-          ? {
-              ...activeScenarioUpdate,
-              steps: activeScenarioUpdate.steps.length ? activeScenarioUpdate.steps : previous.steps,
-              stepResults: activeScenarioUpdate.stepResults?.length ? activeScenarioUpdate.stepResults : previous.stepResults,
-              currentStepIndex: activeScenarioUpdate.currentStepIndex
-                ?? (activeScenarioUpdate.stepResults?.length ? undefined : previous.currentStepIndex),
-              status: activeScenarioUpdate.status ?? previous.status,
-            }
-          : activeScenarioUpdate);
+        setActiveScenario(previous => mergeActiveScenarioSnapshot(previous, activeScenarioUpdate));
       } else if (activeScenarioUpdate === null && !isTerminalStatus(stableStatus.status)) {
         // Retain the completed case until the next case_started event.
       } else if (isTerminalStatus(stableStatus.status)) {
@@ -638,7 +663,17 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       }
     };
 
+    // 404 = the backend no longer knows this job (restart, deleted run, stale id). Retrying every
+    // 2s can never succeed, so polling stops and the user is told why.
+    let runNotFound = false;
+    const markRunNotFound = (error: unknown) => {
+      if (!isRunNotFoundError(error)) return;
+      runNotFound = true;
+      setStreamError('La ejecución ya no existe en el servidor (backend reiniciado o job eliminado). Vuelve a ejecutar.');
+    };
+
     const shouldContinueRunStatusPolling = (statusLike?: LiveExecutionStatusLike): boolean => {
+      if (runNotFound) return false;
       const latestStatus = statusLike?.status ?? lastStatusRef.current?.status ?? jobStatus;
       if (isTerminalStatus(latestStatus)) return false;
       const hasPendingCases = requestedRef.current > 0 && completedRef.current < requestedRef.current;
@@ -660,8 +695,9 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         if (activeJobIdRef.current !== streamJobId) return;
         setStreamError(null);
         applyStatus(statusData as LiveExecutionStatusLike);
-      } catch {
-        // Ignore transient polling errors; stream keeps primary real-time channel.
+      } catch (error) {
+        // Transient errors are ignored (the stream is the primary channel); a 404 is permanent.
+        markRunNotFound(error);
       } finally {
         if (activeJobIdRef.current !== streamJobId) return;
         if (shouldContinueRunStatusPolling()) scheduleRunStatusPolling();
@@ -676,8 +712,9 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
       if (shouldContinueRunStatusPolling(data as LiveExecutionStatusLike)) {
         scheduleRunStatusPolling();
       }
-    }).catch(() => {
+    }).catch((error) => {
       if (activeJobIdRef.current !== streamJobId) return;
+      markRunNotFound(error);
       if (shouldContinueRunStatusPolling()) {
         scheduleRunStatusPolling();
       }
@@ -779,7 +816,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
         {/* ΓöÇΓöÇ Topbar ΓöÇΓöÇ */}
         <div className="flex items-center justify-between mb-5">
           <button onClick={onClose} className="text-[11px] text-[#58646D] hover:text-[#104B99] flex items-center gap-1 transition">
-            <ChevronLeft size={12} /> Volver al dashboard
+            <ChevronLeft size={12} /> {closeLabel}
           </button>
           <div className="flex items-center gap-2">
             {isDone ? (
@@ -874,7 +911,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                 {run?.project || 'Proyecto'}
               </h2>
               <div className="text-[12px] text-white/60 mt-2 font-mono">
-                Disparado por {run?.triggered || 'Carlos M.'} · iniciado {run?.startedAt || 'hace 0m'}
+                Disparado por {run?.triggered || 'Carlos M.'} · iniciado {formatStartedAt(run?.startedAt)}
               </div>
 
               {/* Barra de progreso */}
@@ -939,32 +976,32 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                   ? <CheckCircle2 size={13} className={isFailed ? 'text-[#E63946]' : 'text-[#48A157]'} />
                   : <Loader2 size={13} className="text-[#104B99] animate-spin" />}
               </div>
-              <div title={!isDone && activeScenario ? activeScenario.title : undefined} className={cn(
+              <div title={!isDone && displayActiveScenario ? displayActiveScenario.title : undefined} className={cn(
                 "min-w-0 truncate font-semibold",
-                !isDone && activeScenario && "text-[13px] text-[#1a1f2e]",
-                !isDone && !activeScenario && "text-[10px] uppercase tracking-[0.15em] text-[#8B999D]",
+                !isDone && displayActiveScenario && "text-[13px] text-[#1a1f2e]",
+                !isDone && !displayActiveScenario && "text-[10px] uppercase tracking-[0.15em] text-[#8B999D]",
                 isDone && finalUserMessage.tone === 'success' && "text-[#48A157]",
                 isDone && finalUserMessage.tone === 'error' && "text-[#E63946]",
                 isDone && finalUserMessage.tone === 'neutral' && "text-[#58646D]",
               )}>
                 {isDone
                   ? finalUserMessage.text
-                  : activeScenario ? `Ejecutándose ahora · ${activeScenario.title}` : 'Ejecutándose ahora'}
+                  : displayActiveScenario ? `Ejecutándose ahora · ${displayActiveScenario.title}` : 'Ejecutándose ahora'}
               </div>
             </div>
 
             {/* Show only the current step; the case title lives in the one-line header above. */}
-             {activeScenario && (
+             {displayActiveScenario && (
                <div className="border-t border-[#E8ECEE] pt-2.5 text-[12px] text-[#58646D]">
                    <div className="text-[9px] uppercase tracking-[0.14em] font-semibold text-[#8B999D] mb-1.5">
-                     {activeScenario.phase === 'promoting'
-                       ? `Promoviendo spec · ${activeScenario.steps.length} de ${activeScenario.steps.length}`
-                       : `Paso actual${currentScenarioStepIndex >= 0 ? ` · ${currentScenarioStepIndex + 1} de ${activeScenario.steps.length}` : ''}`}
+                     {displayActiveScenario.phase === 'promoting'
+                       ? `Promoviendo spec · ${displayActiveScenario.steps.length} de ${displayActiveScenario.steps.length}`
+                       : `Paso actual${currentScenarioStepIndex >= 0 ? ` · ${currentScenarioStepIndex + 1} de ${displayActiveScenario.steps.length}` : ''}`}
                    </div>
                    {currentScenarioStep && (
-                     <div key={`${activeScenario.id}-${currentScenarioStepIndex}`} className="flex items-start gap-2 leading-5 transition-opacity duration-300 animate-[live-step-enter_220ms_ease-out]">
+                     <div key={`${displayActiveScenario.id}-${currentScenarioStepIndex}`} className="flex items-start gap-2 leading-5 transition-opacity duration-300 animate-[live-step-enter_220ms_ease-out]">
                        {(() => {
-                       const state = getScenarioStepState(activeScenario.stepResults, currentScenarioStepIndex);
+                       const state = getScenarioStepState(displayActiveScenario.stepResults, currentScenarioStepIndex);
                        const marker = state === 'completed' ? '✓' : state === 'failed' ? '✕' : state === 'running' ? '●' : '○';
                        const markerClass = state === 'completed' ? 'text-[#48A157]' : state === 'failed' ? 'text-[#E63946]' : state === 'running' ? 'text-[#104B99]' : 'text-[#AAB4B8]';
                        return <><span className={cn('w-3 shrink-0 text-center font-semibold', markerClass)}>{marker}</span><span>{currentScenarioStep}</span></>;
@@ -976,7 +1013,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                    )}
                   </div>
              )}
-            {!activeScenario && (
+            {!displayActiveScenario && (
               <div>
                 <div className="text-[16px] font-medium text-[#1a1f2e]">{currentTestName || 'Preparando el primer escenario…'}</div>
                 <div className="text-[13px] text-[#8B999D] mt-1">Esperando que inicie el caso para mostrar sus pasos.</div>
@@ -1089,6 +1126,7 @@ export function LiveExecutionScreen({ run, onClose, onComplete, onCloseExecution
                   {rerunning ? 'Reejecutando...' : 'Reejecutar escenarios'}
                 </button>
               </div>
+              {rerunError && <div role="alert" className="mt-3 flex items-center gap-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {rerunError}</div>}
             </BentoCard>
           )}
         </div>

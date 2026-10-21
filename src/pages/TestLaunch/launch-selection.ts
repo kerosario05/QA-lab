@@ -39,6 +39,17 @@ export type LaunchSelectionSummary = {
   sourceLabel: LaunchSourceLabel;
 };
 
+export function buildScenarioExecutionProvenance(input: {
+  jiraSelectedCount: number;
+  testRailSelectedCount: number;
+  jiraKey?: string;
+  projectType?: string;
+}): { executionEngine: "jira_semantic"; scenarioOrigin: { kind: "jira_generated"; jiraKey: string } } | undefined {
+  const jiraKey = input.jiraKey?.trim();
+  if (input.projectType !== "web" || input.jiraSelectedCount <= 0 || input.testRailSelectedCount !== 0 || !jiraKey) return undefined;
+  return { executionEngine: "jira_semantic", scenarioOrigin: { kind: "jira_generated", jiraKey } };
+}
+
 export type LaunchPublishedCase = {
   scenarioId: string;
   caseId: number;

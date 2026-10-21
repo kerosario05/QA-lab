@@ -13,6 +13,7 @@ import { parseChecklistRoute } from './pages/DefectChecklist/route';
 import { Ejecuciones } from './pages/Ejecuciones';
 import { Configuracion } from './pages/Configuracion';
 import { Usuarios } from './pages/Usuarios';
+import { TestDesign } from './pages/TestDesign';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
 import { useAuth } from './auth/AuthContext';
@@ -59,6 +60,7 @@ const LANDING_ORDER: { id: View; permissions: PermissionKey[] }[] = [
   { id: 'ejecuciones', permissions: ['executions.view'] },
   { id: 'execute', permissions: ['tests.launch'] },
   { id: 'grabacion', permissions: ['recordings.view', 'recordings.create'] },
+  { id: 'diseno', permissions: ['testdesign.view'] },
   { id: 'configuracion', permissions: ['projects.view'] },
   { id: 'usuarios', permissions: ['admin.users', 'admin.roles'] },
 ];
@@ -72,6 +74,17 @@ function Workspace() {
   const [checklistJobId, setChecklistJobId] = useState<string | undefined>(undefined);
   const [checklistScenarioIds, setChecklistScenarioIds] = useState<string[] | undefined>(undefined);
   const [prevView, setPrevView] = useState<View | null>(null);
+  // Screen a run was launched from. It stays mounted (hidden) while the run is live so "Volver"
+  // lands on it with the TestRail/Jira selection intact instead of a fresh form or the dashboard.
+  const [launchOrigin, setLaunchOrigin] = useState<'execute' | 'grabacion' | null>(null);
+
+  // Launch id the Ejecuciones page should open on (from global search); null = the list.
+  const [executionDeepLink, setExecutionDeepLink] = useState<string | null>(null);
+
+  // Once back on (or away from) the origin, there is nothing left to keep alive.
+  useEffect(() => {
+    if (view !== 'live' && view !== launchOrigin) setLaunchOrigin(null);
+  }, [view, launchOrigin]);
 
   // URL-based routing: /checklist/:identity (issueKey | launch:<uuid> | job:<uuid>)
   useEffect(() => {
@@ -93,18 +106,20 @@ function Workspace() {
   }, [view, canAny]);
 
   const handleLaunch = (run: ActiveRun) => {
+    setLaunchOrigin(view === 'execute' || view === 'grabacion' ? view : null);
     setLiveRun(run);
     setView('live');
   };
 
   const handleOpenRun = (run: ActiveRun) => {
+    setLaunchOrigin(null);
     setLiveRun(run);
     setView('live');
   };
 
   const handleCloseLive = () => {
     setLiveRun(null);
-    setView('dashboard');
+    setView(launchOrigin ?? 'dashboard');
   };
 
   const handleOpenChecklist = (issueKey: string, jobId?: string, scenarioIds?: string[]) => {
@@ -147,6 +162,7 @@ function Workspace() {
     checklist: 'Checklist de defectos',
     configuracion: 'Configuración',
     usuarios: 'Usuarios y roles',
+    diseno: 'Diseño de pruebas',
   };
 
   const subtitles: Record<string, string> = {
@@ -159,6 +175,7 @@ function Workspace() {
     checklist: 'Defectos detectados en la ejecución',
     configuracion: 'Administración de proyectos de automatización.',
     usuarios: 'Gestiona accesos, roles y permisos por proyecto',
+    diseno: 'Genera casos con IA desde historias de Jira, edítalos y publícalos',
   };
 
   return (
@@ -185,6 +202,7 @@ function Workspace() {
         active={view === 'live' || view === 'close' ? 'dashboard' : view}
         onChange={(v) => {
           setView(v as View);
+          setExecutionDeepLink(null);
           if (v !== 'live') {
             setLiveRun(null);
             setClosingExecution(null);
@@ -196,6 +214,9 @@ function Workspace() {
         <Topbar
           title={titles[view]}
           subtitle={subtitles[view]}
+          onNavigate={(next) => { setExecutionDeepLink(null); setLiveRun(null); setClosingExecution(null); setView(next); }}
+          onOpenRun={handleOpenRun}
+          onOpenExecution={(launchId) => { setExecutionDeepLink(launchId); setLiveRun(null); setView('ejecuciones'); }}
           action={view === 'dashboard' && (
             <button
               onClick={() => setView('execute')}
@@ -210,15 +231,20 @@ function Workspace() {
           {view === 'dashboard' && (
             <DashboardView onOpenRun={handleOpenRun} onCloseExecution={handleCloseExecution} />
           )}
-          {view === 'execute' && (
-            <TestLaunch onLaunch={handleLaunch} />
+          {(view === 'execute' || launchOrigin === 'execute') && (
+            <div className={view === 'execute' ? undefined : 'hidden'}>
+              <TestLaunch onLaunch={handleLaunch} />
+            </div>
           )}
-          {view === 'grabacion' && (
-            <Recording onLaunch={handleLaunch} />
+          {(view === 'grabacion' || launchOrigin === 'grabacion') && (
+            <div className={view === 'grabacion' ? undefined : 'hidden'}>
+              <Recording onLaunch={handleLaunch} />
+            </div>
           )}
           {view === 'live' && (
             <LiveExecutionScreen
               run={liveRun}
+              closeLabel={launchOrigin ? 'Volver a la configuración' : undefined}
               onClose={handleCloseLive}
               onComplete={() => {}}
               onCloseExecution={handleCloseExecution}
@@ -236,13 +262,16 @@ function Workspace() {
             />
           )}
           {view === 'ejecuciones' && (
-            <Ejecuciones />
+            <Ejecuciones key={executionDeepLink ?? 'list'} initialLaunchId={executionDeepLink} />
           )}
           {(view as string) === 'configuracion' && (
             <Configuracion />
           )}
           {(view as string) === 'usuarios' && (
             <Usuarios />
+          )}
+          {view === 'diseno' && (
+            <TestDesign />
           )}
         </div>
       </main>
