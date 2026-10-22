@@ -15,7 +15,9 @@ export const identityRouter = Router();
 
 // /api/test-design is not identity, but it is the same pass-through contract: the
 // engine owns the module (drafts, generation, publishing) and enforces its permissions.
-const PREFIXES = ['/api/auth', '/api/users', '/api/roles', '/api/permissions', '/api/test-design'];
+// /api/local-agent too: the panel asks the engine about the agent on its own PC.
+// /api/test-planning: the engine reads the project's git repository.
+const PREFIXES = ['/api/auth', '/api/users', '/api/roles', '/api/permissions', '/api/test-design', '/api/local-agent', '/api/test-planning'];
 
 async function proxy(req: Request, res: Response): Promise<void> {
   const base = engineBaseUrl();

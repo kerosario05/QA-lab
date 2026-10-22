@@ -1,7 +1,11 @@
 import { attachLiveViewProxy } from "./live-view-proxy";
+import { proxyDownload } from "./downloads-proxy";
 import './env';
 import express from 'express';
 import cors from 'cors';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import testrailRouter from './routes/testrail';
 import jiraRouter from './routes/jira';
 import scenariosRouter from './routes/scenarios';
@@ -110,9 +114,41 @@ app.use(runtimeInputsRouter);
 app.use('/api/recordings', recordingsRouter);
 app.use(checklistRouter);
 
+// Chromium y el agente local para los PCs de los usuarios (antes del front: la ruta comodín
+// de la aplicación de una página respondería index.html).
+app.get('/descargas/*splat', proxyDownload);
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'qa-lab-backend', timestamp: Date.now() });
 });
+
+/**
+ * Sirve el front compilado desde este mismo proceso (igual que en QA-LAB-Record-Kevin).
+ *
+ * Con el estático y la API en el mismo origen no hace falta IIS con ARR, y desaparece el CORS
+ * entre navegador y API. Se monta después de todas las rutas /api para no taparlas. Sin carpeta
+ * dist el servidor sigue funcionando solo como API (desarrollo: Vite sirve el front).
+ */
+const serverDir = path.dirname(fileURLToPath(import.meta.url));
+const distDir = path.resolve(serverDir, '..', 'dist');
+if (fs.existsSync(path.join(distDir, 'index.html'))) {
+  app.use(
+    express.static(distDir, {
+      // index.html nunca se cachea: tras desplegar el navegador pediría los assets viejos.
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('index.html')) res.setHeader('Cache-Control', 'no-cache');
+        else res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      },
+    }),
+  );
+  // Aplicación de una sola página: recargar en /checklist/AA-123 no debe dar 404.
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+  console.log(`[qa-lab-server] front servido desde ${distDir}`);
+} else {
+  console.log('[qa-lab-server] sin dist/: solo API (en desarrollo lo sirve Vite)');
+}
 
 const server = app.listen(PORT, () => {
   console.log(`[qa-lab-server] API listening on http://localhost:${PORT}`);

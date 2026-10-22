@@ -196,11 +196,11 @@ export function moveItem<T>(items: T[], index: number, delta: -1 | 1): T[] {
 }
 
 /**
- * Publishing to Jira (one sub-task per story) is built in the engine but hidden
- * in the panel for now: only TestRail is offered. Flip to re-enable the Jira
- * button, the per-scenario "Jira" toggle and its counters.
+ * Publishing to Jira (one sub-task per story). Must stay in sync with the
+ * engine's TEST_DESIGN_JIRA_PUBLISH_ENABLED, which decides whether Jira counts
+ * toward the draft status.
  */
-export const JIRA_PUBLISH_ENABLED = false;
+export const JIRA_PUBLISH_ENABLED = true;
 
 /** Whether the scenario is going anywhere the panel currently offers. */
 export function isSelectedForPublish(scenario: TestDesignScenario): boolean {

@@ -27,7 +27,7 @@ describe('checklist service', () => {
     await getChecklist('launch:abc-123', 'job-42');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:3001/api/checklists/launch%3Aabc-123?jobId=job-42');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/checklists/launch%3Aabc-123?jobId=job-42');
   });
 
   it('expone status HTTP cuando falla la consulta', async () => {

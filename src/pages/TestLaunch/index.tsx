@@ -77,7 +77,7 @@ interface LaunchProjectApiItem {
   enabled: boolean;
 }
 
-const LAUNCH_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const LAUNCH_API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 export function mapLaunchProject(p: LaunchProjectApiItem): LaunchProjectOption {
   return {

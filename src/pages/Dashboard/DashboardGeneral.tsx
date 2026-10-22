@@ -6,6 +6,7 @@ import { BentoCard } from '../../components/ui/BentoCard';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import { LiveRunsSection } from './LiveRunsSection';
 import { TestDesignSection } from './TestDesignSection';
+import { TestPlanningSection } from './TestPlanningSection';
 import { lastThirtyDays, type DashboardData, type DashboardExecution } from '../../services/dashboard';
 import type { ActiveRun } from '../../types';
 
@@ -172,6 +173,8 @@ export function DashboardGeneral({ data, onSelectProject, onOpenRun }: Dashboard
       </BentoCard>
 
       <TestDesignSection refreshKey={data.loadedAt} />
+
+      <TestPlanningSection refreshKey={data.loadedAt} />
 
       <BentoCard>
         <div className="mb-4 flex items-center gap-2.5"><div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#104B99]/10"><Radio size={13} className="text-[#104B99]" /></div><div><div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.15em] text-[#8B999D]">Actividad reciente</div><h3 className="text-[20px] font-medium leading-tight text-[#1a1f2e]">Últimas ejecuciones</h3></div></div>

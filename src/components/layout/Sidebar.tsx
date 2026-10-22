@@ -1,4 +1,4 @@
-import { LayoutGrid, Rocket, History, Settings, Sparkles, Video, Users, ClipboardList } from 'lucide-react';
+import { LayoutGrid, Rocket, History, Settings, Sparkles, Video, Users, ClipboardList, GitBranch } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { useAuth } from '../../auth/AuthContext';
 import type { PermissionKey } from '../../auth/types';
@@ -20,6 +20,7 @@ const items: { id: string; label: string; icon: typeof LayoutGrid; permissions: 
   { id: 'execute', label: 'Lanzar pruebas', icon: Rocket, permissions: ['tests.launch'] },
   { id: 'grabacion', label: 'Grabación', icon: Video, permissions: ['recordings.view', 'recordings.create'] },
   { id: 'diseno', label: 'Diseño de pruebas', icon: ClipboardList, permissions: ['testdesign.view'] },
+  { id: 'planificacion', label: 'Planificación de pruebas', icon: GitBranch, permissions: ['testplanning.view'] },
   { id: 'ejecuciones', label: 'Ejecuciones', icon: History, permissions: ['executions.view'] },
   { id: 'configuracion', label: 'Configuración', icon: Settings, permissions: ['projects.view'] },
   { id: 'usuarios', label: 'Usuarios', icon: Users, permissions: ['admin.users', 'admin.roles'] },

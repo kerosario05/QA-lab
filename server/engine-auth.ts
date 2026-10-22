@@ -14,7 +14,18 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 type RequestAuth = {
   authorization?: string;
   apiKey?: string;
+  /** IP of the PC behind the request; the engine pairs a panel user with the local agent on that PC. */
+  clientIp?: string;
 };
+
+/** Remote address of the browser/agent, without the IPv4-mapped IPv6 prefix. */
+export function clientIpOf(req: { socket?: { remoteAddress?: string } }): string | undefined {
+  const raw = req.socket?.remoteAddress;
+  if (!raw) return undefined;
+  if (raw.startsWith('::ffff:')) return raw.slice(7);
+  if (raw === '::1') return '127.0.0.1';
+  return raw;
+}
 
 const store = new AsyncLocalStorage<RequestAuth>();
 
@@ -24,7 +35,7 @@ export function captureRequestAuth(): RequestHandler {
     const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined;
     const apiKeyHeader = req.headers['x-api-key'];
     const apiKey = typeof apiKeyHeader === 'string' ? apiKeyHeader : undefined;
-    store.run({ authorization, apiKey }, () => next());
+    store.run({ authorization, apiKey, clientIp: clientIpOf(req) }, () => next());
   };
 }
 
@@ -39,6 +50,9 @@ export function engineHeaders(): Record<string, string> {
   const current = store.getStore();
   const headers: Record<string, string> = {};
   if (current?.authorization) headers.Authorization = current.authorization;
+  // Always the socket's address, never a client-sent X-Forwarded-For: the engine trusts
+  // this header only from the local BFF.
+  if (current?.clientIp) headers['X-Forwarded-For'] = current.clientIp;
   if (current?.apiKey) headers['X-Api-Key'] = current.apiKey;
   else if (!current?.authorization && process.env.ENGINE_API_KEY) {
     headers['X-Api-Key'] = process.env.ENGINE_API_KEY;

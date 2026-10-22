@@ -14,9 +14,12 @@ import { Ejecuciones } from './pages/Ejecuciones';
 import { Configuracion } from './pages/Configuracion';
 import { Usuarios } from './pages/Usuarios';
 import { TestDesign } from './pages/TestDesign';
+import { TestPlanning } from './pages/TestPlanning';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
 import { useAuth } from './auth/AuthContext';
+import { LocalAgentProvider } from './components/localAgent/LocalAgentContext';
+import { LocalAgentSetupDialog } from './components/localAgent/LocalAgentSetupDialog';
 import type { ActiveRun, View } from './types';
 import type { PermissionKey } from './auth/types';
 
@@ -61,12 +64,13 @@ const LANDING_ORDER: { id: View; permissions: PermissionKey[] }[] = [
   { id: 'execute', permissions: ['tests.launch'] },
   { id: 'grabacion', permissions: ['recordings.view', 'recordings.create'] },
   { id: 'diseno', permissions: ['testdesign.view'] },
+  { id: 'planificacion', permissions: ['testplanning.view'] },
   { id: 'configuracion', permissions: ['projects.view'] },
   { id: 'usuarios', permissions: ['admin.users', 'admin.roles'] },
 ];
 
 function Workspace() {
-  const { canAny } = useAuth();
+  const { canAny, can } = useAuth();
   const [view, setView] = useState<View>('dashboard');
   const [liveRun, setLiveRun] = useState<ActiveRun | null>(null);
   const [closingExecution, setClosingExecution] = useState<any>(null);
@@ -150,6 +154,7 @@ function Workspace() {
     configuracion: 'Configuración',
     usuarios: 'Usuarios y roles',
     diseno: 'Diseño de pruebas',
+    planificacion: 'Planificación de pruebas',
   };
 
   const subtitles: Record<string, string> = {
@@ -163,9 +168,13 @@ function Workspace() {
     configuracion: 'Administración de proyectos de automatización.',
     usuarios: 'Gestiona accesos, roles y permisos por proyecto',
     diseno: 'Genera casos con IA desde historias de Jira, edítalos y publícalos',
+    planificacion: 'Revisa los test-plan de cada HU en las ramas del repositorio',
   };
 
   return (
+    // Right after login: is the recording Chromium ready on this PC? (installs it if not)
+    <LocalAgentProvider enabled={can('recordings.create')}>
+    <LocalAgentSetupDialog />
     <div className="h-screen flex" style={{ background: C.canvas, fontFamily: '"Geist", system-ui, -apple-system, sans-serif' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
@@ -251,8 +260,12 @@ function Workspace() {
           {view === 'diseno' && (
             <TestDesign />
           )}
+          {view === 'planificacion' && (
+            <TestPlanning />
+          )}
         </div>
       </main>
     </div>
+    </LocalAgentProvider>
   );
 }
