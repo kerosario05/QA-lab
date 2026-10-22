@@ -70,11 +70,12 @@ export class TestRailCacheService {
     resource: string,
     params: (string | number)[],
     fetcher: () => Promise<T>,
+    options: { refresh?: boolean } = {},
   ): Promise<{ data: T; stale?: boolean; rateLimited?: boolean; retryAfterSeconds?: number }> {
     const key = this.buildKey(resource, ...params);
 
     const fresh = this.getFreshOrNull<T>(key);
-    if (fresh !== null) {
+    if (fresh !== null && !options.refresh) {
       this.log('hit', key, '(fresh)');
       return { data: fresh };
     }
@@ -100,23 +101,24 @@ export class TestRailCacheService {
     }
 
     const inflight = this.inflight.get(key);
-    if (inflight) {
+    if (inflight && !options.refresh) {
       this.log('inflight', key);
       const data = await inflight as T;
-      this.cache.set(key, { data, fetchedAt: Date.now() });
       return { data };
     }
 
     this.log('miss', key);
-    const promise = fetcher()
+    const promise: Promise<T> = fetcher()
       .then(data => {
-        this.cache.set(key, { data, fetchedAt: Date.now() });
-        this.inflight.delete(key);
-        this.rateLimitUntil.delete(key);
+        if (this.inflight.get(key) === promise) {
+          this.cache.set(key, { data, fetchedAt: Date.now() });
+          this.inflight.delete(key);
+          this.rateLimitUntil.delete(key);
+        }
         return data;
       })
       .catch(err => {
-        this.inflight.delete(key);
+        if (this.inflight.get(key) === promise) this.inflight.delete(key);
 
         if (err?.rateLimited) {
           const retryAfter = err?.retryAfterSeconds ?? 60;
@@ -140,7 +142,10 @@ export class TestRailCacheService {
       });
 
     this.inflight.set(key, promise);
-    return { data: await promise };
+    const data = await promise;
+    return { data, ...(this.isRateLimited(key)
+      ? { stale: true, rateLimited: true, retryAfterSeconds: this.getRetryAfterSeconds(key) }
+      : {}) };
   }
 
   clear(): void {

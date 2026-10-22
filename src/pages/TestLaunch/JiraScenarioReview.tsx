@@ -34,6 +34,38 @@ export function jiraReviewBlockingErrors(scenario: StoryScenario): string[] {
   return errors;
 }
 
+/** Keep machine error codes for launch gating; explain the affected authored step to the user. */
+export function jiraReviewBlockingMessages(scenario: StoryScenario): string[] {
+  return jiraReviewBlockingErrors(scenario).flatMap(code=>{
+    let issues=(scenario.validation?.issues??[]).filter(issue=>issue.code===code && Number.isInteger(issue.stepIndex) && issue.stepIndex>0);
+    // Cached previews from earlier servers carry condition indices but no structured issues.
+    if(!issues.length && code==='JIRA_CONDITION_STEP_UNSUPPORTED') {
+      const indices=[...new Set((scenario.conditionRequirements??[]).flatMap(requirement=>requirement.stepIndices))];
+      issues=indices.filter(index=>Number.isInteger(index)&&index>0&&!/^\s*(?:Validar|Verificar)(?: que se (?:muestre|muestren))?\s+["“][^"”]+["”][.]?$/i.test(scenario.custom_steps_separated[index-1]?.content??''))
+        .map(stepIndex=>({code,stepIndex,step:scenario.custom_steps_separated[stepIndex-1]?.content??''}));
+    }
+    const hint=code==='JIRA_CONDITION_STEP_UNSUPPORTED'
+      ? 'La validación condicional no pudo interpretarse. Usa una validación por paso con el texto esperado entre comillas y pulsa «Aplicar y validar».'
+      : 'Edita este paso y pulsa «Aplicar y validar».';
+    if(issues.length) return [...new Set(issues.map(issue=>{
+      const text=scenario.custom_steps_separated[issue.stepIndex-1]?.content??issue.step;
+      return `Paso ${issue.stepIndex}${text?`: ${text}`:' (ya no existe en el escenario)'}. ${hint}`;
+    }))];
+    return [code==='JIRA_CONDITION_STEP_UNSUPPORTED'
+      ? 'No se pudo interpretar una validación condicional. Abre «Editar pasos» y pulsa «Aplicar y validar» para identificar el paso afectado.'
+      : code];
+  });
+}
+
+export function JiraReviewErrorNotice({scenario}:{scenario:StoryScenario}) {
+  const messages=jiraReviewBlockingMessages(scenario);
+  if(!messages.length) return null;
+  return <div role="alert" className="px-4 py-2.5 text-[11px] text-red-300 bg-red-500/10">
+    <p className="font-medium">Revisa los siguientes pasos antes de lanzar:</p>
+    <ul className="mt-1 list-disc pl-4 space-y-1">{messages.map((message,index)=><li key={index} className="whitespace-pre-wrap break-words">{message}</li>)}</ul>
+  </div>;
+}
+
 export function JiraScenarioReview({scenario,onChange}: {scenario:StoryScenario;onChange:(configuration:JiraReviewConfiguration)=>void}) {
   if (!scenario.unresolvedUiRequirements?.length && !scenario.conditionRequirements?.length) return null;
   const configuration=scenario.reviewConfiguration ?? {};

@@ -1,4 +1,5 @@
 import { api } from '../http';
+import { invalidateTestRailCases } from '../testrail/sections';
 import type {
   StoryJiraResult,
   StoryTestRailResult,
@@ -164,11 +165,15 @@ export const testDesignApi = {
     api.post<{ draft: TestDesignDraftWithStories; missingCaseIds: number[] }>(`${BASE}/drafts/${draftId}/testrail/reconcile`, {}),
 
   /** Publishes the explicitly confirmed unpublished scenarios. */
-  publishTestRail: (draftId: string, storyIds?: string[], scenarioIds?: string[]) =>
-    api.post<{ draft: TestDesignDraftWithStories; results: StoryTestRailResult[] }>(
+  publishTestRail: async (draftId: string, storyIds?: string[], scenarioIds?: string[]) => {
+    const result = await api.post<{ draft: TestDesignDraftWithStories; results: StoryTestRailResult[] }>(
       `${BASE}/drafts/${draftId}/publish/testrail`,
       { storyIds, scenarioIds },
-    ),
+    );
+    const { projectId, suiteId, sectionId } = result.draft.testRail;
+    if (projectId && suiteId && sectionId) invalidateTestRailCases(projectId, suiteId, sectionId);
+    return result;
+  },
 
   /** Creates or updates one sub-task per story with its scenarios selected for Jira. */
   publishJira: (draftId: string, storyIds?: string[]) =>

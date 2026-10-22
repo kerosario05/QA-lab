@@ -269,6 +269,7 @@ router.get('/sections/:sectionId/cases', async (req: Request, res: Response) => 
         suiteId,
         localProjectId,
       }),
+      { refresh: getQueryParam(req.query.refresh) === 'true' },
     );
 
     const upstream = result.data;

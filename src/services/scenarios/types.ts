@@ -36,7 +36,7 @@ export interface StoryScenario {
   conditionRequirements?: JiraConditionRequirement[];
   reviewConfiguration?: JiraReviewConfiguration;
   unresolvedUiRequirements?: Array<{stepIndex:number;requirement:string}>;
-  validation?: { valid: boolean; errors: string[]; warnings: string[] };
+  validation?: { valid: boolean; errors: string[]; warnings: string[]; issues?: Array<{code:string;stepIndex:number;step:string}> };
   acceptanceCriteriaRefs?: string[];
   inputRequirements?: JiraInputRequirement[];
   scenarioId?: string;

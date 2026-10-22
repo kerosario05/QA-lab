@@ -1,8 +1,9 @@
-import {JiraScenarioReview,jiraReviewBlockingErrors} from './JiraScenarioReview';
+import {JiraScenarioReview,jiraReviewBlockingErrors,jiraReviewBlockingMessages,JiraReviewErrorNotice} from './JiraScenarioReview';
 import {JiraScenarioStepEditor,applyReviewedLaunchScenario} from './JiraScenarioStepEditor';
 import {jiraPrerequisiteSummary} from './jira-prerequisites';
 import {useRetainedSourceLoad} from './use-retained-source-load';
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useSyncExternalStore } from 'react';
+import { getTestRailCasesRevision, subscribeTestRailCaseChanges } from '../../services/testrail/sections';
 import { JiraStepInputs, JiraCommonInputs, JiraScenarioCommonAction, useJiraCommonValues, resolveJiraScenarioValues, buildJiraDataOverrides, missingJiraInputs, missingJiraTransportInputs } from './JiraStepInputs';
 import { createPortal } from 'react-dom';
 import {
@@ -789,8 +790,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   });
 
   // ΓöÇΓöÇ Fetch TR cases when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  const testRailCasesRevision = useSyncExternalStore(subscribeTestRailCaseChanges,
+    () => getTestRailCasesRevision(Number(config.testRailProject), trSuiteId ?? 0, selectedSection?.id ?? 0));
   useRetainedSourceLoad({
-    contextKey:JSON.stringify([config.automationProject,currentProjectType,config.testRailProject,selectedSection?.id??null,trSuiteId,launchProjects.find(project=>project.slug===config.automationProject)?.id??null]),
+    contextKey:JSON.stringify([config.automationProject,currentProjectType,config.testRailProject,selectedSection?.id??null,trSuiteId,launchProjects.find(project=>project.slug===config.automationProject)?.id??null,testRailCasesRevision]),
     active:step===3&&!!config.testRailProject&&!!selectedSection&&!!trSuiteId&&currentProjectType!=='mobile',
     onReset:()=>{setTrCases([]);setSelectedTrCaseIds([]);setTrCasesLoading(false);setTrCasesError(null);},
     onStart:()=>{
@@ -2026,7 +2029,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
     const invalidGenerated = selectedStories.flatMap(story => story.scenarios).find(scenario => scenario.validation?.valid === false && jiraReviewBlockingErrors(scenario).length>0);
     if (invalidGenerated) {
-      setLaunchError(`Revisa ${invalidGenerated.title}: ${jiraReviewBlockingErrors(invalidGenerated).join('; ')}`);
+      setLaunchError(`Revisa ${invalidGenerated.title}: ${jiraReviewBlockingMessages(invalidGenerated).join('; ')}`);
       return;
     }
 
@@ -3087,7 +3090,7 @@ try {
                                           setStories(previous=>previous.map(item=>item.jiraKey===story.jiraKey?{...item,scenarios:item.scenarios.map((candidate,index)=>applyReviewedLaunchScenario(candidate,reviewed[index]))}:item));
                                         }}/>
                                         <JiraScenarioReview scenario={sc} onChange={reviewConfiguration=>setStories(previous=>previous.map(item=>item.jiraKey===story.jiraKey ? {...item,scenarios:item.scenarios.map(candidate=>candidate===sc ? {...candidate,reviewConfiguration} : candidate)} : item))}/>
-                                        {jiraReviewBlockingErrors(sc).length>0 && <div role="alert" className="px-4 py-2.5 text-[11px] text-red-300 bg-red-500/10">Requiere revisión: {jiraReviewBlockingErrors(sc).join('; ')}</div>}
+                                        <JiraReviewErrorNotice scenario={sc}/>
                                         {prerequisiteSummary && (
                                           <details className="px-4 py-2.5 border-b border-white/10 bg-[#F4A261]/5">
                                             <summary className="cursor-pointer text-[10px] text-[#F4A261]/80">Precondiciones · datos de prueba requeridos</summary>

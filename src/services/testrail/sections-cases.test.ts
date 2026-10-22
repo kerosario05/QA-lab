@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { resetTestRailSectionCachesForTests, trSectionsProxy } from './sections';
+import { resetTestRailSectionCachesForTests, trSectionsProxy, invalidateTestRailCases } from './sections';
+import { testDesignApi } from '../test-design';
+import { TestRailCacheService } from '../../../server/testrail-cache';
 
 describe('sections cases client', () => {
   const originalFetch = globalThis.fetch;
@@ -11,6 +13,53 @@ describe('sections cases client', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+  });
+
+  it('publishing an edited case refreshes browser and proxy caches only for its section', async () => {
+    const proxy = new TestRailCacheService();
+    let action = 'Solicitar el código por SMS';
+    let upstreamCalls = 0;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes('/publish/testrail')) {
+        action = 'Presionar "SMS"';
+        return Response.json({ draft: { testRail: { projectId: 56, suiteId: 17, sectionId: 9 } }, results: [] });
+      }
+      const refresh = String(url).includes('refresh=true');
+      const section = String(url).includes('/sections/10/') ? 10 : 9;
+      const response = await proxy.getOrFetch('section-cases', [56, 17, section], async () => {
+        upstreamCalls++;
+        return { cases: [{ id: 77, custom_steps_separated: [{ content: action }] }] };
+      }, { refresh });
+      return Response.json(response.data);
+    }) as typeof fetch;
+    await trSectionsProxy.getCases(9, 56, 17);
+    await trSectionsProxy.getCases(10, 56, 17);
+    await testDesignApi.publishTestRail('draft', undefined, ['edited-case']);
+    const updated = await trSectionsProxy.getCases(9, 56, 17);
+    expect(updated.cases[0].custom_steps_separated?.[0].content).toBe('Presionar "SMS"');
+    await trSectionsProxy.getCases(10, 56, 17);
+    expect(upstreamCalls).toBe(3);
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toContain('refresh=true');
+  });
+
+  it('an old in-flight response cannot repopulate the invalidated browser cache', async () => {
+    let resolve!: (response: Response) => void;
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>(done => { resolve = done; }))
+      .mockResolvedValueOnce(Response.json({ cases: [{ id: 77, title: 'updated' }] }));
+    globalThis.fetch = fetcher;
+    const old = trSectionsProxy.getCases(9, 56, 17);
+    invalidateTestRailCases(56, 17, 9);
+    await trSectionsProxy.getCases(9, 56, 17);
+    resolve(Response.json({ cases: [{ id: 77, title: 'old' }] }));
+    await old;
+    expect((await trSectionsProxy.getCases(9, 56, 17)).cases[0].title).toBe('updated');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not present a stale proxy fallback as the edited case after invalidation', async () => {
+    invalidateTestRailCases(56, 17, 9);
+    globalThis.fetch = vi.fn(async () => Response.json({ cases: [{ id: 77, title: 'old' }], stale: true, rateLimited: true })) as typeof fetch;
+    await expect(trSectionsProxy.getCases(9, 56, 17)).rejects.toMatchObject({ status: 429 });
   });
 
   it('returns cases list when backend sends cases', async () => {

@@ -38,8 +38,8 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it('requires an automation profile before starting scenario generation', async () => {
-  projectsRefApi.list.mockResolvedValue([{ slug: 'profile-a', name: 'Perfil A', enabled: true }]);
+it('requires choosing the project card before the stories step and before generation', async () => {
+  projectsRefApi.list.mockResolvedValue([{ id: 'p-a', slug: 'profile-a', name: 'Perfil A', projectType: 1, enabled: true }]);
   testDesignApi.listJiraProjects.mockResolvedValue([{ key: 'PAY', name: 'Payments' }]);
   const created = { id: 'draft-1', stories: [] };
   testDesignApi.createDraft.mockResolvedValue(created);
@@ -55,16 +55,26 @@ it('requires an automation profile before starting scenario generation', async (
   const click = (label: string) => act(() => {
     [...host!.querySelectorAll('button')].find((button) => button.textContent?.includes(label))!.click();
   });
+  const button = (label: string) => [...host!.querySelectorAll('button')].find((candidate) => candidate.textContent?.includes(label))!;
+
+  // Step 1: the project panel comes first and is mandatory; the old <select> is gone.
+  expect(host.querySelector('select')).toBeNull();
+  expect(host.textContent).toContain('¿Para qué proyecto diseñamos las pruebas?');
+  expect(button('Continuar').disabled).toBe(true);
+  expect(button('Elegir Jira')).toBeUndefined();
+
+  click('Perfil A');
+  expect(button('Continuar').disabled).toBe(false);
+  click('Continuar');
+
+  // Step 2: stories/destination; generation needs the Jira project and a story.
+  expect(host.textContent).toContain('¿De qué historias generamos los casos?');
+  expect(button('Generar escenarios').disabled).toBe(true);
   click('Elegir Jira');
   click('Elegir historia');
-  const generate = () => [...host!.querySelectorAll('button')].find((button) => button.textContent?.includes('Generar escenarios'))!;
-  expect(generate().disabled).toBe(true);
-  expect(generate().title).toContain('conocimiento');
+  expect(button('Generar escenarios').disabled).toBe(false);
 
-  const profile = host.querySelector<HTMLSelectElement>('select')!;
-  await act(async () => {
-    profile.value = 'profile-a';
-    profile.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-  expect(generate().disabled).toBe(false);
+  click('Generar escenarios');
+  await act(async () => { await Promise.resolve(); });
+  expect(testDesignApi.createDraft).toHaveBeenCalledWith(expect.objectContaining({ projectSlug: 'profile-a', jiraProjectKey: 'PAY' }));
 });

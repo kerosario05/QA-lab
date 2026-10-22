@@ -9,6 +9,23 @@ interface CacheEntry<T> { data: T; fetchedAt: number; }
 const sectionsCache = new Map<string, CacheEntry<TRSection[]>>();
 const casesCache = new Map<string, CacheEntry<any>>();
 const rateLimitCache = new Map<string, number>();
+const caseRevisions = new Map<string, number>();
+const caseListeners = new Set<() => void>();
+const caseScope = (projectId: number, suiteId: number, sectionId: number) => `cases:${projectId}:${suiteId}:${sectionId}:`;
+
+export const subscribeTestRailCaseChanges = (listener: () => void) => {
+  caseListeners.add(listener);
+  return () => { caseListeners.delete(listener); };
+};
+export function getTestRailCasesRevision(projectId: number, suiteId: number, sectionId: number): number {
+  return caseRevisions.get(caseScope(projectId, suiteId, sectionId)) ?? 0;
+}
+export function invalidateTestRailCases(projectId: number, suiteId: number, sectionId: number): void {
+  const scope = caseScope(projectId, suiteId, sectionId);
+  caseRevisions.set(scope, (caseRevisions.get(scope) ?? 0) + 1);
+  for (const key of casesCache.keys()) if (key.startsWith(scope)) casesCache.delete(key);
+  for (const listener of caseListeners) listener();
+}
 
 function cacheKey(projectId: number, suiteId: number): string {
   return `${projectId}:${suiteId}`;
@@ -124,6 +141,7 @@ export const trSectionsProxy = {
     localProjectId?: string,
   ): Promise<SectionCasesResponse> => {
     const key = `cases:${projectId}:${suiteId}:${sectionId}:${includeSubsections ?? true}:${localProjectId ?? ''}`;
+    const revision = getTestRailCasesRevision(projectId, suiteId, sectionId);
 
     const cached = casesCache.get(key);
     if (cached && isFresh(key, casesCache)) {
@@ -150,12 +168,12 @@ export const trSectionsProxy = {
       });
     }
 
-    const qs = `includeSubsections=${includeSubsections !== false}`;
+    const qs = `includeSubsections=${includeSubsections !== false}${revision > 0 ? '&refresh=true' : ''}`;
     const localProjectParam = localProjectId ? `&localProjectId=${encodeURIComponent(localProjectId)}` : '';
     const url = `${PROXY}/api/testrail/sections/${sectionId}/cases?projectId=${projectId}&suiteId=${suiteId}&${qs}${localProjectParam}`;
 
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { cache: 'no-store' });
 
       if (res.status === 429) {
         const body = await res.json().catch(() => ({}));
@@ -189,6 +207,11 @@ export const trSectionsProxy = {
       }
 
       const data = await res.json();
+      if (revision > 0 && (data.stale === true || data.rateLimited === true)) {
+        throw Object.assign(new Error('TestRail no pudo entregar los casos actualizados. Vuelve a intentarlo cuando termine el límite de solicitudes.'), {
+          status: 429, rateLimited: true, retryAfterSeconds: data.retryAfterSeconds,
+        });
+      }
       const response: SectionCasesResponse = {
         ok: data.ok ?? true,
         sectionId: data.sectionId ?? sectionId,
@@ -197,7 +220,9 @@ export const trSectionsProxy = {
         count: data.count ?? data.cases?.length ?? 0,
         cases: data.cases ?? [],
       };
-      casesCache.set(key, { data: response, fetchedAt: Date.now() });
+      if (revision === getTestRailCasesRevision(projectId, suiteId, sectionId)) {
+        casesCache.set(key, { data: response, fetchedAt: Date.now() });
+      }
       rateLimitCache.delete(rlKey);
       return response;
     } catch (err: any) {
@@ -222,4 +247,5 @@ export function resetTestRailSectionCachesForTests(): void {
   sectionsCache.clear();
   casesCache.clear();
   rateLimitCache.clear();
+  caseRevisions.clear();
 }

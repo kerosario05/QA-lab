@@ -1,12 +1,33 @@
 import React,{act} from 'react';
 import {createRoot} from 'react-dom/client';
 import {it,expect} from 'vitest';
-import {JiraScenarioReview,jiraReviewBlockingErrors} from './JiraScenarioReview';
+import {JiraScenarioReview,jiraReviewBlockingErrors,jiraReviewBlockingMessages,JiraReviewErrorNotice} from './JiraScenarioReview';
 import {normalizeGeneratedScenarios} from './scenario-generation';
 import {computeLaunchSelectionSummary,buildLaunchPayloadScenarios} from './launch-selection';
 import type {StoryScenario,JiraReviewConfiguration} from '../../services/scenarios/types';
 
 const scenario:StoryScenario={scenarioId:'HU-1:jira:1',title:'Result',refs:'HU-1',custom_preconds:null,custom_expected:'Done',custom_steps_separated:[{content:'Presionar "Unknown"',expected:''},{content:'Validar que se muestre "Fee"',expected:''},{content:'Validar que se muestre "Done"',expected:''}],validation:{valid:false,errors:['JIRA_UI_OBSERVATION_REQUIRED','JIRA_SOURCE_CONDITION_REQUIRES_CONFIGURATION'],warnings:[]},unresolvedUiRequirements:[{stepIndex:1,requirement:'Action label'}],conditionRequirements:[{key:'fee',subject:'Fee',sourceClause:'Fee if applicable',stepIndices:[2]}]};
+
+it('shows exact numbered server diagnostics, preserves launch blocking and supports cached condition indices',async()=>{
+ const text='Validar que se muestre "Fee" en otra pantalla.';
+ const input:StoryScenario={...scenario,custom_steps_separated:[scenario.custom_steps_separated[0],{content:text,expected:''}],validation:{valid:false,errors:['JIRA_CONDITION_STEP_UNSUPPORTED'],warnings:[],issues:[{code:'JIRA_CONDITION_STEP_UNSUPPORTED',stepIndex:2,step:text}]}};
+ expect(jiraReviewBlockingErrors(input)).toEqual(['JIRA_CONDITION_STEP_UNSUPPORTED']);
+ const messages=jiraReviewBlockingMessages(input);
+ expect(messages).toHaveLength(1);
+ expect(messages[0]).toContain(`Paso 2: ${text}`);
+ expect(messages[0]).toContain('Aplicar y validar');
+ expect(jiraReviewBlockingMessages({...input,validation:{...input.validation!,issues:undefined}})).toEqual(messages);
+ const normalized=normalizeGeneratedScenarios({scenarios:[{...input,sourceIssueKey:'HU-1',steps:input.custom_steps_separated.map(step=>step.content)}]} as any,{key:'HU-1',summary:'Story'} as any,{} as any,null);
+ expect(normalized.stories[0].scenarios[0].validation?.issues).toEqual(input.validation?.issues);
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ try {
+  await act(async()=>root.render(<JiraReviewErrorNotice scenario={input}/>));
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain(`Paso 2: ${text}`);
+  expect(host.textContent).not.toContain('JIRA_CONDITION_STEP_UNSUPPORTED');
+  await act(async()=>root.render(<JiraReviewErrorNotice scenario={{...input,validation:{valid:true,errors:[],warnings:[]}}}/>));
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+ }finally {await act(async()=>root.unmount());host.remove();}
+});
 
 it('configures each test variant without clearing unrelated blockers or certifying UI',()=>{
  expect(jiraReviewBlockingErrors(scenario)).toEqual([]);

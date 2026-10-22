@@ -1,13 +1,15 @@
-import React,{act,StrictMode,useState} from 'react';
+import React,{act,StrictMode,useState,useSyncExternalStore} from 'react';
 import {createRoot} from 'react-dom/client';
 import {expect,it,vi} from 'vitest';
 import {useRetainedSourceLoad} from './use-retained-source-load';
+import {getTestRailCasesRevision,invalidateTestRailCases,subscribeTestRailCaseChanges} from '../../services/testrail/sections';
 
-function Harness({contextKey,active,load,received}:{contextKey:string;active:boolean;load:()=>Promise<string[]>;received:(data:string[])=>void}) {
+function Harness({contextKey,active,load,received,revisionAware=false}:{contextKey:string;active:boolean;load:()=>Promise<string[]>;received:(data:string[])=>void;revisionAware?:boolean}) {
  const [state,setState]=useState({scenarios:[] as string[],selected:false,input:''});
  const [error,setError]=useState('');
  const [loading,setLoading]=useState(false);
- const {retry}=useRetainedSourceLoad({contextKey,active,load,
+ const revision=useSyncExternalStore(subscribeTestRailCaseChanges,()=>getTestRailCasesRevision(56,17,9));
+ const {retry}=useRetainedSourceLoad({contextKey:revisionAware?`${contextKey}:${revision}`:contextKey,active,load,
   onStart:()=>{setLoading(true);setError('');},
   onSuccess:scenarios=>{received(scenarios);setState({scenarios,selected:false,input:''});},
   onError:()=>setError('failed'),onFinish:()=>setLoading(false),
@@ -15,6 +17,24 @@ function Harness({contextKey,active,load,received}:{contextKey:string;active:boo
  return <><output>{JSON.stringify({state,error,loading})}</output><button onClick={()=>setState({scenarios:['edited-step'],selected:true,input:'synthetic-value'})}>Edit</button><button onClick={retry}>Retry</button></>;
 }
 function deferred<T>() {let resolve!:(value:T)=>void;const promise=new Promise<T>(done=>{resolve=done;});return {promise,resolve};}
+
+it('publishing an edited section invalidates retained cases and reloads when the launcher returns',async()=>{
+ const host=document.createElement('div');const root=createRoot(host);const received=vi.fn();
+ const load=vi.fn().mockResolvedValueOnce(['old SMS request']).mockResolvedValueOnce(['Presionar "SMS"']);
+ const render=(active:boolean)=>root.render(<Harness contextKey="project-section" {...{active,load,received}} revisionAware/>);
+ try {
+  await act(async()=>render(true));
+  await act(async()=>render(false));
+  await act(async()=>invalidateTestRailCases(56,17,10));
+  expect(load).toHaveBeenCalledTimes(1);
+  await act(async()=>invalidateTestRailCases(56,17,9));
+  expect(load).toHaveBeenCalledTimes(1);
+  await act(async()=>render(true));
+  expect(load).toHaveBeenCalledTimes(2);
+  expect(host.textContent).toContain('Presionar');
+  expect(host.textContent).not.toContain('old SMS request');
+ } finally {await act(async()=>root.unmount());host.remove();}
+});
 
 it('back from Launch to Cases preserves edits, selection and input without a second request, including StrictMode',async()=>{
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
