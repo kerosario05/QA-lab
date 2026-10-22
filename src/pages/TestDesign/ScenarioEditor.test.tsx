@@ -2,11 +2,60 @@ import { act, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import { ScenarioEditor } from './ScenarioEditor';
+import { normalizeTestDesignStep } from './step-format';
 import { newScenario } from './scenario-utils';
 import { useDraftEditor } from './useDraftEditor';
 import { testDesignApi, type TestDesignDraftWithStories, type TestDesignDraftStory } from '../../services/test-design';
 
 describe('scenario step editing',()=>{
+ it('formats simple click and fill actions to the same quoted-target grammar on blur',async()=>{
+  const host=document.createElement('div'); document.body.append(host);
+  const root=createRoot(host);
+  function Harness(){
+   const [scenario,setScenario]=useState({...newScenario(),title:'Transferencia',steps:[{action:'',expected:''},{action:'',expected:''},{action:'',expected:''},{action:'',expected:''}]});
+   return <ScenarioEditor scenario={scenario} index={0} count={1} readOnly={false} defaultOpen onChange={setScenario} onMove={()=>{}} onDuplicate={()=>{}} onDelete={()=>{}}/>;
+  }
+  try{
+   await act(async()=>root.render(<Harness/>));
+   const actions=host.querySelectorAll<HTMLTextAreaElement>('textarea[placeholder^="Ejemplo:"]');
+   await act(async()=>{
+    const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')?.set;
+    setter?.call(actions[0],'Presionar el botón guardar');
+    actions[0].dispatchEvent(new Event('input',{bubbles:true}));
+    actions[0].dispatchEvent(new FocusEvent('focusout',{bubbles:true}));
+   });
+   await act(async()=>{
+    const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')?.set;
+    setter?.call(actions[1],'Ingresar monto en monto');
+    actions[1].dispatchEvent(new Event('input',{bubbles:true}));
+    actions[1].dispatchEvent(new FocusEvent('focusout',{bubbles:true}));
+   });
+   await act(async()=>{
+    const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')?.set;
+    setter?.call(actions[2],'Ingresar Nombre');
+    actions[2].dispatchEvent(new Event('input',{bubbles:true}));
+    actions[2].dispatchEvent(new FocusEvent('focusout',{bubbles:true}));
+   });
+   await act(async()=>{
+    const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')?.set;
+    setter?.call(actions[3],'Validar que se muestre el nombre');
+    actions[3].dispatchEvent(new Event('input',{bubbles:true}));
+    actions[3].dispatchEvent(new FocusEvent('focusout',{bubbles:true}));
+   });
+   expect([...host.querySelectorAll<HTMLTextAreaElement>('textarea[placeholder^="Ejemplo:"]')].map(input=>input.value))
+    .toEqual(['Presionar "guardar"','Ingresar monto en "Monto"','Ingresar Nombre en "Nombre"','Validar que se muestre "el nombre"']);
+  }finally{await act(async()=>root.unmount());host.remove();}
+ });
+
+ it('keeps compound or already formatted authored steps unchanged',()=>{
+  expect(normalizeTestDesignStep('Presionar "SMS"')).toBe('Presionar "SMS"');
+  expect(normalizeTestDesignStep('Precionar iniciar')).toBe('Presionar "iniciar"');
+  expect(normalizeTestDesignStep('Ingresar Nombre')).toBe('Ingresar Nombre en "Nombre"');
+  expect(normalizeTestDesignStep('Validar que se muestre el nombre')).toBe('Validar que se muestre "el nombre"');
+  expect(normalizeTestDesignStep('Presionar SMS y continuar')).toBe('Presionar SMS y continuar');
+  expect(normalizeTestDesignStep('Ingresar el monto en "Monto"')).toBe('Ingresar el monto en "Monto"');
+ });
+
  it('keeps natural step text after blur and places added rows in the same table',async()=>{
   const host=document.createElement('div'); document.body.append(host);
   const root=createRoot(host);

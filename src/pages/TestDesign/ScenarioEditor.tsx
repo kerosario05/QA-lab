@@ -28,6 +28,7 @@ import {
   TYPE_LABELS,
 } from './scenario-utils';
 import { CaseDataPanel, DataPreview } from './CaseData';
+import { normalizeTestDesignStep } from './step-format';
 
 /**
  * One scenario: the two destination toggles, its fields and the step table.
@@ -144,6 +145,10 @@ function StepsTable({
             <textarea
               value={step.action}
               onChange={(e) => update(index, { action: e.target.value })}
+              onBlur={(e) => {
+                const normalized = normalizeTestDesignStep(e.currentTarget.value);
+                if (normalized !== step.action) update(index, { action: normalized });
+              }}
               disabled={readOnly}
               rows={2}
               placeholder='Ejemplo: Ingresar nombre en "Nombre"'
