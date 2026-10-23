@@ -12,6 +12,7 @@ import {
   type RuntimeEntry,
 } from './input-requirements-values';
 import { cn } from '../../constants/theme';
+import { matchProjectDataCatalogs, projectDataCatalogApi, type ProjectDataCatalog } from '../../services/project-data-catalog';
 
 type RequirementCase = {
   id: number;
@@ -28,9 +29,11 @@ type InputRequirementsPanelProps = {
   onRuntimeInput?: (caseId: number, key: string, value: string) => void;
   runtimeInputValuesByCaseId?: RuntimeInputValuesByCaseId;
   onBlocked?: (blocked: boolean) => void;
+  projectSlug?: string;
 };
 
 const PASSWORD_LABEL = /(?:contrase(?:ñ|n)a|password)/i;
+const CATALOG_SENSITIVE_LABEL = /contrase(?:ñ|n)a|password|\bclave\b|\bpin\b|\botp\b|token|c[oó]digo|\bsms\b/i;
 const NON_PASSWORD_LABEL = /(?:\brnc\b|\busuario\b|\busername\b|\buser\b|\btoken\b|\botp\b|\bpin\b|c[oó]digo|\bcuenta\b|\baccount\b|\bmonto\b|\bamount\b|\bmoneda\b|\bcurrency\b|identificaci[oó]n|documento|\bemail\b|correo|tel[eé]fono|\bphone\b|\bfecha\b|\bdate\b)/i;
 
 function resolveControlType(requirement: InputRequirement): string {
@@ -71,11 +74,13 @@ function RequirementControl({
   presentation,
   value,
   onChange,
+  catalogs = [],
 }: {
   requirement: InputRequirement;
   presentation?: RuntimeInputPresentation;
   value: string;
   onChange: (value: string) => void;
+  catalogs?: ProjectDataCatalog[];
 }) {
   const controlType = resolveControlType(requirement);
   const capability = requirement.fieldCapability;
@@ -85,6 +90,15 @@ function RequirementControl({
     || requirement.semanticField
     || requirement.label
     || requirement.key;
+  const catalogEligible = requirement.sensitive !== true && !CATALOG_SENSITIVE_LABEL.test(label) && !CATALOG_SENSITIVE_LABEL.test(requirement.key);
+  const matches = catalogEligible ? matchProjectDataCatalogs(label, catalogs) : [];
+  const [catalogId, setCatalogId] = useState(() => matches.length === 1 ? matches[0].id : '');
+  useEffect(() => { if (!catalogId && matches.length === 1) setCatalogId(matches[0].id); }, [catalogId, matches]);
+  const boundCatalog = matches.find(catalog => catalog.id === catalogId);
+  const firstActiveOption = boundCatalog?.options.find(option => option.active);
+  useEffect(() => {
+    if (boundCatalog && !value && firstActiveOption?.value) onChange(firstActiveOption.value);
+  }, [boundCatalog?.id, firstActiveOption?.id, firstActiveOption?.value, value, onChange]);
   const constraints = capability?.constraints ?? {};
   const constraintProps = {
     ...(constraints.min !== undefined ? { min: constraints.min } : {}),
@@ -105,7 +119,25 @@ function RequirementControl({
     && !((capability?.allowedValues ?? requirement.allowedValues)?.length);
 
   let control: React.ReactNode;
-  if (syntheticSupporting) {
+  if (boundCatalog) {
+    control = (
+      <div className="flex flex-col gap-1.5">
+        {matches.length > 1 && (
+          <select className={commonProps.className} value={catalogId} onChange={event => { setCatalogId(event.target.value); onChange(""); }}>
+            <option value="">Selecciona catálogo...</option>
+            {matches.map(catalog => <option key={catalog.id} value={catalog.id}>{catalog.name}</option>)}
+          </select>
+        )}
+        <select className={commonProps.className} data-field-capability="project_catalog" value={value} onChange={event => onChange(event.target.value)}>
+          <option value="">Selecciona valor...</option>
+          {boundCatalog.options.filter(option => option.active).map(option => <option key={option.id} value={option.value}>{option.label}</option>)}
+        </select>
+        <button type="button" className="self-start text-[10px] text-white/45 hover:text-white/75" onClick={() => { setCatalogId(""); onChange(""); }}>Usar texto manual</button>
+      </div>
+    );
+  } else if (matches.length > 1) {
+    control = <div className="flex flex-col gap-1.5"><select className={commonProps.className} value="" onChange={event => { setCatalogId(event.target.value); onChange(''); }}><option value="">Selecciona catálogo…</option>{matches.map(catalog => <option key={catalog.id} value={catalog.id}>{catalog.name}</option>)}</select><input {...commonProps} {...constraintProps} type={controlType} /></div>;
+  } else if (syntheticSupporting) {
     control = <span data-input-policy="safe_synthetic" className="text-[11px] text-white/45">Se resolverá en ejecución</span>;
   } else if (emptyChoice && requirement.required === true && (!capability || requirement.valuePolicy === 'scenario_controlled')) {
     control = <input {...commonProps} {...constraintProps} data-field-capability={capability?.kind ?? controlType} data-select-fallback="manual" type="text" />;
@@ -162,6 +194,7 @@ function RequirementControl({
         </span>
         {control}
       </label>
+      {!catalogEligible && <span className="text-[10px] text-white/40">Por seguridad, este dato sensible no puede usar catálogos.</span>}
     </div>
   );
 }
@@ -172,6 +205,7 @@ export function InlineInputRequirements({
   runtimeInputValues,
   onRuntimeInput,
   steps,
+  projectSlug,
 }: {
   caseId: number;
   requirements: InputRequirement[];
@@ -179,7 +213,15 @@ export function InlineInputRequirements({
   onRuntimeInput?: (caseId: number, key: string, value: string) => void;
   /** The scenario's steps: the inputs are listed in the order the steps use them. */
   steps?: string[];
+  projectSlug?: string;
 }) {
+  const [catalogs, setCatalogs] = useState<ProjectDataCatalog[]>([]);
+  useEffect(() => {
+    let alive = true;
+    if (!projectSlug) { setCatalogs([]); return; }
+    projectDataCatalogApi.list(projectSlug).then(value => { if (alive) setCatalogs(value); }).catch(() => { if (alive) setCatalogs([]); });
+    return () => { alive = false; };
+  }, [projectSlug]);
   if (requirements.length === 0) return null;
 
   const grouped = orderRuntimeInputsByStepOrder(groupRuntimeInputRequirements(requirements), steps);
@@ -190,6 +232,7 @@ export function InlineInputRequirements({
       presentation={presentation}
       value={runtimeInputValues?.[presentation.inputKey] ?? ''}
       onChange={(value) => onRuntimeInput?.(caseId, presentation.inputKey, value)}
+      catalogs={catalogs}
     />
   );
 

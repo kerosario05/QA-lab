@@ -8,6 +8,7 @@ export interface TestDesignDatum {
   sensitive: boolean;
   description: string;
   condition?: 'valid' | 'invalid' | 'expired';
+  catalogBinding?: { catalogId: string; optionId?: string; revision: number; mode: 'manual' | 'automatic' };
 }
 
 export interface TestDesignStep {

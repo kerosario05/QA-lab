@@ -1,6 +1,6 @@
-import { act, type ReactNode } from 'react';
+import { act, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InlineInputRequirements } from './InputRequirementsPanel';
 
 let root: Root | undefined;
@@ -18,6 +18,7 @@ afterEach(() => {
   container?.remove();
   root = undefined;
   container = undefined;
+  vi.restoreAllMocks();
 });
 
 describe('inline TestRail input requirements', () => {
@@ -178,6 +179,41 @@ describe('inline TestRail input requirements', () => {
     expect(container?.querySelector('input[type="password"]')).not.toBeNull();
     expect(container?.querySelector('[data-technical-input-key="auth.password"]')).not.toBeNull();
     expect(container?.textContent).not.toContain('auth.password');
+  });
+
+  it('preselects the first active catalog value and excludes password catalogs', async () => {
+    const catalogs = [
+      { id: 'accounts', projectSlug: 'fenix', name: 'Cuentas', fieldName: 'Cuenta de origen', aliases: [], active: true, revision: 1,
+        options: [
+          { id: 'account-first', label: 'Cuenta Corriente', value: '001111', active: true, position: 0 },
+          { id: 'account-second', label: 'Cuenta de ahorro', value: '002222', active: true, position: 1 },
+        ] },
+      { id: 'passwords', projectSlug: 'fenix', name: 'Contraseñas', fieldName: 'Contraseña', aliases: [], active: true, revision: 1,
+        options: [{ id: 'password-first', label: 'Clave', value: 'synthetic-only', active: true, position: 0 }] },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ catalogs }) } as Response);
+    function Harness() {
+      const [values, setValues] = useState<Record<string, string>>({});
+      return <><InlineInputRequirements caseId={42} projectSlug="fenix" requirements={[
+        { key: 'account.origin', label: 'Cuenta de origen', required: true },
+        { key: 'auth.password', label: 'Contraseña', required: true, sensitive: true },
+      ]} runtimeInputValues={values} onRuntimeInput={(_caseId, key, value) => setValues(previous => ({ ...previous, [key]: value }))} />
+        <output data-testid="runtime-values">{JSON.stringify(values)}</output></>;
+    }
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root?.render(<Harness />));
+    await act(async () => {
+      await vi.waitFor(() => expect(container?.querySelector('select[data-field-capability="project_catalog"]')).not.toBeNull());
+    });
+
+    const account = container?.querySelector<HTMLSelectElement>('select[data-field-capability="project_catalog"]');
+    expect(account?.value).toBe('001111');
+    expect(JSON.parse(container?.querySelector('[data-testid="runtime-values"]')?.textContent ?? '{}')['account.origin']).toBe('001111');
+    expect(container?.querySelector('[data-technical-input-key="auth.password"] input[type="password"]')).not.toBeNull();
+    expect(container?.textContent).toContain('Por seguridad, este dato sensible no puede usar catálogos.');
+    expect(container?.querySelectorAll('select[data-field-capability="project_catalog"]')).toHaveLength(1);
   });
 
   it('renders the complete repeated-dataset fixture contract at the required-data screen', () => {

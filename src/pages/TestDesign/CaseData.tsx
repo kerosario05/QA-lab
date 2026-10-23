@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Key, Plus, Trash2 } from 'lucide-react';
 import type { TestDesignDatum } from '../../services/test-design';
-import { hasPlaceholders, textParts } from './scenario-utils';
+import { hasPlaceholders, isSensitiveKey, textParts } from './scenario-utils';
+import { matchProjectDataCatalogs, projectDataCatalogApi, type ProjectDataCatalog } from '../../services/project-data-catalog';
 
 /**
  * Dark editor pieces for test data: a rendered line showing {{key}} as a value chip, and the
@@ -41,12 +42,43 @@ export function CaseDataPanel({
   data,
   readOnly,
   onChange,
+  projectSlug,
 }: {
   data: TestDesignDatum[];
   readOnly: boolean;
   onChange: (next: TestDesignDatum[]) => void;
+  projectSlug?: string;
 }) {
   const [newKey, setNewKey] = useState('');
+  const [catalogs, setCatalogs] = useState<ProjectDataCatalog[]>([]);
+  useEffect(() => {
+    let active = true;
+    if (!projectSlug) { setCatalogs([]); return; }
+    projectDataCatalogApi.list(projectSlug).then(value => { if (active) setCatalogs(value); }).catch(() => { if (active) setCatalogs([]); });
+    return () => { active = false; };
+  }, [projectSlug]);
+  useEffect(() => {
+    if (readOnly || catalogs.length === 0) return;
+    let changed = false;
+    const next = data.map(datum => {
+      if (datum.sensitive || isSensitiveKey(datum.key) || isSensitiveKey(datum.label ?? '')) {
+        if (!datum.catalogBinding) return datum;
+        changed = true;
+        const { catalogBinding: _sensitiveBinding, ...safeDatum } = datum;
+        return safeDatum;
+      }
+      if (datum.catalogBinding) return datum;
+      const matches = matchProjectDataCatalogs(datum.label ?? datum.key, catalogs);
+      if (matches.length !== 1) return datum;
+      const options = matches[0].options.filter(option => option.active);
+      if (!options.length) return datum;
+      const selectedOption = datum.value ? options.find(option => option.value === datum.value) : options[0];
+      if (!selectedOption) return datum;
+      changed = true;
+      return { ...datum, value: selectedOption.value, catalogBinding: { catalogId: matches[0].id, optionId: selectedOption.id, revision: matches[0].revision, mode: 'automatic' as const } };
+    });
+    if (changed) onChange(next);
+  }, [catalogs, data, onChange, readOnly]);
   const update = (index: number, patch: Partial<TestDesignDatum>) =>
     onChange(data.map((datum, i) => (i === index ? { ...datum, ...patch } : datum)));
   const add = () => {
@@ -68,8 +100,14 @@ export function CaseDataPanel({
       </div>
 
       <div className="mt-2 space-y-2">
-        {data.map((datum, index) => (
-          <div key={datum.key} className="grid grid-cols-[minmax(160px,1fr)_2fr_auto_auto] gap-3 items-center">
+        {data.map((datum, index) => {
+          const catalogEligible = !datum.sensitive && !isSensitiveKey(datum.key) && !isSensitiveKey(datum.label ?? '');
+          const matches = catalogEligible ? matchProjectDataCatalogs(datum.label ?? datum.key, catalogs) : [];
+          const available = catalogEligible ? catalogs.filter(catalog => catalog.active) : [];
+          const binding = catalogEligible && datum.catalogBinding ? catalogs.find(catalog => catalog.id === datum.catalogBinding?.catalogId) : undefined;
+          const sensitive = datum.sensitive || isSensitiveKey(datum.key) || isSensitiveKey(datum.label ?? '');
+          return (
+          <div key={datum.key} className="grid grid-cols-[minmax(110px,0.85fr)_minmax(125px,1fr)_minmax(145px,1.4fr)_auto_auto] gap-3 items-start">
             <div>
               <div className="text-[12px] font-semibold text-[#E6E9EF]">
                 {datum.label ?? datum.key}
@@ -78,23 +116,39 @@ export function CaseDataPanel({
               </div>
               {datum.description && <div className="text-[10px] text-[#8B99A6]">{datum.description}</div>}
             </div>
-            <input
+            <div className="min-w-0">
+              <select className={darkInput} disabled={readOnly || !catalogEligible || available.length === 0} value={binding?.id ?? ''} aria-label={`Catálogo de ${datum.label ?? datum.key}`} onChange={event => {
+                const catalog = available.find(item => item.id === event.target.value);
+                const firstOption = catalog?.options.find(option => option.active);
+                update(index, { value: firstOption?.value ?? '', catalogBinding: catalog ? { catalogId: catalog.id, optionId: firstOption?.id, revision: catalog.revision, mode: matches.length === 1 && matches[0].id === catalog.id ? 'automatic' : 'manual' } : undefined });
+              }}>
+                <option value="">{matches.length > 1 ? 'Asociar catálogo…' : 'Valor manual'}</option>
+                {available.map(catalog => <option key={catalog.id} value={catalog.id}>{catalog.name} · {catalog.fieldName}</option>)}
+              </select>
+              {sensitive && <span className="mt-1 block text-[9px] leading-tight text-[#A99662]">Por seguridad, los datos sensibles no usan catálogos.</span>}
+            </div>
+            <div className="min-w-0">
+              {binding ? <select className={darkInput} disabled={readOnly} value={datum.catalogBinding?.optionId ?? ''} aria-label={`Opción para ${datum.label ?? datum.key}`} onChange={event => {
+                const option = binding.options.find(item => item.id === event.target.value && item.active);
+                update(index, { value: option?.value ?? '', catalogBinding: { catalogId: binding.id, optionId: option?.id, revision: binding.revision, mode: datum.catalogBinding?.mode ?? 'manual' } });
+              }}><option value="">Selecciona valor…</option>{binding.options.filter(option => option.active).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select> : <input
               type={datum.sensitive ? 'password' : 'text'}
               autoComplete="off"
               value={datum.value}
               disabled={readOnly}
-              onChange={(e) => update(index, { value: e.target.value })}
+              onChange={(e) => update(index, { value: e.target.value, catalogBinding: undefined })}
               placeholder="Ingresa el valor"
               className={
                 darkInput + (datum.value ? ' !bg-[#12261A] !border-[#2F7D46]' : ' !bg-[#221D0E] !border-[#5B4B1A]')
               }
-            />
+            />}
+            </div>
             <label className="flex items-center gap-1.5 text-[10px] text-[#8B99A6]">
               <input
                 type="checkbox"
                 checked={datum.sensitive}
                 disabled={readOnly}
-                onChange={(e) => update(index, { sensitive: e.target.checked })}
+                onChange={(e) => update(index, { sensitive: e.target.checked, ...(e.target.checked ? { catalogBinding: undefined } : {}) })}
               />
               Sensible
             </label>
@@ -110,7 +164,8 @@ export function CaseDataPanel({
               </button>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {!readOnly && (

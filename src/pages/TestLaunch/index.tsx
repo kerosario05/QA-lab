@@ -5,6 +5,7 @@ import {useRetainedSourceLoad} from './use-retained-source-load';
 import React, { useState, useMemo, useEffect, useRef, useSyncExternalStore } from 'react';
 import { getTestRailCasesRevision, subscribeTestRailCaseChanges } from '../../services/testrail/sections';
 import { JiraStepInputs, JiraCommonInputs, JiraScenarioCommonAction, useJiraCommonValues, resolveJiraScenarioValues, buildJiraDataOverrides, missingJiraInputs, missingJiraTransportInputs } from './JiraStepInputs';
+import { projectDataCatalogApi, type ProjectDataCatalog } from '../../services/project-data-catalog';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft, ChevronRight, ChevronDown, Check, Boxes, GitBranch, Database,
@@ -475,6 +476,16 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [mobileDataValues, setMobileDataValues] = useState<Record<string, Record<number, string>>>({});
   // Web: generic dataRequirements values keyed by scenarioKey -> { requirementKey: value }
   const [jiraCommonValues, setJiraCommonValues] = useState<Record<string, Record<string, string>>>({});
+  const [jiraProjectCatalogs, setJiraProjectCatalogs] = useState<ProjectDataCatalog[]>([]);
+  useEffect(() => {
+    let alive = true;
+    setJiraProjectCatalogs([]);
+    if (!config.automationProject) return () => { alive = false; };
+    projectDataCatalogApi.list(config.automationProject)
+      .then(catalogs => { if (alive) setJiraProjectCatalogs(catalogs); })
+      .catch(() => { if (alive) setJiraProjectCatalogs([]); });
+    return () => { alive = false; };
+  }, [config.automationProject]);
   const preserveCommonValuesOnEdit = useRef(false);
   useEffect(() => { if(preserveCommonValuesOnEdit.current){preserveCommonValuesOnEdit.current=false;return;} setJiraCommonValues({}); }, [stories]);
   const [webDataValues, setWebDataValues] = useState<Record<string, Record<string, string | boolean>>>({});
@@ -2945,7 +2956,7 @@ try {
 
                         return (
                           <div key={story.jiraKey}>
-                            <JiraCommonInputs story={story} values={jiraCommonValues[story.jiraKey] ?? {}} onChange={(fieldKey,value) => setJiraCommonValues(prev => ({...prev,[story.jiraKey]:{...prev[story.jiraKey],[fieldKey]:value}}))}/>
+                            <JiraCommonInputs story={story} values={jiraCommonValues[story.jiraKey] ?? {}} catalogs={jiraProjectCatalogs} onChange={(fieldKey,value) => setJiraCommonValues(prev => ({...prev,[story.jiraKey]:{...prev[story.jiraKey],[fieldKey]:value}}))}/>
                             {/* ΓöÇΓöÇ Story header row ΓöÇΓöÇ */}
                             <div className={cn(
                               'flex items-center gap-3 px-6 py-3 bg-[#FAFAF9] border-b border-[#F4F1EA]',
@@ -3156,7 +3167,7 @@ try {
                                                 <span className="text-[10px] font-mono text-white/30 flex-shrink-0 w-5 text-right mt-0.5">{idx + 1}</span>
                                                 <div className="flex-1 min-w-0">
                                                   <div className="text-[11px] font-mono text-white/75 leading-relaxed">{s.content}</div>
-                                                  <JiraStepInputs fields={(sc.inputRequirements ?? []).filter(field => field.stepIndex === idx + 1)} values={resolveJiraScenarioValues(story, story.scenarios.indexOf(sc), webDataValues[key] ?? {}, jiraCommonValues)} onChange={(fieldKey, value) => setWebFieldValue(key, fieldKey, value)} />
+                                                  <JiraStepInputs fields={(sc.inputRequirements ?? []).filter(field => field.stepIndex === idx + 1)} values={resolveJiraScenarioValues(story, story.scenarios.indexOf(sc), webDataValues[key] ?? {}, jiraCommonValues)} onChange={(fieldKey, value) => setWebFieldValue(key, fieldKey, value)} catalogs={jiraProjectCatalogs} />
                                                   {s.expected && (
                                                     <div className="text-[10px] font-mono text-[#5EC470]/60 mt-0.5">ΓåÆ {s.expected}</div>
                                                   )}
@@ -3263,6 +3274,7 @@ try {
                                     )}
                                      <InlineInputRequirements
                                        caseId={tc.id}
+                                       projectSlug={config.automationProject}
                                        requirements={runtimeRequirements as any}
                                        runtimeInputValues={runtimeInputValuesByCaseId[String(tc.id)]}
                                        onRuntimeInput={updateRuntimeInput}

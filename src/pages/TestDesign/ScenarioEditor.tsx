@@ -37,6 +37,7 @@ import { normalizeTestDesignStep } from './step-format';
 
 interface ScenarioEditorProps {
   scenario: TestDesignScenario;
+  projectSlug?: string;
   index: number;
   count: number;
   readOnly: boolean;
@@ -201,6 +202,7 @@ function StepsTable({
 
 export function ScenarioEditor({
   scenario,
+  projectSlug,
   index,
   count,
   readOnly,
@@ -372,7 +374,7 @@ export function ScenarioEditor({
           </div>
 
           {(data.length > 0 || !readOnly) && (
-            <CaseDataPanel data={data} readOnly={readOnly} onChange={(next) => patch({ data: next })} />
+            <CaseDataPanel data={data} readOnly={readOnly} projectSlug={projectSlug} onChange={(next) => patch({ data: next })} />
           )}
 
           <div>

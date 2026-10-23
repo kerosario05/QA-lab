@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { JiraInputRequirement, Story } from '../../services/scenarios/types';
+import { matchProjectDataCatalogs, type ProjectDataCatalog } from '../../services/project-data-catalog';
 
 export type JiraCommonValues = Record<string, Record<string, string>>;
 
@@ -50,7 +51,7 @@ export function JiraScenarioCommonAction({onApply, available}: {onApply:()=>void
   return <button type="button" disabled={!available} onClick={onApply} className="ml-auto text-xs text-[#5EC470] disabled:opacity-40">Usar datos comunes</button>;
 }
 
-export function JiraCommonInputs({story, values, onChange}: {story: Story; values: Record<string,string>; onChange: (key:string,value:string)=>void}) {
+export function JiraCommonInputs({story, values, onChange, catalogs = []}: {story: Story; values: Record<string,string>; onChange: (key:string,value:string)=>void; catalogs?: ProjectDataCatalog[]}) {
   const [expanded, setExpanded] = useState(true);
   const fields = commonJiraFields(story);
   if (!fields.length) return null;
@@ -61,7 +62,7 @@ export function JiraCommonInputs({story, values, onChange}: {story: Story; value
     </button>
     <div hidden={!expanded} className="bg-[#0d1119] p-4 text-white">
     <p className="mt-1 text-xs text-white/60">Se aplican a campos compatibles. Puedes cambiar el valor dentro de cada escenario. Los datos inválidos o vencidos se completan por separado.</p>
-    <JiraStepInputs fields={fields} values={values} onChange={onChange}/>
+    <JiraStepInputs fields={fields} values={values} onChange={onChange} catalogs={catalogs}/>
     </div>
   </section>;
 }
@@ -93,20 +94,62 @@ export function jiraInputHtmlType(field: JiraInputRequirement): string {
   return field.controlType === 'password' ? 'text' : field.controlType;
 }
 
-export function JiraStepInputs({ fields, values, onChange }: {
+export function JiraStepInputs({ fields, values, onChange, catalogs = [] }: {
   fields: JiraInputRequirement[];
   values: Record<string, string | boolean>;
   onChange: (key: string, value: string) => void;
+  catalogs?: ProjectDataCatalog[];
 }) {
-  return <div className="mt-2 space-y-2">{fields.map(field => <label key={field.key} className="block text-[11px] text-white/70">
+  return <div className="mt-2 space-y-2">{fields.map(field => <JiraFieldInput key={field.key} field={field} value={String(values[field.key] ?? '')} onChange={value => onChange(field.key, value)} catalogs={catalogs}/>)}</div>;
+}
+
+const CATALOG_SENSITIVE_LABEL = /contrase(?:ñ|n)a|password|\bclave\b|\bpin\b|\botp\b|token|c[oó]digo|\bsms\b/i;
+
+function JiraFieldInput({field, value, onChange, catalogs}: {field: JiraInputRequirement; value: string; onChange: (value:string)=>void; catalogs: ProjectDataCatalog[]}) {
+  const catalogEligible = !field.sensitive && !CATALOG_SENSITIVE_LABEL.test(field.label) && !CATALOG_SENSITIVE_LABEL.test(field.key);
+  const matches = catalogEligible ? matchProjectDataCatalogs(field.label, catalogs) : [];
+  const [selectedCatalogId, setSelectedCatalogId] = useState(matches.length === 1 ? matches[0].id : '');
+  const [manualMode, setManualMode] = useState(false);
+  const catalog = manualMode ? undefined : matches.find(candidate => candidate.id === selectedCatalogId);
+  const options = catalog?.options.filter(option => option.active) ?? [];
+  const firstOption = options[0];
+  useEffect(() => {
+    if (!manualMode && !selectedCatalogId && matches.length === 1) setSelectedCatalogId(matches[0].id);
+  }, [manualMode, selectedCatalogId, matches.length, matches[0]?.id]);
+  useEffect(() => {
+    if (catalog && !value && firstOption) onChange(firstOption.value);
+  }, [catalog?.id, firstOption?.id, firstOption?.value, value, onChange]);
+  const selectCatalog = (catalogId: string) => {
+    setManualMode(false);
+    setSelectedCatalogId(catalogId);
+    const first = matches.find(candidate => candidate.id === catalogId)?.options.find(option => option.active);
+    onChange(first?.value ?? '');
+  };
+  return <label className="block text-[11px] text-white/70">
     {field.label}{field.required ? ' *' : ''}
-    <input aria-label={`Dato para ${field.label}`} type={jiraInputHtmlType(field)}
-      value={String(values[field.key] ?? '')} onChange={event => onChange(field.key, event.target.value)}
+    {catalog ? <>
+      {matches.length > 1 && <select aria-label={`Catálogo para ${field.label}`} value={selectedCatalogId} onChange={event => selectCatalog(event.target.value)} className="mt-1 block w-full rounded-lg border border-white/20 bg-black/30 px-2.5 py-1.5 text-white">
+        <option value="">Selecciona catálogo...</option>{matches.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+      </select>}
+      <select aria-label={`Dato para ${field.label}`} data-field-capability="project_catalog" value={value} onChange={event => onChange(event.target.value)} disabled={!field.editable} required={field.required}
+        className="mt-1 block w-full rounded-lg border border-white/20 bg-black/30 px-2.5 py-1.5 text-white focus:outline-none focus:border-[#5EC470]">
+        <option value="">Selecciona valor...</option>{options.map(option => <option key={option.id} value={option.value}>{option.label}</option>)}
+      </select>
+      <button type="button" onClick={() => {setManualMode(true); onChange('');}} className="mt-1 text-[10px] text-white/45 hover:text-white/75">Usar texto manual</button>
+    </> : matches.length > 1 && !manualMode ? <>
+      <select aria-label={`Catálogo para ${field.label}`} value={selectedCatalogId} onChange={event => selectCatalog(event.target.value)} className="mt-1 block w-full rounded-lg border border-white/20 bg-black/30 px-2.5 py-1.5 text-white">
+        <option value="">Selecciona catálogo...</option>{matches.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+      </select>
+      <input aria-label={`Dato para ${field.label}`} type={jiraInputHtmlType(field)} value={value} onChange={event => onChange(event.target.value)}
+        disabled={!field.editable} autoComplete="off" required={field.required} placeholder={field.operation === 'select' ? 'Valor de la opción a seleccionar' : 'Dato de prueba'}
+        className="mt-1 block w-full rounded-lg border border-white/20 bg-black/30 px-2.5 py-1.5 text-white focus:outline-none focus:border-[#5EC470]" />
+    </> : <input aria-label={`Dato para ${field.label}`} type={jiraInputHtmlType(field)}
+      value={value} onChange={event => onChange(event.target.value)}
       disabled={!field.editable} autoComplete="off" required={field.required}
       placeholder={field.operation === 'select' ? 'Valor de la opción a seleccionar' : 'Dato de prueba'}
-      className="mt-1 block w-full rounded-lg border border-white/20 bg-black/30 px-2.5 py-1.5 text-white focus:outline-none focus:border-[#5EC470]" />
+      className="mt-1 block w-full rounded-lg border border-white/20 bg-black/30 px-2.5 py-1.5 text-white focus:outline-none focus:border-[#5EC470]" />}
     {field.dataCondition && <span className="mt-1 block text-white/70">{field.dataCondition === 'invalid' ? 'Usar un dato no válido para provocar el rechazo.' : field.dataCondition === 'expired' ? 'Usar un dato vencido para este paso.' : 'Usar un dato válido para completar este paso.'}</span>}
-  </label>)}</div>;
+  </label>;
 }
 
 /** Selection indices refer to the original story collection, never the filtered execution order. */

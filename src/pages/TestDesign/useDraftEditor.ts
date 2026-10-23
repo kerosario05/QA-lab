@@ -89,7 +89,23 @@ export function useDraftEditor(draftId: string) {
           // Adopt the shared engine's derived data fields, while keeping an empty row being authored.
           const normalized = list.map(local => {
             const stored = saved.scenarios.find(scenario => scenario.id === local.id);
-            return stored ? { ...stored, steps: local.steps } : local;
+            if (!stored) return local;
+            const localData = local.data ?? [];
+            const dataIdentity = (datum: NonNullable<TestDesignScenario['data']>[number]) =>
+              `${datum.key.toLowerCase()}|${datum.label?.toLowerCase() ?? ''}|${datum.condition ?? ''}`;
+            const localByIdentity = new Map(localData.map(datum => [dataIdentity(datum), datum]));
+            const storedData = stored.data ?? [];
+            const storedIdentities = new Set(storedData.map(dataIdentity));
+            const data = [
+              ...storedData.map(datum => {
+                // The service currently omits the UI-only catalog binding from its save response.
+                // Keep it locally so catalog hydration does not reapply and autosave it forever.
+                const binding = localByIdentity.get(dataIdentity(datum))?.catalogBinding;
+                return binding ? { ...datum, catalogBinding: binding } : datum;
+              }),
+              ...localData.filter(datum => !storedIdentities.has(dataIdentity(datum))),
+            ];
+            return { ...stored, steps: local.steps, data };
           });
           scenariosRef.current = { ...scenariosRef.current, [storyId]: normalized };
           setScenarios(current => ({ ...current, [storyId]: normalized }));
@@ -109,7 +125,12 @@ export function useDraftEditor(draftId: string) {
   );
 
   const updateScenarios = useCallback(
-    (storyId: string, next: TestDesignScenario[]) => {
+    (storyId: string, update: TestDesignScenario[] | ((current: TestDesignScenario[]) => TestDesignScenario[])) => {
+      const current = scenariosRef.current[storyId] ?? [];
+      const next = typeof update === 'function' ? update(current) : update;
+        // Catalog hydration and other derived UI updates can resolve to the exact
+        // same list. Do not turn those no-ops into dirty edits/autosaves.
+        if (next === current) return;
       setScenarios((current) => ({ ...current, [storyId]: next }));
       scenariosRef.current = { ...scenariosRef.current, [storyId]: next };
       dirty.current.add(storyId);

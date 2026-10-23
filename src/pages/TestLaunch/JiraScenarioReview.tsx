@@ -51,6 +51,8 @@ export function jiraReviewBlockingMessages(scenario: StoryScenario): string[] {
       const text=scenario.custom_steps_separated[issue.stepIndex-1]?.content??issue.step;
       return `Paso ${issue.stepIndex}${text?`: ${text}`:' (ya no existe en el escenario)'}. ${hint}`;
     }))];
+    if(code==='JIRA_CONDITION_ASSERTION_MISSING') return ['Falta una validación requerida por una condición de la HU. Restaura la comprobación eliminada y vuelve a validar.'];
+    if(code.startsWith('JIRA_ACCEPTANCE_COVERAGE_INCOMPLETE:')) return [`Faltan comprobaciones de los criterios de aceptación ${code.slice('JIRA_ACCEPTANCE_COVERAGE_INCOMPLETE:'.length)}. La edición debe conservar esas comprobaciones para poder ejecutarse.`];
     return [code==='JIRA_CONDITION_STEP_UNSUPPORTED'
       ? 'No se pudo interpretar una validación condicional. Abre «Editar pasos» y pulsa «Aplicar y validar» para identificar el paso afectado.'
       : code];

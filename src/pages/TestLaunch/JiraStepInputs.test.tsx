@@ -1,6 +1,6 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { JiraStepInputs, JiraCommonInputs, JiraScenarioCommonAction, useJiraCommonValues, commonJiraFields, resolveJiraScenarioValues, buildJiraDataOverrides, missingJiraInputs, missingJiraTransportInputs } from './JiraStepInputs';
 import { normalizeScenarioPreviewResponse } from '../../services/scenarios/normalize';
 import type { JiraInputRequirement } from '../../services/scenarios/types';
@@ -91,6 +91,28 @@ it('masks only password-labelled controls even when other test data is marked se
  const container=document.createElement('div'); const root=createRoot(container);
  await act(async()=>root.render(<JiraStepInputs fields={fields} values={{}} onChange={()=>{}}/>));
  expect([...container.querySelectorAll('input')].map(input=>input.type)).toEqual(['text','text','password','text','text']);
+ await act(async()=>root.unmount()); container.remove();
+});
+
+it('uses the matching project catalog in Jira launch and applies its first active value automatically', async () => {
+ const catalogs = [{
+  id: 'accounts', projectSlug: 'fenix', name: 'Cuentas', fieldName: 'Cuenta de origen', aliases: [], active: true, revision: 1,
+  options: [
+   {id: 'inactive', label: 'Obsoleta', value: 'old', active: false, position: 0},
+   {id: 'first', label: 'Cuenta corriente', value: '001111', active: true, position: 1},
+   {id: 'second', label: 'Cuenta de ahorro', value: '002222', active: true, position: 2},
+  ],
+ }];
+ const account = {...field, key:'transfer.origin', label:'Cuenta de origen', sensitive:false, controlType:'select' as const, operation:'select' as const};
+ const password = {...field, key:'auth.password', label:'Contraseña', sensitive:true};
+ const onChange = vi.fn();
+ const container=document.createElement('div'); const root=createRoot(container);
+ await act(async()=>root.render(<JiraStepInputs fields={[account,password]} values={{}} onChange={onChange}/>));
+ await act(async()=>root.render(<JiraStepInputs fields={[account,password]} values={{}} onChange={onChange} catalogs={catalogs}/>));
+ expect(container.querySelector('select[data-field-capability="project_catalog"]')).not.toBeNull();
+ expect(onChange).toHaveBeenCalledWith('transfer.origin','001111');
+ expect(container.querySelector('select[aria-label="Dato para Contraseña"]')).toBeNull();
+ expect(container.querySelector('input[aria-label="Dato para Contraseña"]')?.getAttribute('type')).toBe('password');
  await act(async()=>root.unmount()); container.remove();
 });
 

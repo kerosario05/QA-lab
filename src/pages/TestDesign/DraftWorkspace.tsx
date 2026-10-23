@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -162,9 +162,9 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
     }
   }
 
-  const setStoryScenarios = (next: TestDesignScenario[]) => {
-    if (story) editor.updateScenarios(story.id, next);
-  };
+  const setStoryScenarios = useCallback((update: TestDesignScenario[] | ((current: TestDesignScenario[]) => TestDesignScenario[])) => {
+    if (story) editor.updateScenarios(story.id, update);
+  }, [editor.updateScenarios, story?.id]);
 
   const generatePending = () =>
     run(async () => {
@@ -266,7 +266,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
         : undefined);
   const publishJiraReason = commonBlock ?? (totals.jira === 0 ? 'No hay escenarios seleccionados para Jira' : undefined);
 
-  const bulk = (destination: Destination, value: boolean) => setStoryScenarios(setSelection(storyScenarios, destination, value));
+  const bulk = (destination: Destination, value: boolean) => setStoryScenarios(current => setSelection(current, destination, value));
 
   return (
     <div className="p-7 space-y-5" style={{ background: C.canvas, minHeight: '100%' }}>
@@ -573,28 +573,29 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
 
           {story && story.generationStatus !== 'generating' && (
             <div className="space-y-2.5">
-              <StoryDataPanel scenarios={storyScenarios} readOnly={!editable} onChange={setStoryScenarios} />
+              <StoryDataPanel scenarios={storyScenarios} readOnly={!editable} projectSlug={draft.projectSlug ?? undefined} onChange={setStoryScenarios} />
               {storyScenarios.map((scenario, index) => (
                 <ScenarioEditor
                   key={scenario.id}
                   scenario={scenario}
+                  projectSlug={draft.projectSlug ?? undefined}
                   index={index}
                   count={storyScenarios.length}
                   readOnly={!editable}
                   publishDisabledReason={commonBlock ?? (!can('testdesign.publish_testrail') ? 'Sin permiso para publicar' : !draft.testRail.sectionId ? 'Elige una sección de TestRail' : undefined)}
                   onPublishTestRail={() => { setPublishScenarioIds([scenario.id]); setPublishing('testrail'); }}
                   defaultOpen={scenario.id === openScenarioId}
-                  onChange={(next) => setStoryScenarios(storyScenarios.map((s) => (s.id === next.id ? next : s)))}
-                  onMove={(delta) => setStoryScenarios(moveItem(storyScenarios, index, delta))}
+                  onChange={(next) => setStoryScenarios(current => current.map((s) => (s.id === next.id ? next : s)))}
+                  onMove={(delta) => setStoryScenarios(current => moveItem(current, index, delta))}
                   onDuplicate={() => {
                     const copy = duplicateScenario(scenario);
                     setOpenScenarioId(copy.id);
-                    setStoryScenarios([...storyScenarios.slice(0, index + 1), copy, ...storyScenarios.slice(index + 1)]);
+                    setStoryScenarios(current => [...current.slice(0, index + 1), copy, ...current.slice(index + 1)]);
                   }}
                   onDelete={() => {
                     const note = scenario.testRailCaseId !== null ? ' El caso seguirá existiendo en TestRail.' : '';
                     if (window.confirm(`¿Eliminar "${scenario.title || 'escenario sin título'}" del borrador?${note}`)) {
-                      setStoryScenarios(storyScenarios.filter((s) => s.id !== scenario.id));
+                      setStoryScenarios(current => current.filter((s) => s.id !== scenario.id));
                     }
                   }}
                 />
@@ -604,7 +605,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                   onClick={() => {
                     const created = newScenario();
                     setOpenScenarioId(created.id);
-                    setStoryScenarios([...storyScenarios, created]);
+                    setStoryScenarios(current => [...current, created]);
                   }}
                   className="w-full rounded-2xl border border-dashed border-[#BABEC3] py-3 text-[12px] font-semibold text-[#104B99] hover:bg-white flex items-center justify-center gap-1.5"
                 >

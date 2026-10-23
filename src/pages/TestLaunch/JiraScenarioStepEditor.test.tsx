@@ -41,3 +41,25 @@ it('adding a blank step blocks saving; deleting or cancelling never calls execut
   expect(editingChanged).toHaveBeenLastCalledWith(false);
  }finally{await act(async()=>root.unmount());host.remove();vi.unstubAllGlobals();}
 });
+
+it('keeps rejected edits open without replacing the executable version and can restore it',async()=>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host);const onApply=vi.fn();
+ const invalid={...reviewed,steps:[scenario.custom_steps_separated[0].content],validation:{valid:false,errors:['JIRA_CONDITION_ASSERTION_MISSING','JIRA_ACCEPTANCE_COVERAGE_INCOMPLETE:AC1.1'],warnings:[]}};
+ vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,status:200,text:async()=>JSON.stringify({ok:true,scenarios:[invalid]})}));
+ const button=(text:string)=>[...host.querySelectorAll('button')].find(item=>item.textContent===text)!;
+ try{
+  await act(async()=>root.render(<JiraScenarioStepEditor scenario={scenario} scenarios={[scenario]} issueKey="HU-1" appSlug="profile-one" onApply={onApply}/>));
+  await act(async()=>button('Editar pasos').click());
+  await act(async()=>(host.querySelector('[aria-label="Eliminar paso 2"]') as HTMLButtonElement).click());
+  await act(async()=>button('Aplicar y validar').click());
+  expect(onApply).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('La edición no se aplicó');
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('AC1.1');
+  expect(host.querySelector('[aria-label="Paso 1"]')).not.toBeNull();
+  expect(host.querySelector('[aria-label="Paso 2"]')).toBeNull();
+  await act(async()=>button('Restaurar versión anterior').click());
+  expect((host.querySelector('[aria-label="Paso 2"]') as HTMLTextAreaElement).value).toBe(scenario.custom_steps_separated[1].content);
+  await act(async()=>button('Cancelar').click());
+  expect(onApply).not.toHaveBeenCalled();
+ }finally{await act(async()=>root.unmount());host.remove();vi.unstubAllGlobals();}
+});

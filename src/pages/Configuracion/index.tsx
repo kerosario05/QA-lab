@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, Boxes, Plus, FolderCog, Loader2, X, ChevronDown, Upload } from 'lucide-react';
+import { AlertCircle, Boxes, Plus, FolderCog, KeyRound, Loader2, X, ChevronDown, Upload } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
+import { ProjectDataCatalogManager } from './ProjectDataCatalogManager';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -572,6 +573,7 @@ function DeleteProjectModal({ target, onClose, onDeleted }: { target: { slug: st
 }
 
 export function Configuracion() {
+  const [activeTab, setActiveTab] = useState<'projects' | 'catalogs'>('projects');
   const [items, setItems] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -613,26 +615,35 @@ export function Configuracion() {
     <div className="p-7 min-h-full" style={{ background: C.canvas }}>
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-5">
-          <div className="flex items-center gap-2">
-            <FolderCog size={16} className="text-[#104B99]" />
-            <span className="text-[13px] font-semibold text-[#1a1f2e]">Proyectos</span>
+          <div className="flex items-center gap-2 rounded-full border border-[#E8EBEC] bg-white p-1">
+            <button type="button" onClick={() => setActiveTab('projects')} className={cn('inline-flex items-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition', activeTab === 'projects' ? 'bg-[#1a1f2e] text-white' : 'text-[#58646D] hover:bg-[#F4F1EA]')}>
+              <FolderCog size={14} /> Proyectos
+            </button>
+            <button type="button" onClick={() => setActiveTab('catalogs')} className={cn('inline-flex items-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition', activeTab === 'catalogs' ? 'bg-[#1a1f2e] text-white' : 'text-[#58646D] hover:bg-[#F4F1EA]')}>
+              <KeyRound size={14} /> Catálogos
+            </button>
           </div>
-          <button
+          {activeTab === 'projects' && <button
             onClick={() => { setShowNew(true); setNotice(null); }}
             className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black px-4 py-2 rounded-full transition"
           >
             <Plus size={13} /> Nuevo proyecto
-          </button>
+          </button>}
         </div>
 
-        {notice && (
+        {activeTab === 'projects' && notice && (
           <div className={cn('mb-4 rounded-xl border px-4 py-3 text-[12px] flex items-center gap-2', notice.kind === 'ok' ? 'border-[#48A157]/30 bg-[#48A157]/5 text-[#357a42]' : 'border-[#E63946]/30 bg-[#E63946]/5 text-[#E63946]')}>
             <AlertCircle size={13} /> {notice.text}
           </div>
         )}
 
+        {activeTab === 'catalogs' ? (
+          loading ? <BentoCard className="!p-6 text-[12px] text-[#8B999D]">Cargando proyectos…</BentoCard>
+            : error ? <BentoCard className="!p-6 text-[12px] text-[#E63946]">{error}</BentoCard>
+              : <ProjectDataCatalogManager projects={items} />
+        ) : <>
         {loading && (
-          <div className="space-y-3">
+      <div className="space-y-3">
             {[0, 1, 2, 3].map(i => (
               <div key={i} className="h-[72px] rounded-2xl bg-white border border-[#E8EBEC] animate-pulse" />
             ))}
@@ -694,6 +705,7 @@ export function Configuracion() {
             ))}
           </div>
         )}
+        </>}
       </div>
 
       {(showNew || editSlug) && (

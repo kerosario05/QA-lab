@@ -1,6 +1,7 @@
 import {useState,useRef,useEffect} from 'react';
 import type {JiraInputRequirement,StoryScenario} from '../../services/scenarios/types';
 import {JiraStepInputs} from './JiraStepInputs';
+import {jiraReviewBlockingMessages} from './JiraScenarioReview';
 
 export type ReviewedLaunchScenario=Omit<StoryScenario,'custom_steps_separated'|'custom_expected'|'custom_preconds'> & {steps:string[];expectedResult:string;preconditions?:string[]};
 export function applyReviewedLaunchScenario(original:StoryScenario,reviewed:ReviewedLaunchScenario):StoryScenario{
@@ -75,6 +76,11 @@ export function JiraScenarioStepEditor({scenario,scenarios,issueKey,appSlug,init
    if(!result.ok||!Array.isArray(result.scenarios)||result.scenarios.length!==scenarios.length||result.scenarios.some((item:ReviewedLaunchScenario)=>item.sourceIssueKey!==issueKey))throw new Error('Respuesta de revisión inválida.');
    if(!mounted.current)return;
    if(currentScenarios.current!==scenarios)throw new Error('Los escenarios cambiaron durante la revisión.');
+   const blockers=result.scenarios.flatMap((candidate:ReviewedLaunchScenario,index:number)=>jiraReviewBlockingMessages(applyReviewedLaunchScenario(scenarios[index],candidate)));
+   if(blockers.length){
+    setError(`La edición no se aplicó. ${[...new Set(blockers)].join(' ')} Puedes corregir los pasos o cancelar para conservar la versión anterior.`);
+    return;
+   }
    const valuesByKey:Record<string,string>={};
    const editedIndex=scenarios.findIndex(item=>(item.scenarioId??item.id)=== (scenario.scenarioId??scenario.id));
    const reviewedEdited=result.scenarios[editedIndex];
@@ -103,7 +109,7 @@ export function JiraScenarioStepEditor({scenario,scenarios,issueKey,appSlug,init
    </div>)}
    <button type="button" onClick={()=>setSteps(previous=>[...previous,''])} className="text-[#5EC470]">+ Añadir paso</button>
    <label className="block">Resultado esperado<textarea aria-label="Resultado esperado del escenario" rows={2} className="block mt-1 w-full rounded border border-white/20 bg-[#151922] p-2" value={expectedResult} onChange={event=>setExpectedResult(event.target.value)}/></label>
-   <div className="flex gap-4"><button type="button" className="rounded bg-[#104B99] px-3 py-2 text-white" onClick={apply}>Aplicar y validar</button><button type="button" onClick={()=>setOpen(false)}>Cancelar</button></div>
+   <div className="flex gap-4"><button type="button" className="rounded bg-[#104B99] px-3 py-2 text-white" onClick={apply}>Aplicar y validar</button><button type="button" onClick={start}>Restaurar versión anterior</button><button type="button" onClick={()=>setOpen(false)}>Cancelar</button></div>
   </fieldset>
   {busy&&<p role="status" className="mt-2">Validando pasos y datos requeridos…</p>}
   {error&&<p role="alert" className="mt-2 text-red-300">{error}</p>}
