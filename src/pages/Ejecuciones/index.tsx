@@ -516,7 +516,7 @@ function ExecutionDetail({ launchId, onBack }: { launchId: string; onBack: () =>
             <p className="text-[12px] text-[#58646D] leading-relaxed">
               {evidenceDisabled
                 ? 'La evidencia no está disponible para esta ejecución (corrida previa al cambio o sin job asociado).'
-                : 'Genera y descarga el documento .docx con la evidencia por paso de esta ejecución.'}
+                : 'Genera y descarga el PDF de certificación con los casos y evidencias de esta ejecución.'}
             </p>
             <button
               onClick={handleDownload}
