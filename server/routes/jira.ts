@@ -54,6 +54,19 @@ router.get('/issues/search', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/jira/projects/:key/issues — recent issues of the project (no sub-tasks), read-only.
+router.get('/projects/:key/issues', async (req: Request, res: Response) => {
+  const projectKey = String(req.params.key ?? '').trim();
+  try {
+    const issues = await client.listProjectIssues(projectKey);
+    console.log(`[jira-api] project_issues project=${projectKey} resultCount=${issues.length}`);
+    res.json({ ok: true, issues });
+  } catch (err: any) {
+    console.log(`[jira-api] project_issues error project=${projectKey}: ${err.message}`);
+    sendError(res, err.status ?? 503, err.message ?? 'Failed to list Jira issues');
+  }
+});
+
 // GET /api/jira/projects/:key/issues/search?q=<issue key or title>
 router.get('/projects/:key/issues/search', async (req: Request, res: Response) => {
   const projectKey = String(req.params.key ?? '').trim();

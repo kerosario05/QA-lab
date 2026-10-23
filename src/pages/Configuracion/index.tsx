@@ -5,7 +5,7 @@ import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
 import { ProjectDataCatalogManager } from './ProjectDataCatalogManager';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 export interface ProjectListItem {
   id: string;

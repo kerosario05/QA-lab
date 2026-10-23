@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 export interface ExecutionListItem {
   launchId: string;
@@ -6,6 +6,8 @@ export interface ExecutionListItem {
   createdAt?: string;
   completedAt?: string;
   status?: string;
+  /** Cut short by a server restart (deploy); status is "failed" and it can be rerun. */
+  interrupted?: boolean;
   huKey?: string;
   huTitle?: string;
   appSlug?: string;
@@ -48,6 +50,8 @@ export interface ExecutionSummary {
   createdAt?: string;
   completedAt?: string;
   status?: string;
+  /** Cut short by a server restart (deploy); status is "failed" and it can be rerun. */
+  interrupted?: boolean;
   hu: { key?: string; title?: string };
   project: { appSlug?: string };
   testRail: {

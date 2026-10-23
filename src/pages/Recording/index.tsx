@@ -2,6 +2,7 @@ import { DynamicListSelection } from "./DynamicListSelection";
 import { groupOtpDatasetRequirements, otpSegmentValues } from './otp-dataset';
 import { parseSelectionRule, selectionRuleDescription } from "../../services/recordings/dynamic-selection-rule";
 import { LiveBrowserView } from './LiveBrowserView';
+import { useLocalAgent } from '../../components/localAgent/LocalAgentContext';
 import { GenerationProgressIndicator } from './GenerationProgressIndicator';
 import { RecordingStepper } from './RecordingStepper';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -10,6 +11,7 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  Info,
   ChevronUp,
   Loader2,
   Play,
@@ -151,6 +153,41 @@ function formatDuration(ms?: number): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+/** Why the PC's Chromium is not available yet, and the way forward. */
+function LocalAgentHint() {
+  const agent = useLocalAgent();
+  const percent = Math.round(agent.install?.percent ?? 0);
+  let text: string;
+  let action: { label: string; run: () => void } | null = null;
+  switch (agent.phase) {
+    case 'installing':
+      text = `Instalando Chromium en tu equipo (${percent}%). Mientras termina, se graba con el navegador integrado.`;
+      action = { label: 'Ver progreso', run: agent.openDialog };
+      break;
+    case 'ambiguous':
+      text = 'Hay varios equipos con QA Lab en tu red. Elige el tuyo para grabar en su Chromium.';
+      action = { label: 'Elegir equipo', run: agent.openDialog };
+      break;
+    case 'error':
+      text = agent.error ?? 'No se pudo instalar Chromium en tu equipo.';
+      action = { label: 'Reintentar', run: () => void agent.startInstall() };
+      break;
+    default:
+      text = 'No se detectó el agente de QA Lab en este equipo: la grabación usará el navegador integrado. Si debería estar instalado, contacta a TI.';
+  }
+  return (
+    <div data-testid="local-agent-hint" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[#58646D]">
+      <Info size={13} className="shrink-0 text-[#8B999D]" />
+      <span>{text}</span>
+      {action && (
+        <button onClick={action.run} className="font-semibold text-[#104B99] hover:underline">
+          {action.label}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="flex-1 min-w-[92px]">
@@ -161,6 +198,11 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 }
 
 const EMBEDDED_RECORDING_VIEWPORT = { width: 1280, height: 720 };
+
+// A panel opened on the engine's own machine can still show a visible Chromium there
+// ("desktop") without the agent: that is the developer setup.
+const PANEL_ON_ENGINE_HOST = typeof window !== 'undefined'
+  && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(window.location.hostname);
 
 export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void }) {
   const [projects, setProjects] = useState<RecordingProject[]>([]);
@@ -207,7 +249,21 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const [selectedJiraIssue, setSelectedJiraIssue] = useState<JiraIssue | null>(null);
 
   const session = useRecordingSession(projectSlug);
+  const localAgent = useLocalAgent();
+  // The PC's own Chromium: through the QA Lab agent when it is ready, otherwise only when the
+  // panel runs on the engine's machine. Without either, recordings use the integrated browser.
+  const pcBrowserMode: RecordingBrowserMode | null = localAgent.phase === 'ready' ? 'agent' : PANEL_ON_ENGINE_HOST ? 'desktop' : null;
+  // null until the user flips the switch: defaults to the PC's Chromium once the agent is ready.
+  const [preferPcBrowser, setPreferPcBrowser] = useState<boolean | null>(null);
+  const usePcBrowser = pcBrowserMode !== null && (preferPcBrowser ?? localAgent.phase === 'ready');
+  const startBrowserMode: RecordingBrowserMode = usePcBrowser && pcBrowserMode ? pcBrowserMode : 'integrated';
+  // The mode the CURRENT recording was started with (the switch may change afterwards).
   const [recordingBrowserMode, setRecordingBrowserMode] = useState<RecordingBrowserMode>('integrated');
+  // Opening the page asks again: the agent may have connected after login.
+  useEffect(() => {
+    void localAgent.check();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const execution = useRecordingExecution();
   const testRail = useTestRailDestination(projectDetail?.testRail);
   const project = projects.find((p) => p.slug === projectSlug);
@@ -857,21 +913,26 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   type="button"
                   role="switch"
                   aria-label="Usar Chromium del PC para grabar"
-                  aria-checked={recordingBrowserMode === 'desktop'}
-                  disabled={session.phase === 'starting' || busy}
-                  onClick={() => setRecordingBrowserMode((mode) => mode === 'integrated' ? 'desktop' : 'integrated')}
+                  aria-checked={usePcBrowser}
+                  disabled={session.phase === 'starting' || busy || pcBrowserMode === null}
+                  onClick={() => setPreferPcBrowser(!usePcBrowser)}
                   className="flex items-center gap-2 rounded-full border border-[#E8EBEC] bg-white px-3 py-2 text-[11px] font-medium text-[#58646D] transition disabled:opacity-50"
                 >
-                  <span className={cn('relative h-4 w-7 rounded-full transition-colors', recordingBrowserMode === 'desktop' ? 'bg-[#48A157]' : 'bg-[#B7C0C4]')}>
-                    <span className={cn('absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform', recordingBrowserMode === 'desktop' ? 'translate-x-3.5' : 'translate-x-0.5')} />
+                  <span className={cn('relative h-4 w-7 rounded-full transition-colors', usePcBrowser ? 'bg-[#48A157]' : 'bg-[#B7C0C4]')}>
+                    <span className={cn('absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform', usePcBrowser ? 'translate-x-3.5' : 'translate-x-0.5')} />
                   </span>
-                  {recordingBrowserMode === 'desktop' ? 'Chromium del PC' : 'Integrado en QA Lab'}
+                  {!usePcBrowser ? 'Integrado en QA Lab' : pcBrowserMode === 'agent' ? 'Chromium de tu equipo' : 'Chromium del PC'}
                 </button>
               )}
               <button
                 onClick={() => {
                   setScenariosPanelCollapsed(false);
-                  void session.start(label.trim() || undefined, recordingBrowserMode);
+                  const mode = startBrowserMode;
+                  setRecordingBrowserMode(mode);
+                  void session.start(label.trim() || undefined, mode).then((started) => {
+                    // The agent may have gone away (or lost Chromium) since the last check.
+                    if (!started && mode === 'agent') void localAgent.check();
+                  });
                 }}
                 disabled={!projectSlug || busy || label.trim().length === 0 || session.phase === 'starting'}
                 className="bg-[#48A157] hover:bg-[#3d8a4a] disabled:opacity-50 text-white text-[12px] font-semibold px-4 py-2.5 rounded-full flex items-center gap-1.5 transition"
@@ -891,6 +952,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             </button>
           )}
         </div>
+        {!isRecording && project?.type !== 'mobile' && pcBrowserMode === null && localAgent.phase !== 'unknown' && (
+          <LocalAgentHint />
+        )}
         {!isRecording && label.trim().length === 0 && projectSlug && (
           <p className="mt-2 text-[11px] text-[#B4463C]">Define el objetivo de la grabación para poder iniciar y generar escenarios.</p>
         )}
@@ -926,7 +990,11 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             <div className="flex items-center gap-2 mb-3">
               <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse" />
               <span className="text-[12px] font-semibold text-[#1a1f2e]">
-                Grabando — {project?.type === 'mobile' ? 'usa la app en el emulador' : recordingBrowserMode === 'desktop' ? 'interactúa con la ventana Chromium del PC' : 'interactúa con el navegador integrado'}
+                Grabando — {project?.type === 'mobile'
+                  ? 'usa la app en el emulador'
+                  : recordingBrowserMode === 'agent'
+                    ? 'interactúa con la ventana de Chromium que se abrió en tu equipo'
+                    : recordingBrowserMode === 'desktop' ? 'interactúa con la ventana Chromium del PC' : 'interactúa con el navegador integrado'}
               </span>
             </div>
             {project?.type !== 'mobile' && recordingBrowserMode === 'integrated' && session.recordingId && (
@@ -1009,6 +1077,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
           <div className="mt-3 flex items-start gap-2 text-[12px] text-[#B4463C]">
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             <span>{session.error}</span>
+          </div>
+        )}
+        {session.notice && (
+          <div data-testid="recording-notice" className="mt-3 flex items-start gap-2 text-[12px] text-[#104B99]">
+            <Info size={14} className="mt-0.5 shrink-0" />
+            <span>{session.notice}</span>
           </div>
         )}
       </section>
