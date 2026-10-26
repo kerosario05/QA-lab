@@ -93,8 +93,9 @@ function RequirementControl({
   const catalogEligible = requirement.sensitive !== true && !CATALOG_SENSITIVE_LABEL.test(label) && !CATALOG_SENSITIVE_LABEL.test(requirement.key);
   const matches = catalogEligible ? matchProjectDataCatalogs(label, catalogs) : [];
   const [catalogId, setCatalogId] = useState(() => matches.length === 1 ? matches[0].id : '');
-  useEffect(() => { if (!catalogId && matches.length === 1) setCatalogId(matches[0].id); }, [catalogId, matches]);
-  const boundCatalog = matches.find(catalog => catalog.id === catalogId);
+  const [manualMode, setManualMode] = useState(false);
+  useEffect(() => { if (!manualMode && !catalogId && matches.length === 1) setCatalogId(matches[0].id); }, [manualMode, catalogId, matches]);
+  const boundCatalog = manualMode ? undefined : matches.find(catalog => catalog.id === catalogId);
   const firstActiveOption = boundCatalog?.options.find(option => option.active);
   useEffect(() => {
     if (boundCatalog && !value && firstActiveOption?.value) onChange(firstActiveOption.value);
@@ -119,7 +120,10 @@ function RequirementControl({
     && !((capability?.allowedValues ?? requirement.allowedValues)?.length);
 
   let control: React.ReactNode;
-  if (boundCatalog) {
+  if (manualMode) {
+    const manualType = controlType === 'select' || controlType === 'radio' ? 'text' : controlType;
+    control = <input {...commonProps} {...constraintProps} data-field-capability={capability?.kind ?? controlType} data-catalog-manual="true" type={manualType} />;
+  } else if (boundCatalog) {
     control = (
       <div className="flex flex-col gap-1.5">
         {matches.length > 1 && (
@@ -132,7 +136,7 @@ function RequirementControl({
           <option value="">Selecciona valor...</option>
           {boundCatalog.options.filter(option => option.active).map(option => <option key={option.id} value={option.value}>{option.label}</option>)}
         </select>
-        <button type="button" className="self-start text-[10px] text-white/45 hover:text-white/75" onClick={() => { setCatalogId(""); onChange(""); }}>Usar texto manual</button>
+        <button type="button" className="self-start text-[10px] text-white/45 hover:text-white/75" onClick={() => { setManualMode(true); setCatalogId(""); onChange(""); }}>Usar texto manual</button>
       </div>
     );
   } else if (matches.length > 1) {

@@ -22,6 +22,11 @@ export const jiraProjectsProxy = {
       .catch(() => []);
   },
 
+  /** Most recently updated issues of the project (no sub-tasks). */
+  listProjectIssues: (projectKey: string): Promise<JiraIssue[]> =>
+    jiraRequest<{ issues: JiraIssue[] }>(`/api/jira/projects/${encodeURIComponent(projectKey)}/issues`)
+      .then((data) => Array.isArray(data?.issues) ? data.issues : []),
+
   /** Search Jira issues in a project by issue key or title. */
   searchIssues: (projectKey: string, query: string): Promise<JiraIssue[]> => {
     const qs = new URLSearchParams({ q: query }).toString();

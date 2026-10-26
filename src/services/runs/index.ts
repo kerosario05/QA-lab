@@ -367,6 +367,7 @@ export interface LaunchExecutionPayload {
 export interface LaunchExecutionResponse {
   ok: boolean;
   launchId?: string;
+  discoveryJobId?: string;
   status?: string;
   publishedCases?: PublishedCaseEntry[];
   testRunId?: number;
@@ -395,7 +396,13 @@ export const runsProxy = {
   /** Descarga el archivo DOCX de evidencia para un jobId */
   downloadEvidence: async (jobId: string): Promise<void> => {
     const res = await fetch(`${PROXY}/api/runs/${jobId}/evidence-docx`);
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let responseBody: unknown;
+    try { responseBody = await res.json(); } catch { responseBody = undefined; }
+    const message = responseBody && typeof responseBody === 'object' && typeof (responseBody as any).message === 'string'
+      ? (responseBody as any).message : `${res.status} ${res.statusText}`;
+    throw Object.assign(new Error(message), { status: res.status, responseBody });
+  }
 
     // Obtener el nombre del archivo desde el header o usar uno por defecto
     const contentDisposition = res.headers.get('Content-Disposition');

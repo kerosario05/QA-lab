@@ -77,7 +77,7 @@ export function StoryDataPanel({
           <label key={group.id} className="block min-w-0">
             <span className="flex items-center gap-1.5 text-[12px] font-semibold text-[#1a1f2e]">
               {sensitive && <Lock size={11} className="text-[#8B999D]" />}
-              {group.key}
+              {group.displayLabel}
               <span className="font-normal text-[#8B999D]">
                 {group.condition === 'invalid' ? '(inválido)' : group.condition === 'expired' ? '(vencido)' : ''} · {group.cases}{' '}
                 {group.cases === 1 ? 'caso' : 'casos'}
@@ -85,7 +85,7 @@ export function StoryDataPanel({
             </span>
             {group.description && <span className="block text-[10px] text-[#8B999D]">{group.description}</span>}
             {!sensitive && matches.length > 1 && (
-              <select className="mt-1 w-full px-3 py-2 rounded-lg border border-[#E9CF9A] bg-white text-[12px]" value={selectedCatalogId} disabled={readOnly} aria-label={`Catálogo de ${group.key}`} onChange={event => {
+            <select className="mt-1 w-full px-3 py-2 rounded-lg border border-[#E9CF9A] bg-white text-[12px]" value={selectedCatalogId} disabled={readOnly} aria-label={`Catálogo de ${group.displayLabel}`} onChange={event => {
                 setSelectedCatalogIds(current => ({ ...current, [group.id]: event.target.value }));
                 setManualGroups(current => ({ ...current, [group.id]: false }));
                 const catalog = matches.find(item => item.id === event.target.value);
@@ -94,7 +94,7 @@ export function StoryDataPanel({
               }}><option value="">Valor manual</option>{matches.map(catalog => <option key={catalog.id} value={catalog.id}>{catalog.name}</option>)}</select>
             )}
             {boundCatalog && !manualGroups[group.id] ? (
-              <select className="mt-1 w-full px-3 py-2 rounded-lg border border-[#E9CF9A] bg-white text-[12px] disabled:opacity-60" data-field-capability="project_catalog" value={hasCurrentOption ? group.value : ''} disabled={readOnly} aria-label={`Opción de ${group.key}`} onChange={event => onChange(current => applyStoryDatum(current, group.id, event.target.value))}>
+              <select className="mt-1 w-full px-3 py-2 rounded-lg border border-[#E9CF9A] bg-white text-[12px] disabled:opacity-60" data-field-capability="project_catalog" value={hasCurrentOption ? group.value : ''} disabled={readOnly} aria-label={`Opción de ${group.displayLabel}`} onChange={event => onChange(current => applyStoryDatum(current, group.id, event.target.value))}>
                 {!hasCurrentOption && <option value="">{group.mixed ? 'Valores distintos por caso' : group.value || 'Selecciona un valor…'}</option>}
                 {options.map(option => <option key={option.id} value={option.value}>{option.label}</option>)}
               </select>

@@ -178,6 +178,10 @@ export function reconcileJiraScenarioFromLogs<T extends ActiveScenarioLike>(
   for (let index = startIndex + 1; index < parsed.length; index += 1) {
     const event = parsed[index];
     if (event?.executionEngine !== 'jira_semantic' || event.caseId !== scenario.id) continue;
+    if (event.type === 'case_finished') {
+      reconciled = finishActiveScenario(reconciled, event) ?? reconciled;
+      continue;
+    }
     const progress = parseJiraSemanticProgressEvent(event);
     if (progress) reconciled = applyLiveScenarioProgress(reconciled, progress) ?? reconciled;
   }
@@ -250,7 +254,14 @@ export function applyLiveScenarioProgress(
 }
 
 export function getCurrentScenarioStepIndex(scenario: ActiveScenarioLike | null): number {
-  if (!scenario || scenario.steps.length === 0 || scenario.status === 'passed' || scenario.status === 'failed') return -1;
+  if (!scenario || scenario.steps.length === 0 || scenario.status === 'passed') return -1;
+  if (scenario.status === 'failed') {
+    const failedIndex = scenario.stepResults?.findIndex((_, index) => getScenarioStepState(scenario.stepResults, index) === 'failed') ?? -1;
+    if (failedIndex >= 0) return failedIndex;
+    return scenario.currentStepIndex != null && scenario.currentStepIndex >= 0 && scenario.currentStepIndex < scenario.steps.length
+      ? scenario.currentStepIndex
+      : -1;
+  }
   if (scenario.currentStepIndex != null && scenario.currentStepIndex >= 0 && scenario.currentStepIndex < scenario.steps.length) {
     return scenario.currentStepIndex;
   }

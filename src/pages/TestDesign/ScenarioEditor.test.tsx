@@ -56,6 +56,36 @@ describe('scenario step editing',()=>{
   expect(normalizeTestDesignStep('Ingresar el monto en "Monto"')).toBe('Ingresar el monto en "Monto"');
  });
 
+ it('offers a checkbox for batch publication and keeps TestRail status separate from the action',async()=>{
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  const scenario={...newScenario(),title:'Caso',selectedForTestRail:false,testRailCaseId:42};
+  const changed=vi.fn();
+  try{
+   await act(async()=>root.render(<ScenarioEditor scenario={scenario} index={0} count={1} readOnly={false} defaultOpen onChange={changed} onMove={()=>{}} onDuplicate={()=>{}} onDelete={()=>{}}/>));
+   const checkbox=host.querySelector<HTMLInputElement>('input[type="checkbox"][aria-label*="Caso"]')!;
+   expect(checkbox).toBeTruthy();
+    expect(host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Precondiciones necesarias antes de iniciar el caso"]')).toBeTruthy();
+   await act(async()=>{checkbox.click();});
+   expect(changed).toHaveBeenCalledWith(expect.objectContaining({selectedForTestRail:true}));
+   expect(host.textContent).toContain('C42 · Publicado');
+   expect(host.textContent).not.toContain('Subir a TestRail');
+   expect(host.textContent).not.toContain('Actualizar en TestRail');
+  }finally{await act(async()=>root.unmount());host.remove();}
+ });
+
+ it('shows the affected step and concrete correction guidance without rendering sensitive step text',async()=>{
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  const scenario={...newScenario(),title:'Caso',jiraSourceScenarioId:'AA-1:jira:1',preconditions:'',jiraSourceScenario:{validation:{valid:false,errors:['JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],issues:[{code:'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED',stepIndex:7,step:'Ingresar dato privado'}]}}};
+  try{
+   await act(async()=>root.render(<ScenarioEditor scenario={scenario} index={0} count={1} readOnly={false} defaultOpen onChange={()=>{}} onMove={()=>{}} onDelete={()=>{}}/>));
+   expect(host.textContent).toContain('Paso 7: Cambia la comprobación por un resultado visible que el motor pueda verificar.');
+   expect(host.textContent).not.toContain('Ingresar dato privado');
+    const preconditions=host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Sin precondiciones externas"]');
+    expect(preconditions).toBeTruthy();
+    expect(preconditions?.value).toBe('');
+  }finally{await act(async()=>root.unmount());host.remove();}
+ });
+
  it('keeps natural step text after blur and places added rows in the same table',async()=>{
   const host=document.createElement('div'); document.body.append(host);
   const root=createRoot(host);

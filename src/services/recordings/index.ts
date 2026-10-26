@@ -101,7 +101,7 @@ export const recordingsApi = {
       `/api/recordings?projectSlug=${encodeURIComponent(projectSlug)}`,
     ),
 
-  start: (projectSlug: string, recordingGoal?: string, browserMode: 'integrated' | 'desktop' = 'integrated') =>
+  start: (projectSlug: string, recordingGoal?: string, browserMode: 'integrated' | 'desktop' | 'agent' = 'integrated') =>
     request<{ recordingId: string; jobId: string; summary: RecordingSummary }>('/api/recordings/start', {
       method: 'POST',
       body: JSON.stringify({ projectSlug, label: recordingGoal, recordingGoal, browserMode }),

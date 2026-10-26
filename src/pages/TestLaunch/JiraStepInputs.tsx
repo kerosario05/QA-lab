@@ -28,10 +28,20 @@ export function commonJiraFields(story: Story): JiraInputRequirement[] {
     .map(([key, group]) => ({...group.field, key}));
 }
 
+/** A value quoted in the authored step ("Ingresar "X" en "Campo"") is the scenario's own datum and outranks inherited common values. */
+export function jiraStepLiteral(story: Story, index: number, field: JiraInputRequirement): string | undefined {
+  if (field.operation !== 'fill' && field.operation !== 'select') return undefined;
+  const step = story.scenarios[index]?.custom_steps_separated?.[(field.stepIndex ?? 0) - 1]?.content ?? '';
+  const verbs = field.operation === 'select' ? 'seleccionar|elegir|select|choose' : 'ingresar|escribir|digitar|introducir|completar|llenar|enter|fill|type';
+  return step.match(new RegExp(`^\\s*(?:${verbs})\\s+["“]([^"”]+)["”]\\s+en\\s+`, 'i'))?.[1];
+}
+
 export function resolveJiraScenarioValues(story: Story, index: number, local: Record<string, string | boolean>, common: JiraCommonValues = {}) {
   const result = {...local};
   const eligible = new Set(commonJiraFields(story).map(field => field.key));
   for (const field of story.scenarios[index]?.inputRequirements ?? []) {
+    const literal = jiraStepLiteral(story, index, field);
+    if (literal !== undefined && !Object.prototype.hasOwnProperty.call(local, field.key)) { result[field.key] = literal; continue; }
     const identity = commonIdentity(field);
     if (identity && eligible.has(identity) && !Object.prototype.hasOwnProperty.call(local, field.key) && common[story.jiraKey]?.[identity] !== undefined) {
       result[field.key] = common[story.jiraKey][identity];

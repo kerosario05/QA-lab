@@ -6,7 +6,8 @@ import {jiraReviewBlockingMessages} from './JiraScenarioReview';
 export type ReviewedLaunchScenario=Omit<StoryScenario,'custom_steps_separated'|'custom_expected'|'custom_preconds'> & {steps:string[];expectedResult:string;preconditions?:string[]};
 export function applyReviewedLaunchScenario(original:StoryScenario,reviewed:ReviewedLaunchScenario):StoryScenario{
  const changed=original.scenarioId!==reviewed.scenarioId;
- return {...original,...reviewed,dataRequirements:changed?[]:original.dataRequirements,requiredData:changed?undefined:original.requiredData,
+ // The review response owns the auth intent: an omitted value means the edit cleared it, so the stale generator value must not survive the merge.
+ return {...original,...reviewed,authIntent:reviewed.authIntent,dataRequirements:changed?[]:original.dataRequirements,requiredData:changed?undefined:original.requiredData,
   custom_steps_separated:reviewed.steps.map(content=>({content,expected:''})),custom_expected:reviewed.expectedResult,custom_preconds:reviewed.preconditions?.join('\n')||null};
 }
 

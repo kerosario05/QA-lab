@@ -1,7 +1,11 @@
+import { proxyDownload } from "./downloads-proxy";
 import { attachLiveViewProxy } from "./live-view-proxy";
 import './env';
 import express from 'express';
 import cors from 'cors';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import testrailRouter from './routes/testrail';
 import jiraRouter from './routes/jira';
 import scenariosRouter from './routes/scenarios';
@@ -132,12 +136,48 @@ app.use('/api/newman', newmanRouter);
 app.use('/api/mobile', mobileRouter);
 app.use('/api/executions', executionsRouter);
 app.use(runtimeInputsRouter);
+// Chromium and the local-agent installer are downloaded through the same origin/BFF.
+// Mount before the frontend fallback so `/descargas/*` is streamed from the engine.
+app.get('/descargas/*splat', proxyDownload);
 app.use('/api/recordings', recordingsRouter);
 app.use(checklistRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'qa-lab-backend', timestamp: Date.now() });
 });
+
+// Serve the built UI and API from the same origin in deployments. Revalidate the
+// HTML on every visit so a deploy cannot keep pointing the browser to an old bundle.
+const serverDir = path.dirname(fileURLToPath(import.meta.url));
+const distDir = path.resolve(serverDir, '..', 'dist');
+if (fs.existsSync(path.join(distDir, 'index.html'))) {
+  app.use(express.static(distDir, {
+    setHeaders: (res, filePath) => {
+      const relativePath = path.relative(distDir, filePath).split(path.sep).join('/');
+      const fileName = path.basename(filePath);
+      if (relativePath === 'index.html') {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      } else if (relativePath.startsWith('assets/') && /-[A-Za-z0-9_-]{8,}\./.test(fileName)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  }));
+
+  // Keep client-side routes working when a user refreshes a nested page.
+  app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+  console.log(`[qa-lab-server] front servido desde ${distDir}`);
+} else {
+  console.log('[qa-lab-server] sin dist/: solo API (en desarrollo lo sirve Vite)');
+}
 
 const server = app.listen(PORT, () => {
   console.log(`[qa-lab-server] API listening on http://localhost:${PORT}`);

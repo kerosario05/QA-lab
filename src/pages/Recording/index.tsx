@@ -2,6 +2,7 @@ import { DynamicListSelection } from "./DynamicListSelection";
 import { groupOtpDatasetRequirements, otpSegmentValues } from './otp-dataset';
 import { parseSelectionRule, selectionRuleDescription } from "../../services/recordings/dynamic-selection-rule";
 import { LiveBrowserView } from './LiveBrowserView';
+import { useLocalAgent } from '../../components/localAgent/LocalAgentContext';
 import { GenerationProgressIndicator } from './GenerationProgressIndicator';
 import { RecordingStepper } from './RecordingStepper';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -10,6 +11,7 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  Info,
   ChevronUp,
   Loader2,
   Play,
@@ -151,6 +153,41 @@ function formatDuration(ms?: number): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+/** Why the PC's Chromium is not available yet, and the way forward. */
+function LocalAgentHint() {
+  const agent = useLocalAgent();
+  const percent = Math.round(agent.install?.percent ?? 0);
+  let text: string;
+  let action: { label: string; run: () => void } | null = null;
+  switch (agent.phase) {
+    case 'installing':
+      text = `Instalando Chromium en tu equipo (${percent}%). Mientras termina, se graba con el navegador integrado.`;
+      action = { label: 'Ver progreso', run: agent.openDialog };
+      break;
+    case 'ambiguous':
+      text = 'Hay varios equipos con QA Lab en tu red. Elige el tuyo para grabar en su Chromium.';
+      action = { label: 'Elegir equipo', run: agent.openDialog };
+      break;
+    case 'error':
+      text = agent.error ?? 'No se pudo instalar Chromium en tu equipo.';
+      action = { label: 'Reintentar', run: () => void agent.startInstall() };
+      break;
+    default:
+      text = 'No se detectó el agente de QA Lab en este equipo: la grabación usará el navegador integrado. Si debería estar instalado, contacta a TI.';
+  }
+  return (
+    <div data-testid="local-agent-hint" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[#58646D]">
+      <Info size={13} className="shrink-0 text-[#8B999D]" />
+      <span>{text}</span>
+      {action && (
+        <button onClick={action.run} className="font-semibold text-[#104B99] hover:underline">
+          {action.label}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="flex-1 min-w-[92px]">
@@ -161,6 +198,11 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 }
 
 const EMBEDDED_RECORDING_VIEWPORT = { width: 1280, height: 720 };
+
+// A panel opened on the engine's own machine can still show a visible Chromium there
+// ("desktop") without the agent: that is the developer setup.
+const PANEL_ON_ENGINE_HOST = typeof window !== 'undefined'
+  && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(window.location.hostname);
 
 export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void }) {
   const [projects, setProjects] = useState<RecordingProject[]>([]);
@@ -207,7 +249,21 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const [selectedJiraIssue, setSelectedJiraIssue] = useState<JiraIssue | null>(null);
 
   const session = useRecordingSession(projectSlug);
+  const localAgent = useLocalAgent();
+  // The PC's own Chromium: through the QA Lab agent when it is ready, otherwise only when the
+  // panel runs on the engine's machine. Without either, recordings use the integrated browser.
+  const pcBrowserMode: RecordingBrowserMode | null = localAgent.phase === 'ready' ? 'agent' : PANEL_ON_ENGINE_HOST ? 'desktop' : null;
+  // null until the user flips the switch: defaults to the PC's Chromium once the agent is ready.
+  const [preferPcBrowser, setPreferPcBrowser] = useState<boolean | null>(null);
+  const usePcBrowser = pcBrowserMode !== null && (preferPcBrowser ?? localAgent.phase === 'ready');
+  const startBrowserMode: RecordingBrowserMode = usePcBrowser && pcBrowserMode ? pcBrowserMode : 'integrated';
+  // The mode the CURRENT recording was started with (the switch may change afterwards).
   const [recordingBrowserMode, setRecordingBrowserMode] = useState<RecordingBrowserMode>('integrated');
+  // Opening the page asks again: the agent may have connected after login.
+  useEffect(() => {
+    void localAgent.check();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const execution = useRecordingExecution();
   const testRail = useTestRailDestination(projectDetail?.testRail);
   const project = projects.find((p) => p.slug === projectSlug);
@@ -312,13 +368,22 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     return result;
   }, [session.scenarios, scenarioDatasetValues]);
   const replayEntries = useMemo(() => selectedTestRailEntries.map((entry) => {
-    if (entry.recordingId !== session.recordingId) return entry;
+    if (entry.recordingId !== session.recordingId) {
+      // Other recording of the history: its scenario values live only in the per-scenario edits
+      // (keyed by the unique scenarioId) plus the values already observed in the scenario itself.
+      const values: Record<string, string | undefined> = { ...entry.datasetValues };
+      for (const requirement of runtimeRequirementsForScenario(entry.scenario)) {
+        if (typeof requirement.value === 'string') values[requirement.valueKey] = requirement.value;
+      }
+      Object.assign(values, datasetOverrides[entry.scenario.scenarioId] ?? {});
+      return { ...entry, datasetValues: values };
+    }
     return {
       ...entry,
       dataOverrides: effectiveDataOverrides[entry.scenario.scenarioId] ?? entry.dataOverrides,
       datasetValues: scenarioDatasetValues.get(entry.scenario.scenarioId) ?? entry.datasetValues,
     };
-  }), [selectedTestRailEntries, session.recordingId, effectiveDataOverrides, scenarioDatasetValues]);
+  }), [selectedTestRailEntries, session.recordingId, effectiveDataOverrides, scenarioDatasetValues, datasetOverrides]);
   const sensitiveDatasetKeys = useMemo(
     () => new Set((session.semanticModel?.datasets ?? []).filter((dataset) => dataset.sensitive).map((dataset) => dataset.valueKey)),
     [session.semanticModel],
@@ -361,7 +426,8 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     const ids = new Set(session.scenarios.map((scenario) => scenario.scenarioId));
     if (recordingChanged) {
       setTestRailUpload(null);
-      setDatasetOverrides({});
+      // `datasetOverrides` is keyed by the unique scenarioId, so it is kept across recordings:
+      // values typed for one history recording must still reach its own replay.
       setPublishResult(null);
       // A pending save queued under a DIFFERENT recording must never retry against this one
       // (see `pendingScenarioSaves`'s own `recordingId` guard in the retry effect below).
@@ -857,21 +923,26 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   type="button"
                   role="switch"
                   aria-label="Usar Chromium del PC para grabar"
-                  aria-checked={recordingBrowserMode === 'desktop'}
-                  disabled={session.phase === 'starting' || busy}
-                  onClick={() => setRecordingBrowserMode((mode) => mode === 'integrated' ? 'desktop' : 'integrated')}
+                  aria-checked={usePcBrowser}
+                  disabled={session.phase === 'starting' || busy || pcBrowserMode === null}
+                  onClick={() => setPreferPcBrowser(!usePcBrowser)}
                   className="flex items-center gap-2 rounded-full border border-[#E8EBEC] bg-white px-3 py-2 text-[11px] font-medium text-[#58646D] transition disabled:opacity-50"
                 >
-                  <span className={cn('relative h-4 w-7 rounded-full transition-colors', recordingBrowserMode === 'desktop' ? 'bg-[#48A157]' : 'bg-[#B7C0C4]')}>
-                    <span className={cn('absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform', recordingBrowserMode === 'desktop' ? 'translate-x-3.5' : 'translate-x-0.5')} />
+                  <span className={cn('relative h-4 w-7 rounded-full transition-colors', usePcBrowser ? 'bg-[#48A157]' : 'bg-[#B7C0C4]')}>
+                    <span className={cn('absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform', usePcBrowser ? 'translate-x-3.5' : 'translate-x-0.5')} />
                   </span>
-                  {recordingBrowserMode === 'desktop' ? 'Chromium del PC' : 'Integrado en QA Lab'}
+                  {!usePcBrowser ? 'Integrado en QA Lab' : pcBrowserMode === 'agent' ? 'Chromium de tu equipo' : 'Chromium del PC'}
                 </button>
               )}
               <button
                 onClick={() => {
                   setScenariosPanelCollapsed(false);
-                  void session.start(label.trim() || undefined, recordingBrowserMode);
+                  const mode = startBrowserMode;
+                  setRecordingBrowserMode(mode);
+                  void session.start(label.trim() || undefined, mode).then((started) => {
+                    // The agent may have gone away (or lost Chromium) since the last check.
+                    if (!started && mode === 'agent') void localAgent.check();
+                  });
                 }}
                 disabled={!projectSlug || busy || label.trim().length === 0 || session.phase === 'starting'}
                 className="bg-[#48A157] hover:bg-[#3d8a4a] disabled:opacity-50 text-white text-[12px] font-semibold px-4 py-2.5 rounded-full flex items-center gap-1.5 transition"
@@ -891,6 +962,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             </button>
           )}
         </div>
+        {!isRecording && project?.type !== 'mobile' && pcBrowserMode === null && localAgent.phase !== 'unknown' && (
+          <LocalAgentHint />
+        )}
         {!isRecording && label.trim().length === 0 && projectSlug && (
           <p className="mt-2 text-[11px] text-[#B4463C]">Define el objetivo de la grabación para poder iniciar y generar escenarios.</p>
         )}
@@ -926,7 +1000,11 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             <div className="flex items-center gap-2 mb-3">
               <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse" />
               <span className="text-[12px] font-semibold text-[#1a1f2e]">
-                Grabando — {project?.type === 'mobile' ? 'usa la app en el emulador' : recordingBrowserMode === 'desktop' ? 'interactúa con la ventana Chromium del PC' : 'interactúa con el navegador integrado'}
+                Grabando — {project?.type === 'mobile'
+                  ? 'usa la app en el emulador'
+                  : recordingBrowserMode === 'agent'
+                    ? 'interactúa con la ventana de Chromium que se abrió en tu equipo'
+                    : recordingBrowserMode === 'desktop' ? 'interactúa con la ventana Chromium del PC' : 'interactúa con el navegador integrado'}
               </span>
             </div>
             {project?.type !== 'mobile' && recordingBrowserMode === 'integrated' && session.recordingId && (
@@ -1009,6 +1087,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
           <div className="mt-3 flex items-start gap-2 text-[12px] text-[#B4463C]">
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             <span>{session.error}</span>
+          </div>
+        )}
+        {session.notice && (
+          <div data-testid="recording-notice" className="mt-3 flex items-start gap-2 text-[12px] text-[#104B99]">
+            <Info size={14} className="mt-0.5 shrink-0" />
+            <span>{session.notice}</span>
           </div>
         )}
       </section>
@@ -1170,7 +1254,6 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 onDatasetValueChange={(valueKey, value) => handleDatasetValueChange(primaryScenario.scenarioId, valueKey, value)}
                 onDatasetBlur={(valueKey, value) => void handleDatasetBlur(primaryScenario.scenarioId, valueKey, value)}
                 sensitiveDatasetKeys={sensitiveDatasetKeys}
-                allowSensitiveMaterialization={allowSensitiveMaterialization}
               />
             </div>
           )}
@@ -1196,7 +1279,6 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   onDatasetValueChange={(valueKey, value) => handleDatasetValueChange(s.scenarioId, valueKey, value)}
                   onDatasetBlur={(valueKey, value) => void handleDatasetBlur(s.scenarioId, valueKey, value)}
                   sensitiveDatasetKeys={sensitiveDatasetKeys}
-                  allowSensitiveMaterialization={allowSensitiveMaterialization}
                 />
               ))}
             </div>
@@ -1507,7 +1589,6 @@ export function ScenarioCard({
   onDatasetValueChange,
   onDatasetBlur,
   sensitiveDatasetKeys,
-  allowSensitiveMaterialization,
 }: {
   projectSlug?: string;
   scenario: RecordedScenario;
@@ -1521,25 +1602,47 @@ export function ScenarioCard({
   onDatasetValueChange: (valueKey: string, value: string) => void;
   onDatasetBlur: (valueKey: string, value: string) => void;
   sensitiveDatasetKeys: Set<string>;
-  allowSensitiveMaterialization: boolean;
 }) {
   const reviewDraft = '';
   const setReviewDraft = (_value: string) => undefined;
   const onReviewChange = (_status: 'PENDING' | 'APPROVED' | 'REJECTED', _expected: string) => undefined;
   const readiness = resolveScenarioReadiness(scenario, datasetValues);
-  const renderStep = (step: RecordedScenarioStep) => {
+  const stepRequirementsByKey = new Map(runtimeRequirementsForScenario(scenario).map((requirement) => [requirement.valueKey, requirement] as const));
+  const resolveStepPrivacy = (step: RecordedScenarioStep) => {
     const recordedInteraction = step.interactionId
       ? scenario.canonicalInteractions?.find((interaction) => String(interaction.id ?? '') === step.interactionId)
       : undefined;
     const valueKey = step.valueKey ?? (typeof recordedInteraction?.valueKey === 'string' ? recordedInteraction.valueKey : undefined);
-    const value = valueKey ? datasetValues[valueKey] : undefined;
-    const sensitive = step.sensitive === true || Boolean(valueKey && sensitiveDatasetKeys.has(valueKey));
-    if (sensitive && !allowSensitiveMaterialization) return step.stepTemplate ?? step.content;
-    if (valueKey && value !== undefined) {
+    const sensitiveRequirement = valueKey ? stepRequirementsByKey.get(valueKey) : undefined;
+    const recordedFieldLabel = typeof recordedInteraction?.semanticField === 'string' ? recordedInteraction.semanticField.trim() : '';
+    const stepTemplate = step.stepTemplate ?? step.content;
+    const templateFieldLabel = stepTemplate.match(/\ben\s+["']([^"']+)["']\s*:?\s*$/i)?.[1]?.trim() ?? '';
+    const fieldLabel = sensitiveRequirement
+      ? humanRequirementLabel(sensitiveRequirement)
+      : recordedFieldLabel || templateFieldLabel;
+    const labelLooksSensitive = /password|clave|contrasena|contraseña|otp|token|pin|secret/i.test(fieldLabel);
+    const sensitive = step.sensitive === true
+      || sensitiveRequirement?.sensitive === true
+      || Boolean(valueKey && sensitiveDatasetKeys.has(valueKey))
+      || labelLooksSensitive;
+    return { sensitive, fieldLabel: fieldLabel || 'campo sensible', valueKey, stepTemplate, recordedInteraction };
+  };
+  const renderStep = (step: RecordedScenarioStep) => {
+    const privacy = resolveStepPrivacy(step);
+    const value = privacy.valueKey ? datasetValues[privacy.valueKey] : undefined;
+    const renderedAction = step.renderedStep ?? step.content;
+    const isSensitiveValueEntry = privacy.recordedInteraction?.action === 'fill'
+      || privacy.recordedInteraction?.action === 'select'
+      || /^(?:ingresar|seleccionar|fill|select)\b/i.test(renderedAction.trim());
+    if (privacy.sensitive) {
+      if (isSensitiveValueEntry) return `Ingresar el valor protegido en "${privacy.fieldLabel}"`;
+      return step.stepNumber !== undefined ? renderedAction.replace(/^\s*\d+[.)]\s*/, '') : renderedAction;
+    }
+    if (privacy.valueKey && value !== undefined) {
       const stepValue = step.segmentPosition ? value[step.segmentPosition - 1] : value;
       if (stepValue !== undefined) {
-        const template = step.stepTemplate ?? step.content;
-        const valueMarker = '[' + valueKey + ']';
+        const template = privacy.stepTemplate;
+        const valueMarker = '[' + privacy.valueKey + ']';
         const selectionDescription = selectionRuleDescription(stepValue);
         const isDynamicSelection = parseSelectionRule(stepValue) !== undefined;
         const readableValue = JSON.stringify(selectionDescription);
@@ -1554,8 +1657,8 @@ export function ScenarioCard({
           const rendered = template.split(valueMarker).join(readableValue);
           return step.stepNumber !== undefined ? rendered.replace(/^\s*\d+[.)]\s*/, '') : rendered;
         }
-        if (parseSelectionRule(stepValue) && recordedInteraction?.action === 'select') {
-          const field = String(recordedInteraction.semanticField ?? valueKey);
+        if (parseSelectionRule(stepValue) && privacy.recordedInteraction?.action === 'select') {
+          const field = String(privacy.recordedInteraction.semanticField ?? privacy.valueKey);
           return 'Seleccionar ' + readableValue + ' en ' + JSON.stringify(field);
         }
       }
@@ -1758,17 +1861,20 @@ export function ScenarioCard({
       {expanded && (
         <div className="px-3.5 pb-3.5">
           <div className="space-y-1.5 border-l-2 border-[#E8EBEC] pl-3 ml-1">
-            {scenario.testRailSteps.map((step, i) => (
-              <li key={`${scenario.scenarioId}-${step.stepNumber ?? i}`} className="text-[11.5px]">
-                <div className="text-[#1a1f2e]">
-                  <span className="text-[#8B999D] mr-1.5">{step.stepNumber ?? i + 1}.</span>
-                  {renderStep(step)}
-                </div>
-                {step.expected.trim() && (
-                  <div className="text-[#48A157] mt-0.5">→ {step.expected}</div>
-                )}
-              </li>
-            ))}
+            {scenario.testRailSteps.map((step, i) => {
+              const sensitive = resolveStepPrivacy(step).sensitive;
+              return (
+                <li key={`${scenario.scenarioId}-${step.stepNumber ?? i}`} className="text-[11.5px]">
+                  <div className="text-[#1a1f2e]">
+                    <span className="text-[#8B999D] mr-1.5">{step.stepNumber ?? i + 1}.</span>
+                    {renderStep(step)}
+                  </div>
+                  {!sensitive && step.expected.trim() && (
+                    <div className="text-[#48A157] mt-0.5">→ {step.expected}</div>
+                  )}
+                </li>
+              );
+            })}
           </div>
           {scenario.stepTargets && scenario.stepTargets.length > 0 && (
             <div className="mt-3">

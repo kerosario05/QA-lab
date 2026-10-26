@@ -29,6 +29,13 @@ export interface TestDesignScenario {
   data?: TestDesignDatum[];
   /** Generation/coverage gaps retained for human review; the case is not certified complete. */
   generationWarnings?: string[];
+  /** Jira source refs surfaced in the editor for explicit coverage review. */
+  acceptanceCriteriaRefs?: string[];
+  /** Exact source scenario retained for semantic launch routing. */
+  jiraSourceScenario?: unknown;
+  jiraSourceScenarioId?: string;
+  /** Automation project whose project knowledge informed this scenario generation. */
+  knowledgeProfileSlug?: string | null;
   expectedResult: string;
   priority: TestDesignPriority;
   type: TestDesignScenarioType;

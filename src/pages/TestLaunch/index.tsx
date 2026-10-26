@@ -2,6 +2,7 @@ import {JiraScenarioReview,jiraReviewBlockingErrors,jiraReviewBlockingMessages,J
 import {JiraScenarioStepEditor,applyReviewedLaunchScenario} from './JiraScenarioStepEditor';
 import {jiraPrerequisiteSummary} from './jira-prerequisites';
 import {useRetainedSourceLoad} from './use-retained-source-load';
+import { JiraStoryPicker, type PickedJiraIssue } from './JiraStoryPicker';
 import React, { useState, useMemo, useEffect, useRef, useSyncExternalStore } from 'react';
 import { getTestRailCasesRevision, subscribeTestRailCaseChanges } from '../../services/testrail/sections';
 import { JiraStepInputs, JiraCommonInputs, JiraScenarioCommonAction, useJiraCommonValues, resolveJiraScenarioValues, buildJiraDataOverrides, missingJiraInputs, missingJiraTransportInputs } from './JiraStepInputs';
@@ -86,7 +87,7 @@ interface LaunchProjectApiItem {
   enabled: boolean;
 }
 
-const LAUNCH_API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const LAUNCH_API_BASE = import.meta.env.VITE_API_URL ?? '';
 const LAUNCH_SELECTION_STORAGE_KEY = 'qa-lab:test-launch:last-selection:v1';
 type RememberedLaunchSelection = {
   source?: string;
@@ -203,6 +204,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   }, [config.automationProject, config.source, config.jiraProject, config.status, config.testRailProject]);
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
+  const [testDesignConflicts, setTestDesignConflicts] = useState<Array<{ caseId: number; issueKey: string; designScenarioId: string; reason: string; options: string[] }> | null>(null);
   const [launchProjects, setLaunchProjects] = useState<LaunchProjectOption[]>([]);
   const [launchProjectsLoading, setLaunchProjectsLoading] = useState(true);
   const [launchProjectsError, setLaunchProjectsError] = useState<string | null>(null);
@@ -420,6 +422,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [jiraError, setJiraError] = useState<string | null>(null);
   const [jiraDropdownOpen, setJiraDropdownOpen] = useState(false);
   const [jiraSearch, setJiraSearch] = useState('');
+  // Web: the HU picked in step 2 inside the Jira project (no sprint, no status filter).
+  const [selectedJiraIssues, setSelectedJiraIssues] = useState<PickedJiraIssue[]>([]);
+  const selectedJiraIssueKeys = useMemo(() => selectedJiraIssues.map(issue => issue.key), [selectedJiraIssues]);
+  useEffect(() => { setSelectedJiraIssues([]); }, [config.jiraProject]);
   const [jiraDropdownPos, setJiraDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const jiraTriggerRef = useRef<HTMLButtonElement>(null);
   const jiraPanelRef = useRef<HTMLDivElement>(null);
@@ -443,7 +449,6 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
   const [totalScenarios, setTotalScenarios] = useState(0);
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [storiesError, setStoriesError] = useState<string | null>(null);
-  const [sprintMeta, setSprintMeta] = useState<{ id: number; name: string } | null>(null);
   const [blockedScenarios, setBlockedScenarios] = useState<BlockedScenario[]>([]);
   const [adaptiveScenarios, setAdaptiveScenarios] = useState<any[]>([]);
   // expanded story jiraKeys (story-level accordion)
@@ -752,8 +757,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   // ΓöÇΓöÇ Fetch stories when entering Step 3 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const {retry:retryStories}=useRetainedSourceLoad({
-    contextKey:JSON.stringify([config.automationProject,currentProjectType,config.source,config.jiraProject,config.status,activeSprint?.id??null]),
-    active:step===3&&shouldLoadJiraScenarios(config.source)&&!!config.jiraProject&&!!activeSprint&&currentProjectType!=='mobile',
+    contextKey:JSON.stringify([config.automationProject,currentProjectType,config.source,config.jiraProject,[...selectedJiraIssueKeys].sort()]),
+    active:step===3&&shouldLoadJiraScenarios(config.source)&&!!config.jiraProject&&selectedJiraIssueKeys.length>0&&currentProjectType!=='mobile',
     onReset:()=>{
       setStories([]);setStoriesLoading(false);setStoriesError(null);setTotalScenarios(0);
       setBlockedScenarios([]);setAdaptiveScenarios([]);setExpandedStories([]);
@@ -765,16 +770,15 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     setStoriesLoading(true);
     setStoriesError(null);
     },
-    load:()=>{
-    const sprintId=activeSprint?.id;
-    return scenariosProxy.post({
+    load:()=>scenariosProxy.post({
       generationMode: currentProjectType === 'web' ? 'jira_semantic' : undefined,
       projectKey: config.jiraProject,
-      status: config.status,
+      status: '', // no status filter: the BFF drops an empty status
       maxResults: 50,
       appSlug: config.automationProject || undefined,
-      ...(sprintId ? { sprintId } : { activeSprint: true }),
-    });},
+      // Only the picked HU, looked up by key in the project: no sprint, no status filter.
+      selectedIssueKeys: selectedJiraIssueKeys,
+    }),
     onSuccess:data=>{
         for (const _s of (data.stories ?? [])) { for (const _sc of (_s.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'story-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); } }
         for (const _sc of (data.scenarios ?? [])) { console.log('[scenario-id-trace] FRONTEND_RAW=' + JSON.stringify({ bucket: 'flat-scenario', title: _sc?.title ?? '', scenarioId: _sc?.scenarioId ?? '', id: _sc?.id ?? '', sourceIssueKey: _sc?.sourceIssueKey ?? '' })); }
@@ -791,7 +795,6 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
          setStories(normalized.stories);
          setRouteProfile(normalized.routeProfile);
         setTotalScenarios(normalized.totalScenarios);
-        setSprintMeta(normalized.sprint ?? null);
         setBlockedScenarios(normalized.blockedScenarios ?? []);
         setAdaptiveScenarios(normalized.adaptiveScenarios ?? []);
         setExpandedStories(normalized.stories.map(s => s.jiraKey));
@@ -1727,7 +1730,8 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         {jiraError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> No se pudo conectar con Jira</div>}
       </div>
 
-      {config.jiraProject && (
+      {/* Mobile keeps the sprint + status flow; web picks HU straight from the project. */}
+      {config.jiraProject && currentProjectType === 'mobile' && (
         <div>
           <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Sprint activo</label>
           {sprintLoading && (
@@ -1757,7 +1761,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         </div>
       )}
 
-      {config.jiraProject && (
+      {config.jiraProject && currentProjectType === 'mobile' && (
         <div>
           <label className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold mb-1.5 block">Filtro de estado</label>
           <select value={config.status} onChange={e => setConfig(c => ({ ...c, status: e.target.value }))}
@@ -1765,6 +1769,14 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
             {['Desestimado', 'To Do', 'In Progress', 'Done', 'QA', 'En revisión'].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+      )}
+
+      {config.jiraProject && currentProjectType !== 'mobile' && (
+        <JiraStoryPicker
+          projectKey={config.jiraProject}
+          selected={selectedJiraIssues}
+          onChange={setSelectedJiraIssues}
+        />
       )}
     </div>
   );
@@ -1948,9 +1960,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       if (isMobileProject) {
         return infrastructureReady;
       }
-      if (config.source === 'jira') return config.jiraProject && config.sprint;
+      // Web: at least one HU picked inside the Jira project.
+      if (config.source === 'jira') return config.jiraProject && selectedJiraIssueKeys.length > 0;
       if (config.source === 'testrail') return config.testRailProject;
-      return config.jiraProject && config.sprint && config.testRailProject;
+      return config.jiraProject && selectedJiraIssueKeys.length > 0 && config.testRailProject;
     }
     if (step === 3) {
       if (isMobileProject) {
@@ -2022,7 +2035,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     }
   };
 
-  const handleLaunch = async () => {
+  const handleLaunch = async (resolutionOverride?: Record<string, 'sync_and_run' | 'run_as_testrail'>) => {
     if(jiraEditing){setLaunchError('Aplica y valida los pasos editados, o cancela la edición antes de ejecutar.');return;}
     const proj = launchProjects.find(p => p.slug === config.automationProject);
     if (proj?.type === 'api') {
@@ -2143,6 +2156,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       sprintName: undefined as string | undefined,
       selectedScenarios: buildLaunchPayloadScenarios(selectedGeneratedScenarios),
       existingTestRailCaseIds: selectedExistingTestRailCaseIds,
+      ...(resolutionOverride ? { testDesignCaseResolutions: resolutionOverride } : {}),
       // Replace only the generated artifact for the admitted case; this does
       // not imply rediscovery and remains independent of case identity.
       overwrite: true,
@@ -2171,6 +2185,22 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         return;
       }
       console.log(`[launch] launch successful launchId=${launchResult.launchId} testRunId=${launchResult.testRunId} cases=${launchResult.publishedCases?.length}`);
+
+      // launch-execution owns the Discovery job; do not start a second generic job.
+      if (launchResult.discoveryJobId) {
+        const activeScenarios = buildActiveScenarioQueue(selectedStories.flatMap((story) => story.scenarios.map((scenario, index) => ({
+          id: String(scenario.scenarioId || scenario.refs || `${story.jiraKey}-${index + 1}`),
+          title: cleanScenarioText(scenario.title),
+          steps: (scenario.custom_steps_separated ?? []).map((step) => cleanScenarioText(step.content)),
+        }))));
+        onLaunch({
+          id: launchResult.discoveryJobId, jobId: launchResult.discoveryJobId,
+          project: proj?.name || 'Proyecto', triggered: 'Carlos M.', startedAt: 'Hace 0m',
+          progress: 0, total: totalSelected, completed: 0, passed: 0, failed: 0,
+          currentTest: '', eta: '—', status: 'running', activeScenarios,
+        });
+        return;
+      }
 
       // Fase 2: (futura) discovery job ΓÇö por ahora solo creamos el job para mantener compatibilidad
 try {
@@ -2262,7 +2292,12 @@ try {
         });
       }
     } catch (e: any) {
-      setLaunchError(e.message ?? 'Error al crear la ejecución');
+      const conflicts = e?.responseBody?.error === 'TEST_DESIGN_CASE_CONTENT_DIVERGED' && Array.isArray(e?.responseBody?.conflicts)
+        ? e.responseBody.conflicts : null;
+      if (conflicts) {
+        setTestDesignConflicts(conflicts);
+        setLaunchError(null);
+      } else setLaunchError(e.message ?? 'Error al crear la ejecución');
     } finally {
       setIsLaunching(false);
     }
@@ -2772,14 +2807,14 @@ try {
                 <div className="relative">
                   <div className="text-[10px] uppercase tracking-[0.2em] text-white/60 font-semibold mb-1">Paso tres · Generando escenarios</div>
                   <h2 className="text-[28px] font-medium leading-tight mb-1" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>{config.jiraProject}</h2>
-                  <div className="text-[12px] text-white/60 font-mono mb-6">{sprintMeta?.name ?? activeSprint?.name ?? 'Sprint activo'} · estado: {config.status}</div>
+                  <div className="text-[12px] text-white/60 font-mono mb-6">{selectedJiraIssueKeys.join(' · ')}</div>
                   <div className="h-2 bg-white/10 rounded-full overflow-hidden mb-6">
                     <div className="h-full rounded-full relative overflow-hidden" style={{ width: '65%', background: `linear-gradient(90deg, ${C.green}, #5EC470)` }}>
                       <div className="absolute inset-0 opacity-60" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)', animation: 'shimmer 1.6s linear infinite' }} />
                     </div>
                   </div>
                   <div className="space-y-2.5">
-                    {['Consultando historias del sprint activo...', `Aplicando filtro de estado: ${config.status}`, 'Generando escenarios con IA...'].map((msg, i) => (
+                    {[`Consultando ${selectedJiraIssueKeys.length === 1 ? 'la HU seleccionada' : `las ${selectedJiraIssueKeys.length} HU seleccionadas`}...`, 'Generando escenarios con IA...'].map((msg, i) => (
                       <div key={i} className="flex items-center gap-2.5 text-[12px]">
                         <Loader2 size={13} className="text-[#5EC470] animate-spin flex-shrink-0" style={{ animationDelay: `${i * 200}ms` }} />
                         <span className="text-white/80">{msg}</span>
@@ -2840,12 +2875,10 @@ try {
                                 : 'Sin escenarios para este filtro'
                             }
                           </h2>
-                          {sprintMeta && (
-                            <div className="flex items-center gap-2 mt-1 text-[11px] text-[#8B999D]">
-                              <span className="w-1.5 h-1.5 rounded-full bg-[#48A157] animate-pulse" />
-                              {sprintMeta.name} · {config.jiraProject} · estado: {config.status}
-                            </div>
-                          )}
+                          <div className="flex items-center gap-2 mt-1 text-[11px] text-[#8B999D]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#48A157] animate-pulse" />
+                            {config.jiraProject} · {selectedJiraIssueKeys.length} HU seleccionada{selectedJiraIssueKeys.length === 1 ? '' : 's'}
+                          </div>
                         </div>
                         {totalScenarios > 0 && (
                           <div className="flex items-center gap-3">
@@ -2944,7 +2977,7 @@ try {
                         </div>
                       ) : (
                         <div className="text-center">
-                          <div className="text-[13px] text-[#8B999D]">No hay escenarios con estado "{config.status}" en el sprint activo.</div>
+                          <div className="text-[13px] text-[#8B999D]">No se generaron escenarios para las HU seleccionadas.</div>
                         </div>
                       )}
                     </div>
@@ -3504,10 +3537,16 @@ try {
               </div>
             </div>
             <div className="p-8 space-y-3">
-              {config.sprint && (
+              {config.sprint && currentProjectType === 'mobile' && (
                 <div className="flex items-center justify-between py-3 border-b border-[#F4F1EA]">
                   <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium">Sprint Jira</span>
                   <span className="text-[13px] font-semibold text-[#1a1f2e]">{config.sprint}</span>
+                </div>
+              )}
+              {currentProjectType !== 'mobile' && selectedJiraIssueKeys.length > 0 && (
+                <div className="flex items-center justify-between gap-4 py-3 border-b border-[#F4F1EA]">
+                  <span className="text-[11px] uppercase tracking-wider text-[#8B999D] font-medium flex-shrink-0">HU Jira</span>
+                  <span className="text-[13px] font-semibold text-[#1a1f2e] font-mono text-right truncate">{selectedJiraIssueKeys.join(', ')}</span>
                 </div>
               )}
               {currentTR && (
@@ -3602,7 +3641,29 @@ try {
                   <AlertCircle size={12} /> {launchError}
                 </div>
               )}
-              <button onClick={handleLaunch} disabled={isLaunching || Boolean(getStep3InputValidationMessage())}
+              {testDesignConflicts && (
+                <div role="alertdialog" aria-label="Casos de Diseño modificados" className="max-w-[520px] rounded-xl border border-[#E8C27A] bg-[#FFF9EA] p-4 text-left text-[12px] text-[#5C4B2A]">
+                  <div className="font-semibold">Casos TestRail vinculados a Diseño no coinciden</div>
+                  <p className="mt-1">El contenido o el proyecto cambió desde la publicación. Sincroniza el caso con Diseño para usar el escenario Jira, o ejecútalo como caso TestRail normal.</p>
+                  <div className="mt-2 max-h-32 overflow-auto space-y-1">
+                    {testDesignConflicts.map(conflict => <div key={conflict.caseId}>C{conflict.caseId} · {conflict.issueKey} · Diseño {conflict.designScenarioId}</div>)}
+                  </div>
+                  <div className="mt-3 flex flex-wrap justify-end gap-2">
+                    <button type="button" onClick={() => {
+                      const resolutions = Object.fromEntries(testDesignConflicts.map(conflict => [String(conflict.caseId), 'run_as_testrail' as const]));
+                      setTestDesignConflicts(null); void handleLaunch(resolutions);
+                    }} className="rounded-full border border-[#C9B98F] px-3 py-1.5 font-medium">Ejecutar como TestRail normal</button>
+                    {testDesignConflicts.every(conflict => conflict.options.includes('sync_and_run')) && (
+                      <button type="button" onClick={() => {
+                        const resolutions = Object.fromEntries(testDesignConflicts.map(conflict => [String(conflict.caseId), 'sync_and_run' as const]));
+                        setTestDesignConflicts(null); void handleLaunch(resolutions);
+                      }} className="rounded-full bg-[#48A157] px-3 py-1.5 font-semibold text-white">Sincronizar y usar Jira</button>
+                    )}
+                    <button type="button" onClick={() => setTestDesignConflicts(null)} className="rounded-full px-3 py-1.5">Cancelar</button>
+                  </div>
+                </div>
+              )}
+              <button onClick={() => void handleLaunch()} disabled={isLaunching || Boolean(getStep3InputValidationMessage())}
                 className="bg-gradient-to-r from-[#48A157] to-[#357a42] hover:from-[#5EC470] hover:to-[#48A157] disabled:from-[#BABEC3] disabled:to-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-6 py-2.5 rounded-full transition flex items-center gap-1.5 shadow-lg shadow-[#48A157]/30 group">
                 {isLaunching ? <><Loader2 size={13} className="animate-spin" /> Enviando a ejecución...</> : <><Rocket size={13} className="group-hover:rotate-12 transition" /> Lanzar ejecución</>}
               </button>

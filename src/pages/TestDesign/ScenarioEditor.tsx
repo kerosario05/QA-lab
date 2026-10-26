@@ -18,10 +18,13 @@ import type {
 } from '../../services/test-design';
 import {
   caseData,
+  generatedContractIssues,
+  hasValidGeneratedContract,
   isSelectedForPublish,
   JIRA_PUBLISH_ENABLED,
   moveItem,
   pendingData,
+  scenarioReviewWarnings,
   PRIORITY_LABELS,
   scenarioProblems,
   syncData,
@@ -44,10 +47,8 @@ interface ScenarioEditorProps {
   defaultOpen?: boolean;
   onChange: (next: TestDesignScenario) => void;
   onMove: (delta: -1 | 1) => void;
-  onDuplicate: () => void;
+  onDuplicate?: () => void;
   onDelete: () => void;
-  onPublishTestRail?: () => void;
-  publishDisabledReason?: string;
 }
 
 // The expanded editor is dark; only the one-line header stays light.
@@ -76,7 +77,7 @@ function Toggle({
       }}
       title={checked ? `Se publicará en ${label}` : `No se publicará en ${label}`}
       className={cn(
-        'px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider border transition',
+        'shrink-0 whitespace-nowrap px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider border transition',
         checked ? 'bg-[#48A157] border-[#48A157] text-white' : 'bg-white border-[#E8EBEC] text-[#8B999D]',
         disabled ? 'cursor-default' : 'hover:border-[#48A157]',
       )}
@@ -211,11 +212,11 @@ export function ScenarioEditor({
   onMove,
   onDuplicate,
   onDelete,
-  onPublishTestRail,
-  publishDisabledReason,
 }: ScenarioEditorProps) {
   const [open, setOpen] = useState(defaultOpen);
   const problems = scenarioProblems(scenario);
+  const contractIssues = generatedContractIssues(scenario);
+  const reviewWarnings = scenarioReviewWarnings(scenario);
   const selected = isSelectedForPublish(scenario);
   const data = caseData(scenario);
   const missing = pendingData(scenario).length;
@@ -234,7 +235,7 @@ export function ScenarioEditor({
     <div
       className={cn(
         'rounded-2xl border bg-white transition overflow-hidden',
-        selected ? 'border-[#E8EBEC]' : 'border-dashed border-[#E8EBEC] opacity-75',
+        'border-[#E8EBEC]',
       )}
     >
       <div
@@ -247,15 +248,15 @@ export function ScenarioEditor({
             setOpen((v) => !v);
           }
         }}
-        className="flex items-center gap-3 px-4 py-3 cursor-pointer"
+        className="flex items-center gap-3 px-4 py-3 cursor-pointer bg-white"
       >
         {open ? <ChevronDown size={14} className="text-[#8B999D]" /> : <ChevronRight size={14} className="text-[#8B999D]" />}
         <span className="text-[11px] font-semibold text-[#8B999D] w-5">{index + 1}</span>
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium text-[#1a1f2e] truncate">
+          <div className="text-[13px] font-medium text-[#1a1f2e] line-clamp-2" title={scenario.title}>
             {scenario.title || <span className="text-[#B4463C]">Sin título</span>}
           </div>
-          <div className="flex items-center gap-2 mt-0.5 text-[10px] text-[#8B999D]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[10px] text-[#8B999D]">
             <span>{TYPE_LABELS[scenario.type]}</span>
             <span>·</span>
             <span>{PRIORITY_LABELS[scenario.priority]}</span>
@@ -263,6 +264,11 @@ export function ScenarioEditor({
             <span>{scenario.steps.length} {scenario.steps.length === 1 ? 'paso' : 'pasos'}</span>
             <span>·</span>
             <span>{scenario.origin === 'ai' ? (scenario.edited ? 'IA, editado' : 'IA') : 'Manual'}</span>
+            {scenario.jiraSourceScenarioId && (
+              <span className={cn('px-1.5 rounded font-semibold', hasValidGeneratedContract(scenario) ? 'bg-[#E8F5EA] text-[#2F7D46]' : 'bg-[#FFF4D6] text-[#B7791F]')}>
+                {hasValidGeneratedContract(scenario) ? 'Validación estructural correcta' : 'Requiere edición'}
+              </span>
+            )}
             {data.length > 0 && (
               <span className={cn("px-1.5 rounded font-semibold", missing ? "bg-[#FFF4D6] text-[#B7791F]" : "bg-[#E8F5EA] text-[#2F7D46]")}>
                 {missing ? `${missing} por completar` : `${data.length} ${data.length === 1 ? "dato completo" : "datos completos"}`}
@@ -276,22 +282,29 @@ export function ScenarioEditor({
                 <AlertTriangle size={11} /> {problems.length === 1 ? problems[0] : `${problems.length} pendientes`}
               </span>
             )}
-            {scenario.generationWarnings && scenario.generationWarnings.length > 0 && (
-              <span className="flex items-center gap-1 text-[#B7791F]" title={scenario.generationWarnings.join('\n')}>
+            {reviewWarnings.length > 0 && (
+              <span className="flex items-center gap-1 text-[#B7791F]" title={reviewWarnings.join('\n')}>
                 <AlertTriangle size={11} /> Requiere revisión
               </span>
             )}
           </div>
         </div>
-        <button
-          type="button"
-          disabled={readOnly || (scenario.testRailCaseId !== null && scenario.testRailDirty !== true) || Boolean(publishDisabledReason) || !onPublishTestRail}
-          title={scenario.testRailCaseId !== null && scenario.testRailDirty !== true ? `Ya publicado: C${scenario.testRailCaseId}` : publishDisabledReason}
-          onClick={(event) => { event.stopPropagation(); onPublishTestRail?.(); }}
-          className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-[#48A157] text-white disabled:bg-[#BABEC3] disabled:cursor-not-allowed"
-        >
-          {scenario.testRailCaseId !== null ? (scenario.testRailDirty ? 'Actualizar en TestRail' : 'Publicado en TestRail') : 'Subir a TestRail'}
-        </button>
+        <label className="shrink-0 inline-flex items-center gap-1.5 text-[10px] font-semibold text-[#58646D]" onClick={(event) => event.stopPropagation()}>
+          <input
+            type="checkbox"
+            aria-label={`Seleccionar ${scenario.title || 'escenario'} para publicar o actualizar en TestRail`}
+            checked={scenario.selectedForTestRail}
+            disabled={readOnly}
+            onChange={(event) => patch({ selectedForTestRail: event.target.checked })}
+            className="h-3.5 w-3.5 accent-[#48A157]"
+          />
+          <span>TestRail</span>
+        </label>
+        {scenario.testRailCaseId !== null && (
+          <span className="shrink-0 whitespace-nowrap px-2 py-1 rounded-full text-[10px] font-semibold bg-[#EEF3FA] text-[#104B99]">
+            C{scenario.testRailCaseId} · {scenario.testRailDirty ? 'Pendiente de actualizar' : 'Publicado'}
+          </span>
+        )}
         {JIRA_PUBLISH_ENABLED && (
           <Toggle label="Jira" checked={scenario.selectedForJira} disabled={readOnly} onChange={(v) => patch({ selectedForJira: v })} />
         )}
@@ -303,9 +316,11 @@ export function ScenarioEditor({
             <IconButton title="Bajar escenario" disabled={index === count - 1} onClick={() => onMove(1)}>
               <ArrowDown size={13} />
             </IconButton>
-            <IconButton title="Duplicar escenario" onClick={onDuplicate}>
-              <Copy size={13} />
-            </IconButton>
+            {onDuplicate && (
+              <IconButton title="Duplicar escenario" onClick={onDuplicate}>
+                <Copy size={13} />
+              </IconButton>
+            )}
             <IconButton
               title={scenario.testRailCaseId !== null ? 'Eliminar del borrador (el caso seguirá en TestRail)' : 'Eliminar escenario'}
               danger
@@ -319,6 +334,22 @@ export function ScenarioEditor({
 
       {open && (
         <div className="px-4 pb-4 pt-1 space-y-3 bg-[#0F1218] text-[#E6E9EF] rounded-b-2xl">
+          {(reviewWarnings.length > 0 || contractIssues.length > 0) && (
+            <div className="mt-3 rounded-lg border border-[#6C542B] bg-[#2B2418] px-3 py-2 text-[11px] text-[#F0C46A]" role="status">
+              <div className="font-semibold">Revisión de ejecución</div>
+              {scenario.acceptanceCriteriaRefs && scenario.acceptanceCriteriaRefs.length > 0 && (
+                <div className="mt-1">Criterios cubiertos por este escenario: {scenario.acceptanceCriteriaRefs.join(', ')}</div>
+              )}
+              <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                {reviewWarnings.map((warning, warningIndex) => <li key={`warning-${warningIndex}`}>{warning}</li>)}
+                {contractIssues.map((issue, issueIndex) => (
+                  <li key={`contract-${issue.code}-${issue.stepIndex ?? issueIndex}`} title={issue.code}>
+                    {issue.stepIndex ? `Paso ${issue.stepIndex}: ` : issue.location === 'expected_result' ? 'Resultado esperado: ' : ''}{issue.guidance}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <label className="block pt-3">
             <span className={labelClass}>Título</span>
             <input
@@ -367,6 +398,9 @@ export function ScenarioEditor({
                 onChange={(e) => patch({ preconditions: e.target.value })}
                 disabled={readOnly}
                 rows={2}
+                placeholder={scenario.jiraSourceScenarioId || scenario.jiraSourceScenario
+                  ? 'Sin precondiciones externas: el escenario incluye el acceso y la navegación en sus pasos.'
+                  : 'Precondiciones necesarias antes de iniciar el caso'}
                 className={cn(inputClass, 'mt-1 resize-y')}
               />
             </label>

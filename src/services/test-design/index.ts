@@ -40,6 +40,7 @@ export type CreateDraftPayload = {
 
 export type UpdateDraftPayload = {
   projectSlug?: string;
+  confirmProjectChange?: boolean;
   title?: string | null;
   instructions?: string | null;
   testRail?: Partial<TestDesignTestRailTarget>;

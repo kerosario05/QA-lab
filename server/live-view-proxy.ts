@@ -2,6 +2,7 @@ import https from 'node:https';
 import http from 'node:http';
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { clientIpOf } from './engine-auth';
 
 /**
  * Tunnels `/api/recordings/:recordingId/live` WebSocket upgrades to the engine.
@@ -14,6 +15,12 @@ import type { Duplex } from 'node:stream';
  */
 
 const LIVE_PATH = /^\/api\/recordings\/[^/?#]+\/live(?:[?#].*)?$/;
+/**
+ * The same tunnel carries the local agent's WebSockets: the agent on a user's PC reaches the
+ * engine through this port, the only one the network lets through. The engine authenticates
+ * the agent itself (agent id, optional LOCAL_AGENT_KEY, one-time token per browser).
+ */
+const LOCAL_AGENT_PATH = /^\/api\/local-agent\/(?:control|cdp)(?:[?#].*)?$/;
 const HOP_BY_HOP = new Set(['host', 'connection', 'upgrade', 'keep-alive', 'proxy-connection', 'transfer-encoding']);
 
 function reject(socket: Duplex, status: number, message: string): void {
@@ -22,7 +29,7 @@ function reject(socket: Duplex, status: number, message: string): void {
 }
 
 export function isLiveViewUpgrade(url: string | undefined): boolean {
-  return Boolean(url && LIVE_PATH.test(url));
+  return Boolean(url && (LIVE_PATH.test(url) || LOCAL_AGENT_PATH.test(url)));
 }
 
 export function attachLiveViewProxy(server: Server, engineBaseUrl: () => string): void {
@@ -41,6 +48,11 @@ export function attachLiveViewProxy(server: Server, engineBaseUrl: () => string)
     }
     headers.connection = 'Upgrade';
     headers.upgrade = 'websocket';
+    // The engine pairs agents and panel users by the PC's IP, but only ever sees 127.0.0.1.
+    // Always the socket's own address: a client-sent X-Forwarded-For is never passed on.
+    delete headers['x-forwarded-for'];
+    const ip = clientIpOf(req);
+    if (ip) headers['x-forwarded-for'] = ip;
 
     const upstream = (target.protocol === 'https:' ? https : http).request({
       protocol: target.protocol,

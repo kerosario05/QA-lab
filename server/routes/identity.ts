@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { engineBaseUrl, engineHeaders } from '../engine-auth';
+import { fetchEngineRequest } from './identity-proxy-fetch';
 
 /**
  * Transparent proxy for the engine's identity surface.
@@ -15,7 +16,7 @@ export const identityRouter = Router();
 
 // /api/test-design is not identity, but it is the same pass-through contract: the
 // engine owns the module (drafts, generation, publishing) and enforces its permissions.
-const PREFIXES = ['/api/auth', '/api/users', '/api/roles', '/api/permissions', '/api/test-design'];
+const PREFIXES = ['/api/auth', '/api/users', '/api/roles', '/api/permissions', '/api/test-design', '/api/local-agent'];
 
 async function proxy(req: Request, res: Response): Promise<void> {
   const base = engineBaseUrl();
@@ -32,27 +33,29 @@ async function proxy(req: Request, res: Response): Promise<void> {
   const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
 
   try {
-    const upstream = await fetch(target, {
+    // Retry only idempotent reads on transient failures. Generation and publish
+    // requests are never replayed automatically, even if they appear to time out.
+    const upstream = await fetchEngineRequest(fetch, target, {
       method: req.method,
       headers: {
         'Content-Type': 'application/json',
         ...engineHeaders(),
       },
       body: hasBody ? JSON.stringify(req.body ?? {}) : undefined,
-    });
+    }, { retryRead: !hasBody, timeoutMs: hasBody ? 6 * 60_000 : 45_000 });
 
     const text = await upstream.text();
     res.status(upstream.status);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.send(text || '{}');
   } catch (err: any) {
-    // A refused connection here almost always means the engine is not running;
-    // say so plainly instead of surfacing a bare fetch error in the login box.
-    const message = err?.cause?.code === 'ECONNREFUSED'
-      ? `No se pudo conectar con el motor de automatización en ${base}. ¿Está corriendo?`
-      : err?.message ?? String(err);
-    console.error(`[identity-proxy] ${req.method} ${target} -> ${message}`);
-    res.status(502).json({ ok: false, error: 'engine_unreachable', message });
+    const code = err?.cause?.code ?? (err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'ETIMEDOUT' : 'UNKNOWN');
+    const message = code === 'ETIMEDOUT'
+      ? 'El motor de automatización tardó demasiado en responder. Intenta de nuevo; la solicitud no se reenvió automáticamente.'
+      : `No se pudo conectar con el motor de automatización (${code}). Verifica que el backend esté activo y que SCENARIO_PREVIEW_BASE_URL apunte al servicio correcto.`;
+    // Do not log query strings or request bodies; requests can carry test data.
+    console.error(`[identity-proxy] ${req.method.toUpperCase()} ${req.path} -> ${code}`);
+    res.status(502).json({ ok: false, error: 'engine_unreachable', message, retryable: !hasBody });
   }
 }
 

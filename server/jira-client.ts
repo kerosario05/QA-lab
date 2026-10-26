@@ -190,6 +190,18 @@ export class JiraClient {
     });
   }
 
+  /** Most recently updated issues of a project (sub-tasks left out), for picking stories without a sprint. */
+  async listProjectIssues(projectKey: string, maxResults = 50): Promise<Array<{ id: string; key: string; summary: string; issueType?: string; status?: string }>> {
+    const normalizedProjectKey = projectKey.trim();
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(normalizedProjectKey)) {
+      throw new JiraClientError('Invalid Jira project key', 400);
+    }
+    return this.searchByJql(
+      `project = ${normalizedProjectKey} AND issuetype not in subTaskIssueTypes() ORDER BY updated DESC`,
+      maxResults,
+    );
+  }
+
   async searchProjectIssues(projectKey: string, query: string): Promise<Array<{ id: string; key: string; summary: string; issueType?: string; status?: string }>> {
     const normalizedProjectKey = projectKey.trim();
     const normalizedQuery = query.trim();

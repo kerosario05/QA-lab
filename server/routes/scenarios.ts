@@ -40,8 +40,13 @@ router.post('/preview', async (req: Request, res: Response) => {
   const sprintId = body?.sprintId ? Number(body.sprintId) : undefined;
   const activeSprint = body?.activeSprint === true || body?.activeSprint === 'true';
   const status = String(body?.status ?? '');
+  const selectedIssueKeys = Array.isArray(body?.selectedIssueKeys)
+    ? body.selectedIssueKeys.filter((key): key is string => typeof key === 'string' && key.trim().length > 0)
+    : [];
+  // Web launches pick stories by key inside the Jira project: no sprint involved.
+  const byIssueKeys = !sprintId && !activeSprint && selectedIssueKeys.length > 0;
 
-  console.log(`[scenario-preview] request projectKey=${projectKey || '—'} sprintId=${sprintId ?? '—'} activeSprint=${activeSprint} status=${status || '—'}`);
+  console.log(`[scenario-preview] request projectKey=${projectKey || '—'} sprintId=${sprintId ?? '—'} activeSprint=${activeSprint} status=${status || '—'} issueKeys=${selectedIssueKeys.join(',') || '—'}`);
   console.log(`[scenario-preview-proxy-in] bodyAppSlug=${body?.appSlug ?? 'undefined'}`);
 
   if (!projectKey) {
@@ -49,8 +54,8 @@ router.post('/preview', async (req: Request, res: Response) => {
     return;
   }
 
-  if (!sprintId && !activeSprint) {
-    sendJson(res, 400, { ok: false, error: 'sprintId or activeSprint is required', errorCode: 'MISSING_SPRINT' });
+  if (!sprintId && !activeSprint && !byIssueKeys) {
+    sendJson(res, 400, { ok: false, error: 'sprintId, activeSprint or selectedIssueKeys is required', errorCode: 'MISSING_SPRINT' });
     return;
   }
 
@@ -64,7 +69,7 @@ router.post('/preview', async (req: Request, res: Response) => {
   const payload: ScenarioPreviewPayload = {
     generationMode: body?.generationMode === 'jira_semantic' ? 'jira_semantic' : undefined,
     projectKey,
-    ...(sprintId ? { sprintId } : { activeSprint: true }),
+    ...(sprintId ? { sprintId } : byIssueKeys ? {} : { activeSprint: true }),
     ...(status ? { status } : {}),
     sourceMode: String(body?.sourceMode ?? body?.mode ?? ''),
     jiraIssueKey: String(body?.jiraIssueKey ?? body?.jiraKey ?? '') || undefined,

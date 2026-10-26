@@ -11,6 +11,8 @@ import { ExecutionClosure } from './pages/ExecutionClosure';
 import DefectChecklist from './pages/DefectChecklist';
 import { parseChecklistRoute } from './pages/DefectChecklist/route';
 import { Ejecuciones } from './pages/Ejecuciones';
+import { LocalAgentProvider } from './components/localAgent/LocalAgentContext';
+import { LocalAgentSetupDialog } from './components/localAgent/LocalAgentSetupDialog';
 import { Configuracion } from './pages/Configuracion';
 import { Usuarios } from './pages/Usuarios';
 import { TestDesign } from './pages/TestDesign';
@@ -66,7 +68,7 @@ const LANDING_ORDER: { id: View; permissions: PermissionKey[] }[] = [
 ];
 
 function Workspace() {
-  const { canAny } = useAuth();
+  const { canAny, can } = useAuth();
   const [view, setView] = useState<View>('dashboard');
   const [liveRun, setLiveRun] = useState<ActiveRun | null>(null);
   const [closingExecution, setClosingExecution] = useState<any>(null);
@@ -179,6 +181,9 @@ function Workspace() {
   };
 
   return (
+    // Right after login: is the recording Chromium ready on this PC? (installs it if not)
+    <LocalAgentProvider enabled={can('recordings.create')}>
+    <LocalAgentSetupDialog />
     <div className="h-screen flex" style={{ background: C.canvas, fontFamily: '"Geist", system-ui, -apple-system, sans-serif' }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
@@ -276,5 +281,6 @@ function Workspace() {
         </div>
       </main>
     </div>
+    </LocalAgentProvider>
   );
 }

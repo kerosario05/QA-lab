@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -31,13 +31,16 @@ import { useDraftEditor, type SaveState } from './useDraftEditor';
 import { PublishDialog, type PublishDestination } from './PublishDialog';
 import {
   countSelection,
-  duplicateScenario,
+  currentGeneratedScenarios,
+  hasValidGeneratedContract,
+  mergeScenarioSubset,
   moveItem,
-  newScenario,
   pendingData,
   JIRA_PUBLISH_ENABLED,
   setSelection,
+  replaceScenarioSubset,
   sumCounts,
+  uncoveredAcceptanceCriteria,
   type Destination,
 } from './scenario-utils';
 
@@ -70,10 +73,19 @@ function StoryStatus({ story }: { story: TestDesignDraftStory }) {
     case 'failed':
       return <XCircle size={13} className="text-[#B4463C]" />;
     case 'ready':
-      return <CheckCircle2 size={13} className="text-[#48A157]" />;
+      return uncoveredAcceptanceCriteria(currentGeneratedScenarios(story.scenarios), story.generationError ?? '').length > 0
+        ? <AlertTriangle size={13} className="text-[#B7791F]" aria-label="Cobertura pendiente" />
+        : <CheckCircle2 size={13} className="text-[#48A157]" />;
     default:
       return <CircleDashed size={13} className="text-[#8B999D]" />;
   }
+}
+
+function formatElapsedGeneration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = String(seconds % 60).padStart(2, '0');
+  return minutes > 0 ? `${minutes} min ${remainder} s` : `${seconds} s`;
 }
 
 export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
@@ -88,18 +100,23 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
   const [showDestination, setShowDestination] = useState(false);
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenInstructions, setRegenInstructions] = useState('');
-  const [openScenarioId, setOpenScenarioId] = useState<string | null>(null);
   const [publishing, setPublishing] = useState<PublishDestination | null>(null);
-  const [publishScenarioIds, setPublishScenarioIds] = useState<string[] | undefined>();
   const [automationProjects, setAutomationProjects] = useState<ProjectRef[]>([]);
   const [projectSlug, setProjectSlug] = useState('');
+  const [generationClock, setGenerationClock] = useState(() => Date.now());
+  const generationStartedAt = useRef(new Map<string, number>());
 
   useEffect(() => {
-    if (draft?.projectSlug) return;
+    let active = true;
     projectsRefApi.list()
-      .then((projects) => setAutomationProjects(projects.filter((project) => project.enabled)))
-      .catch(() => setAutomationProjects([]));
-  }, [draft?.projectSlug]);
+      .then((projects) => { if (active) setAutomationProjects(projects.filter((project) => project.enabled)); })
+      .catch(() => { if (active) setAutomationProjects([]); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    setProjectSlug(draft?.projectSlug ?? '');
+  }, [draft?.id, draft?.projectSlug]);
 
   const editable =
     can('testdesign.generate') && !editor.forbidden && Boolean(draft) && draft!.status !== 'archived';
@@ -115,14 +132,48 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
 
   // Falls back to the first story when none is chosen yet or the chosen one was removed.
   const story = draft?.stories.find((s) => s.id === activeStoryId) ?? draft?.stories[0] ?? null;
+  const anyGenerating = Boolean(draft?.stories.some((s) => s.generationStatus === 'generating'));
+  useEffect(() => {
+    const generatingStories = (draft?.stories ?? []).filter((item) => item.generationStatus === 'generating');
+    const activeIds = new Set(generatingStories.map((item) => item.id));
+    for (const id of generationStartedAt.current.keys()) {
+      if (!activeIds.has(id)) generationStartedAt.current.delete(id);
+    }
+    for (const item of generatingStories) {
+      if (generationStartedAt.current.has(item.id)) continue;
+      // The repository updates `updatedAt` when it persists the `generating`
+      // status, so it is the server-side start time and remains accurate after
+      // reopening the draft. Keep the first observed value across polling.
+      const startedAt = Date.parse(item.updatedAt);
+      if (Number.isFinite(startedAt)) generationStartedAt.current.set(item.id, startedAt);
+    }
+  }, [draft?.stories]);
+  useEffect(() => {
+    if (!anyGenerating) return;
+    const tick = () => setGenerationClock(Date.now());
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [anyGenerating]);
+  const activeGenerationStartedAt = story?.generationStatus === 'generating'
+    ? generationStartedAt.current.get(story.id) ?? Date.parse(story.updatedAt)
+    : Number.NaN;
+  const generationElapsed = Number.isFinite(activeGenerationStartedAt)
+    ? formatElapsedGeneration(generationClock - activeGenerationStartedAt)
+    : null;
   const storyScenarios = story ? scenarios[story.id] ?? story.scenarios : [];
-
-  const perStory = useMemo(
-    () => Object.fromEntries((draft?.stories ?? []).map((s) => [s.id, countSelection(scenarios[s.id] ?? s.scenarios)])),
+  const generatedScenarios = currentGeneratedScenarios(storyScenarios);
+  const generatedScenariosByStory = useMemo(
+    () => Object.fromEntries((draft?.stories ?? []).map((s) => [s.id, currentGeneratedScenarios(scenarios[s.id] ?? s.scenarios)])),
     [draft, scenarios],
   );
+
+  const perStory = useMemo(
+    () => Object.fromEntries((draft?.stories ?? []).map((s) => [s.id, countSelection(generatedScenariosByStory[s.id] ?? [])])),
+    [draft, generatedScenariosByStory],
+  );
   const totals = sumCounts(Object.values(perStory));
-  const hasPublishedTestRailCases = Boolean(draft?.stories.some(s => s.scenarios.some(sc => sc.testRailCaseId !== null)));
+  const hasPublishedTestRailCases = Boolean(draft?.stories.some(s => currentGeneratedScenarios(scenarios[s.id] ?? s.scenarios).some(sc => sc.testRailCaseId !== null)));
   const mayCheckTestRail = can('testdesign.publish_testrail');
   useEffect(() => {
     if (!hasPublishedTestRailCases || !mayCheckTestRail) return;
@@ -142,11 +193,12 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
       }
     };
     void reconcile();
-    window.addEventListener('focus', reconcile);
-    return () => { disposed = true; window.removeEventListener('focus', reconcile); };
+    // Reconcile once when opening the workspace. Returning to the browser tab must
+    // not replace the user's active draft view with a background TestRail refresh.
+    return () => { disposed = true; };
   }, [draftId, hasPublishedTestRailCases, mayCheckTestRail, editor.flush, editor.applyServerDraft]);
   const pendingDataCount = useMemo(
-    () => (draft?.stories ?? []).reduce((n, s) => n + (scenarios[s.id] ?? s.scenarios).reduce((m, sc) => m + pendingData(sc).length, 0), 0),
+    () => (draft?.stories ?? []).reduce((n, s) => n + currentGeneratedScenarios(scenarios[s.id] ?? s.scenarios).reduce((m, sc) => m + pendingData(sc).length, 0), 0),
     [draft, scenarios],
   );
 
@@ -188,6 +240,9 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
 
   const addStories = () =>
     run(async () => {
+      if (!draft?.projectSlug || projectSlug !== draft.projectSlug) {
+        throw new Error('Guarda el proyecto de automatización antes de agregar historias y generar sus escenarios.');
+      }
       const updated = await testDesignApi.updateDraft(draftId, { addIssues: newStories });
       setNewStories([]);
       setShowAddStories(false);
@@ -217,8 +272,24 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
 
   const linkKnowledgeProject = () =>
     run(async () => {
-      if (!projectSlug) return;
-      editor.applyServerDraft(await testDesignApi.updateDraft(draftId, { projectSlug }));
+      if (!projectSlug || !draft) return;
+      const projectChanged = projectSlug.toLocaleLowerCase() !== (draft.projectSlug ?? '').toLocaleLowerCase();
+      if (!projectChanged) return;
+      await editor.flush();
+      const existingScenarioCount = draft.stories.reduce(
+        (count, item) => count + (scenarios[item.id] ?? item.scenarios).length,
+        0,
+      );
+      if (existingScenarioCount > 0 && !window.confirm(
+        `Este borrador contiene ${existingScenarioCount} escenario(s). El nuevo proyecto se usará en las próximas generaciones; los escenarios existentes conservarán su proyecto de origen para publicarse y ejecutarse. ¿Guardar el cambio?`,
+      )) {
+        setProjectSlug(draft.projectSlug ?? '');
+        return;
+      }
+      editor.applyServerDraft(await testDesignApi.updateDraft(draftId, {
+        projectSlug,
+        ...(existingScenarioCount > 0 ? { confirmProjectChange: true } : {}),
+      }));
     });
 
   if (editor.loadError && !draft) {
@@ -247,26 +318,36 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
 
   const pendingCount = draft.stories.filter((s) => s.generationStatus === 'pending').length;
   const knowledgeProfileReady = Boolean(draft.projectSlug);
+  const knowledgeProfileDirty = projectSlug.toLocaleLowerCase() !== (draft.projectSlug ?? '').toLocaleLowerCase();
+  const knowledgeProfileName = automationProjects.find((project) => project.slug === draft.projectSlug)?.name ?? draft.projectSlug;
+  const scenarioProfiles = new Set(generatedScenarios.map(scenario => scenario.knowledgeProfileSlug ?? draft.projectSlug ?? ''));
+  const storyDataProjectSlug = scenarioProfiles.size === 1 ? [...scenarioProfiles][0] || undefined : undefined;
   const destinationLabel = draft.testRail.sectionId
     ? testRail.sectionName ?? `Sección ${draft.testRail.sectionId}`
     : 'Sin sección de TestRail';
   const counts = story ? perStory[story.id] : null;
+  const contractValidCount = generatedScenarios.filter(hasValidGeneratedContract).length;
+  const needsEditingCount = generatedScenarios.length - contractValidCount;
+  const missingAcceptanceCriteria = uncoveredAcceptanceCriteria(generatedScenarios, story?.generationError ?? '');
 
   const commonBlock = !editable
     ? 'Solo lectura'
     : editor.anyGenerating
       ? 'Espera a que termine la generación'
-      : undefined;
+      : knowledgeProfileDirty
+        ? 'Guarda el cambio de proyecto antes de continuar'
+        : undefined;
   const publishTestRailReason =
     commonBlock ??
     (!draft.testRail.sectionId
       ? 'Elige la sección de TestRail del borrador (cambiar destino)'
-      : !Object.values(scenarios).flat().some(s => s.selectedForTestRail && (s.testRailCaseId === null || s.testRailDirty === true))
+      : !Object.values(generatedScenariosByStory).flat().some(s => s.selectedForTestRail && (s.testRailCaseId === null || s.testRailDirty === true))
         ? 'No hay escenarios seleccionados para TestRail'
         : undefined);
   const publishJiraReason = commonBlock ?? (totals.jira === 0 ? 'No hay escenarios seleccionados para Jira' : undefined);
 
-  const bulk = (destination: Destination, value: boolean) => setStoryScenarios(current => setSelection(current, destination, value));
+  const bulk = (destination: Destination, value: boolean) => setStoryScenarios(current =>
+    mergeScenarioSubset(current, setSelection(currentGeneratedScenarios(current), destination, value)));
 
   return (
     <div className="p-7 space-y-5" style={{ background: C.canvas, minHeight: '100%' }}>
@@ -306,8 +387,8 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
           {editable && pendingCount > 0 && (
             <button
               onClick={generatePending}
-              disabled={busy || !knowledgeProfileReady}
-              title={!knowledgeProfileReady ? 'Vincula un proyecto para cargar su conocimiento' : undefined}
+              disabled={busy || !knowledgeProfileReady || knowledgeProfileDirty}
+              title={!knowledgeProfileReady ? 'Selecciona y guarda un proyecto para cargar su conocimiento' : knowledgeProfileDirty ? 'Guarda el cambio de proyecto antes de generar' : undefined}
               className="bg-[#1a1f2e] hover:bg-black disabled:bg-[#BABEC3] text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5"
             >
               <Sparkles size={13} /> Generar {pendingCount} pendiente{pendingCount === 1 ? '' : 's'}
@@ -324,32 +405,50 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
         </div>
       )}
 
-      {!knowledgeProfileReady && editable && (
-        <div className="rounded-xl bg-[#FFF8E6] border border-[#F1DFA8] px-4 py-3 text-[12px] text-[#7A5B00] flex flex-wrap items-end gap-3">
-          <div className="flex-1 min-w-[240px]">
-            <div className="font-semibold">Vincula el perfil de conocimiento</div>
-            <div className="mt-1">La generación de escenarios reutiliza las rutas Jira aprendidas en este proyecto.</div>
-            <select
-              aria-label="Proyecto de automatización para conocimiento"
-              value={projectSlug}
-              onChange={(event) => setProjectSlug(event.target.value)}
-              className="mt-2 w-full max-w-md px-3 py-2 rounded-lg border border-[#E8EBEC] bg-white text-[12px] text-[#1a1f2e]"
-            >
-              <option value="">Selecciona un proyecto…</option>
-              {automationProjects.map((project) => (
-                <option key={project.slug} value={project.slug}>{project.name}</option>
-              ))}
-            </select>
+      <div className={`rounded-xl border px-4 py-3 text-[12px] flex flex-wrap items-end gap-3 ${knowledgeProfileReady && !knowledgeProfileDirty ? 'bg-[#F4F8F4] border-[#D7E6D8] text-[#3D6944]' : 'bg-[#FFF8E6] border-[#F1DFA8] text-[#7A5B00]'}`}>
+        <div className="flex-1 min-w-[240px]">
+          <div className="font-semibold">Proyecto de automatización y conocimiento</div>
+          <div className="mt-1">Este perfil define el conocimiento que se carga para generar. Los escenarios guardan el perfil con el que fueron generados.</div>
+          <div className="mt-2 min-w-[240px]">
+            {editable ? (
+              <select
+                aria-label="Proyecto de automatización para conocimiento"
+                value={projectSlug}
+                onChange={(event) => setProjectSlug(event.target.value)}
+                disabled={busy || editor.anyGenerating}
+                className="w-full max-w-md px-3 py-2 rounded-lg border border-[#E8EBEC] bg-white text-[12px] text-[#1a1f2e]"
+              >
+                <option value="">Selecciona un proyecto…</option>
+                {draft.projectSlug && !automationProjects.some(project => project.slug === draft.projectSlug) && (
+                  <option value={draft.projectSlug}>{draft.projectSlug} (actual, no disponible)</option>
+                )}
+                {automationProjects.map((project) => (
+                  <option key={project.slug} value={project.slug}>{project.name}</option>
+                ))}
+              </select>
+            ) : (
+              <div className="px-3 py-2 text-[12px] font-semibold text-[#1a1f2e]">
+                {knowledgeProfileName || 'Sin proyecto vinculado'}
+              </div>
+            )}
+            {knowledgeProfileReady && !knowledgeProfileDirty && (
+              <div className="mt-1 text-[11px] text-[#58646D]">Vinculado: {knowledgeProfileName}</div>
+            )}
+            {knowledgeProfileDirty && (
+              <div className="mt-1 text-[11px] text-[#9A6418]">Cambio pendiente de guardar; la generación está pausada.</div>
+            )}
           </div>
+        </div>
+        {editable && (
           <button
             onClick={linkKnowledgeProject}
-            disabled={busy || !projectSlug}
+            disabled={busy || editor.anyGenerating || !projectSlug || !knowledgeProfileDirty}
             className="bg-[#1a1f2e] disabled:bg-[#BABEC3] text-white text-[12px] font-semibold px-4 py-2 rounded-full"
           >
-            Vincular proyecto
+            {knowledgeProfileDirty ? 'Guardar proyecto' : 'Proyecto guardado'}
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {actionError && (
         <div className="rounded-xl bg-[#FBEDEB] border border-[#F0C9C3] px-4 py-2.5 text-[12px] text-[#B4463C] flex items-start gap-2">
@@ -429,7 +528,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                   </div>
                   {s.generationStatus === 'ready' && c && (
                     <div className="text-[10px] text-[#8B999D] mt-1">
-                      {c.total} casos · {c.testrail} TestRail{JIRA_PUBLISH_ENABLED && ` · ${c.jira} Jira`}
+                      {c.total} generados · {c.testrail} TestRail{JIRA_PUBLISH_ENABLED && ` · ${c.jira} Jira`}
                       {c.blocked > 0 && <span className="text-[#B4463C]"> · {c.blocked} incompletos</span>}
                     </div>
                   )}
@@ -455,7 +554,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                     </button>
                     <button
                       onClick={addStories}
-                      disabled={busy || !knowledgeProfileReady || newStories.length === 0}
+                      disabled={busy || !knowledgeProfileReady || knowledgeProfileDirty || newStories.length === 0}
                       className="bg-[#1a1f2e] disabled:bg-[#BABEC3] text-white text-[11px] font-semibold px-3 py-1.5 rounded-full"
                     >
                       Agregar y generar
@@ -487,7 +586,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                 {editable && story.generationStatus === 'ready' && (
                   <button
                     onClick={() => setRegenOpen((v) => !v)}
-                    disabled={busy || !knowledgeProfileReady}
+                    disabled={busy || !knowledgeProfileReady || knowledgeProfileDirty}
                     className="text-[12px] font-semibold text-[#104B99] hover:bg-[#F4F7FB] px-3 py-1.5 rounded-full flex items-center gap-1.5 shrink-0"
                   >
                     <RefreshCw size={12} /> Regenerar
@@ -498,7 +597,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
               {regenOpen && editable && (
                 <div className="mt-4 rounded-xl bg-[#FAFAF7] p-4 space-y-3">
                   <p className="text-[12px] text-[#58646D]">
-                    Se reemplazan los escenarios de la IA que no editaste. Se conservan los que editaste, los que escribiste a mano y los ya subidos a TestRail.
+                    Al terminar, la vista mostrará los escenarios generados para esta historia. Los elementos fuera de esa generación no aparecerán en la lista ni en la selección para publicar.
                   </p>
                   <textarea
                     value={regenInstructions}
@@ -513,7 +612,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                     </button>
                     <button
                       onClick={regenerate}
-                      disabled={busy || !knowledgeProfileReady}
+                      disabled={busy || !knowledgeProfileReady || knowledgeProfileDirty}
                       className="bg-[#1a1f2e] disabled:bg-[#BABEC3] text-white text-[12px] font-semibold px-4 py-1.5 rounded-full flex items-center gap-1.5"
                     >
                       <Sparkles size={12} /> Regenerar
@@ -525,7 +624,9 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
               {story.generationStatus === 'generating' && (
                 <div className="mt-6 mb-2 flex flex-col items-center gap-2 text-[13px] text-[#58646D]">
                   <Loader2 size={20} className="animate-spin text-[#104B99]" />
-                  Generando escenarios con IA… suele tardar menos de un minuto.
+                  {generationElapsed
+                    ? `Generando escenarios con IA… ${generationElapsed} transcurridos.`
+                    : 'Generando escenarios con IA…'}
                 </div>
               )}
 
@@ -536,7 +637,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                     {story.generationError ?? 'La generación falló'}
                   </span>
                   {editable && (
-                    <button onClick={() => retryStory(story.id)} disabled={busy || !knowledgeProfileReady} className="font-semibold underline shrink-0">
+                    <button onClick={() => retryStory(story.id)} disabled={busy || !knowledgeProfileReady || knowledgeProfileDirty} className="font-semibold underline shrink-0">
                       Reintentar
                     </button>
                   )}
@@ -550,9 +651,11 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
               {story.generationStatus !== 'generating' && counts && (
                 <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px]">
                   <span className="text-[#58646D] font-medium mr-2">
-                    {counts.total} casos · {counts.testrail} a TestRail{JIRA_PUBLISH_ENABLED && ` · ${counts.jira} a Jira`}
+                    {counts.total} escenarios generados · {contractValidCount} con validación estructural correcta · {needsEditingCount} requieren edición
+                    {missingAcceptanceCriteria.length > 0 && <span className="text-[#B7791F]"> · {missingAcceptanceCriteria.length} criterios sin cubrir</span>}
+                    {` · ${counts.testrail} seleccionados para TestRail`}{JIRA_PUBLISH_ENABLED && ` · ${counts.jira} a Jira`}
                   </span>
-                  {editable && storyScenarios.length > 0 && (
+                  {editable && generatedScenarios.length > 0 && (
                     <>
                       <span className="text-[#8B999D]">TestRail:</span>
                       <button onClick={() => bulk('testrail', true)} className="font-semibold text-[#104B99] hover:underline">todos</button>
@@ -573,25 +676,35 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
 
           {story && story.generationStatus !== 'generating' && (
             <div className="space-y-2.5">
-              <StoryDataPanel scenarios={storyScenarios} readOnly={!editable} projectSlug={draft.projectSlug ?? undefined} onChange={setStoryScenarios} />
-              {storyScenarios.map((scenario, index) => (
+              {generatedScenarios.length === 0 && (
+                <div className="rounded-xl border border-[#E8EBEC] bg-white px-4 py-3 text-[12px] text-[#58646D]">
+                  Esta historia todavía no tiene escenarios generados.
+                </div>
+              )}
+              {generatedScenarios.length > 0 && <StoryDataPanel
+                scenarios={generatedScenarios}
+                readOnly={!editable}
+                projectSlug={storyDataProjectSlug}
+                onChange={(update) => setStoryScenarios(current => {
+                  const generated = currentGeneratedScenarios(current);
+                  const changed = typeof update === 'function' ? update(generated) : update;
+                  return mergeScenarioSubset(current, changed);
+                })}
+              />}
+              {generatedScenarios.map((scenario, index) => (
                 <ScenarioEditor
                   key={scenario.id}
                   scenario={scenario}
-                  projectSlug={draft.projectSlug ?? undefined}
+                  projectSlug={scenario.knowledgeProfileSlug ?? draft.projectSlug ?? undefined}
                   index={index}
-                  count={storyScenarios.length}
+                  count={generatedScenarios.length}
                   readOnly={!editable}
-                  publishDisabledReason={commonBlock ?? (!can('testdesign.publish_testrail') ? 'Sin permiso para publicar' : !draft.testRail.sectionId ? 'Elige una sección de TestRail' : undefined)}
-                  onPublishTestRail={() => { setPublishScenarioIds([scenario.id]); setPublishing('testrail'); }}
-                  defaultOpen={scenario.id === openScenarioId}
                   onChange={(next) => setStoryScenarios(current => current.map((s) => (s.id === next.id ? next : s)))}
-                  onMove={(delta) => setStoryScenarios(current => moveItem(current, index, delta))}
-                  onDuplicate={() => {
-                    const copy = duplicateScenario(scenario);
-                    setOpenScenarioId(copy.id);
-                    setStoryScenarios(current => [...current.slice(0, index + 1), copy, ...current.slice(index + 1)]);
-                  }}
+                  onMove={(delta) => setStoryScenarios(current => {
+                    const generated = currentGeneratedScenarios(current);
+                    const generatedIndex = generated.findIndex(item => item.id === scenario.id);
+                    return replaceScenarioSubset(current, moveItem(generated, generatedIndex, delta));
+                  })}
                   onDelete={() => {
                     const note = scenario.testRailCaseId !== null ? ' El caso seguirá existiendo en TestRail.' : '';
                     if (window.confirm(`¿Eliminar "${scenario.title || 'escenario sin título'}" del borrador?${note}`)) {
@@ -600,18 +713,6 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
                   }}
                 />
               ))}
-              {editable && (
-                <button
-                  onClick={() => {
-                    const created = newScenario();
-                    setOpenScenarioId(created.id);
-                    setStoryScenarios(current => [...current, created]);
-                  }}
-                  className="w-full rounded-2xl border border-dashed border-[#BABEC3] py-3 text-[12px] font-semibold text-[#104B99] hover:bg-white flex items-center justify-center gap-1.5"
-                >
-                  <Plus size={13} /> Agregar escenario manual
-                </button>
-              )}
             </div>
           )}
         </div>
@@ -636,12 +737,12 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
         <div className="flex items-center gap-2">
           {can('testdesign.publish_testrail') && (
             <button
-              onClick={() => { setPublishScenarioIds(undefined); setPublishing('testrail'); }}
+              onClick={() => setPublishing('testrail')}
               disabled={Boolean(publishTestRailReason)}
               title={publishTestRailReason}
               className="bg-[#48A157] hover:bg-[#3d8b4a] disabled:bg-[#BABEC3] disabled:cursor-not-allowed text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5"
             >
-              <Send size={12} /> Subir seleccionados a TestRail
+              <Send size={12} /> Publicar / actualizar seleccionados
             </button>
           )}
           {JIRA_PUBLISH_ENABLED && can('testdesign.publish_jira') && (
@@ -660,13 +761,12 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
       {publishing && (
         <PublishDialog
           destination={publishing}
-          scenarioIds={publishScenarioIds}
           draft={draft}
-          scenarios={scenarios}
+          scenarios={generatedScenariosByStory}
           sectionLabel={destinationLabel}
           beforePublish={editor.flush}
           onPublished={editor.applyServerDraft}
-          onClose={() => { setPublishing(null); setPublishScenarioIds(undefined); }}
+          onClose={() => setPublishing(null)}
         />
       )}
     </div>

@@ -95,6 +95,129 @@ export function isSelectedFor(scenario: TestDesignScenario, destination: Destina
   return destination === 'testrail' ? scenario.selectedForTestRail : scenario.selectedForJira;
 }
 
+/** Current Test Design output is tied to the exact Jira semantic scenario. */
+export function isGeneratedFromCurrentStory(scenario: TestDesignScenario): boolean {
+  return Boolean(scenario.jiraSourceScenarioId || scenario.jiraSourceScenario);
+}
+
+/** Keep archived/retained rows intact in storage while the workspace operates only on generated cases. */
+export function currentGeneratedScenarios(scenarios: TestDesignScenario[]): TestDesignScenario[] {
+  return scenarios.filter(isGeneratedFromCurrentStory);
+}
+
+export function mergeScenarioSubset(
+  allScenarios: TestDesignScenario[],
+  changedSubset: TestDesignScenario[],
+): TestDesignScenario[] {
+  const byId = new Map(changedSubset.map((scenario) => [scenario.id, scenario]));
+  return allScenarios.map((scenario) => byId.get(scenario.id) ?? scenario);
+}
+
+export function replaceScenarioSubset(
+  allScenarios: TestDesignScenario[],
+  replacementSubset: TestDesignScenario[],
+): TestDesignScenario[] {
+  const replacementIds = new Set(replacementSubset.map((scenario) => scenario.id));
+  let nextIndex = 0;
+  const result = allScenarios.map((scenario) => {
+    if (!replacementIds.has(scenario.id)) return scenario;
+    return replacementSubset[nextIndex++];
+  });
+  const existingIds = new Set(allScenarios.map((scenario) => scenario.id));
+  return [...result, ...replacementSubset.filter((scenario) => !existingIds.has(scenario.id))];
+}
+
+/** Unique missing AC references from the generated cases' coverage warnings. */
+export function uncoveredAcceptanceCriteria(scenarios: TestDesignScenario[], generationError = ''): string[] {
+  const texts = [generationError, ...currentGeneratedScenarios(scenarios).flatMap((scenario) => scenario.generationWarnings ?? [])];
+  const ids = new Set<string>();
+  for (const text of texts) {
+    for (const match of text.matchAll(/\bAC\d+(?:\.\d+)?\b/g)) ids.add(match[0]);
+  }
+  return [...ids].sort((a, b) => {
+    const [, aMajor, aMinor = '0'] = a.match(/^AC(\d+)(?:\.(\d+))?$/) ?? [];
+    const [, bMajor, bMinor = '0'] = b.match(/^AC(\d+)(?:\.(\d+))?$/) ?? [];
+    return Number(aMajor) - Number(bMajor) || Number(aMinor) - Number(bMinor);
+  });
+}
+
+/** Coverage gaps belong in the story summary, not repeated on every case card. */
+export function scenarioReviewWarnings(scenario: TestDesignScenario): string[] {
+  return (scenario.generationWarnings ?? []).filter((warning) =>
+    !/Cobertura de la HU pendiente:|Faltan criterios de aceptación:|JIRA_ACCEPTANCE_COVERAGE_INCOMPLETE/i.test(warning.trim()));
+}
+
+export function hasValidGeneratedContract(scenario: TestDesignScenario): boolean {
+  if (!isGeneratedFromCurrentStory(scenario) || !scenario.jiraSourceScenario || typeof scenario.jiraSourceScenario !== 'object') return false;
+  const validation = (scenario.jiraSourceScenario as { validation?: { valid?: unknown } }).validation;
+  return validation?.valid === true;
+}
+
+export function generatedContractErrors(scenario: TestDesignScenario): string[] {
+  if (!isGeneratedFromCurrentStory(scenario) || !scenario.jiraSourceScenario || typeof scenario.jiraSourceScenario !== 'object') return [];
+  const validation = (scenario.jiraSourceScenario as { validation?: { errors?: unknown } }).validation;
+  return Array.isArray(validation?.errors) ? validation.errors.filter((error): error is string => typeof error === 'string') : [];
+}
+
+const CONTRACT_ISSUE_GUIDANCE: Record<string, string> = {
+  JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT: 'Agrega la navegación y la acción que dejan visible el contexto donde se comprobará la ausencia.',
+  JIRA_ADDED_ROW_IDENTITY_INCOMPLETE: 'Después de guardar, comprueba en la misma fila todos los identificadores que se ingresaron.',
+  JIRA_ASSERTION_CAPABILITY_UNSUPPORTED: 'Cambia la comprobación por un resultado visible que el motor pueda verificar.',
+  JIRA_DUPLICATE_BASELINE_UNOBSERVED: 'Comprueba el estado inicial del registro antes de intentar duplicarlo.',
+  JIRA_DUPLICATE_CASE_SETUP_UNDECLARED: 'Declara los valores de búsqueda o identidad que distinguen el caso duplicado.',
+  JIRA_DUPLICATE_TARGET_AMBIGUOUS: 'Especifica cuál registro o control es el objetivo de la duplicación.',
+  JIRA_GENERATED_ASSERTION_NOT_ATOMIC: 'Divide la comprobación en pasos atómicos, uno por resultado verificable.',
+  JIRA_GENERATED_FIELD_UNBOUND: 'Asocia la acción con la etiqueta exacta del campo y su dato de prueba.',
+  JIRA_GENERATED_STEP_NOT_ATOMIC: 'Divide la acción compuesta en pasos atómicos, uno por operación.',
+  JIRA_NAVIGATION_TO_TARGET_SCREEN_MISSING: 'Agrega los pasos de navegación hasta la pantalla que valida este caso.',
+  JIRA_UI_OBSERVATION_REQUIRED: 'Indica qué resultado debe observarse en pantalla después de la acción.',
+  JIRA_UNSUPPORTED_INTENT: 'Reformula el paso con una acción que el motor soporte: Presionar, Ingresar, Seleccionar, Solicitar o Validar.',
+};
+
+export function generatedContractIssues(scenario: TestDesignScenario): Array<{ code: string; stepIndex?: number; location?: 'expected_result'; guidance: string }> {
+  if (!isGeneratedFromCurrentStory(scenario) || !scenario.jiraSourceScenario || typeof scenario.jiraSourceScenario !== 'object') return [];
+  const validation = scenario.jiraSourceScenario as { validation?: { errors?: unknown; issues?: unknown } };
+  const details = Array.isArray(validation.validation?.issues) ? validation.validation.issues : [];
+  const result: Array<{ code: string; stepIndex?: number; location?: 'expected_result'; guidance: string }> = [];
+  const seen = new Set<string>();
+  const add = (code: string, stepIndex?: number, location?: 'expected_result') => {
+    const key = `${code}:${stepIndex ?? ''}:${location ?? ''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const guidance = location === 'expected_result' && code === 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'
+      ? 'Indica un resultado esperado visible en pantalla que el motor pueda comprobar.'
+      : CONTRACT_ISSUE_GUIDANCE[code] ?? code.replace(/^JIRA_/, '').replaceAll('_', ' ').toLowerCase();
+    result.push({ code, ...(stepIndex ? { stepIndex } : {}), ...(location ? { location } : {}), guidance });
+  };
+  for (const detail of details) {
+    if (!detail || typeof detail !== 'object') continue;
+    const issue = detail as { code?: unknown; reason?: unknown; stepIndex?: unknown; step?: unknown; location?: unknown };
+    const code = typeof issue.code === 'string' ? issue.code : typeof issue.reason === 'string' ? issue.reason : '';
+    if (!code) continue;
+    // Acceptance coverage belongs to the story summary. Older drafts copied it
+    // onto every source scenario; do not turn that duplicate into a case defect.
+    if (code.startsWith('JIRA_ACCEPTANCE_COVERAGE_INCOMPLETE')) continue;
+    const reportedStepIndex = Number.isInteger(issue.stepIndex) && Number(issue.stepIndex) > 0 ? Number(issue.stepIndex) : undefined;
+    const isExpectedResult = issue.location === 'expected_result' || (
+      reportedStepIndex !== undefined
+      && reportedStepIndex > scenario.steps.length
+      && typeof issue.step === 'string'
+      && issue.step.trim() === scenario.expectedResult.trim()
+    );
+    const stepIndex = isExpectedResult ? undefined : reportedStepIndex;
+    add(code, stepIndex, isExpectedResult ? 'expected_result' : undefined);
+  }
+  if (Array.isArray(validation.validation?.errors)) {
+    for (const error of validation.validation.errors) {
+      if (typeof error !== 'string') continue;
+      const code = error.split(':', 1)[0];
+      if (code === 'JIRA_ACCEPTANCE_COVERAGE_INCOMPLETE') continue;
+      if (code && !result.some(issue => issue.code === code)) add(code);
+    }
+  }
+  return result;
+}
+
 export function setSelection(
   scenarios: TestDesignScenario[],
   destination: Destination,
@@ -126,9 +249,10 @@ export function countSelection(scenarios: TestDesignScenario[]): SelectionCounts
   let jira = 0;
   let blocked = 0;
   for (const s of scenarios) {
-    if (s.selectedForTestRail) testrail += 1;
+    const testRailActionable = s.testRailCaseId === null || s.testRailDirty === true;
+    if (s.selectedForTestRail && testRailActionable) testrail += 1;
     if (s.selectedForJira) jira += 1;
-    if (isSelectedForPublish(s) && scenarioProblems(s).length > 0) blocked += 1;
+    if ((s.selectedForTestRail && testRailActionable || JIRA_PUBLISH_ENABLED && s.selectedForJira) && scenarioProblems(s).length > 0) blocked += 1;
   }
   return { total: scenarios.length, testrail, jira, blocked };
 }
@@ -228,6 +352,9 @@ export const pendingData = (scenario: TestDesignScenario) => caseData(scenario).
 export interface StoryDatumGroup {
   id: string;
   key: string;
+  /** Disambiguated UI label when distinct runtime keys share the same visible field label. */
+  displayLabel: string;
+  sourceKey: string;
   description: string;
   sensitive: boolean;
   condition?: 'valid' | 'invalid' | 'expired';
@@ -248,6 +375,8 @@ export function groupStoryData(scenarios: TestDesignScenario[]): StoryDatumGroup
       const group = groups.get(id) ?? {
         id,
         key: datum.label ?? datum.key,
+        displayLabel: datum.label ?? datum.key,
+        sourceKey: datum.key,
         description: datum.description,
         sensitive: datum.sensitive,
         condition: datum.condition,
@@ -262,12 +391,28 @@ export function groupStoryData(scenarios: TestDesignScenario[]): StoryDatumGroup
       groups.set(id, group);
     }
   }
-  return [...groups.values()].map(({ values, caseIds, ...group }) => ({
+  const result = [...groups.values()].map(({ values, caseIds, ...group }) => ({
     ...group,
     cases: caseIds.size,
     mixed: values.size > 1,
     value: values.size === 1 ? [...values][0] : '',
   }));
+  const labelCounts = new Map<string, number>();
+  for (const group of result) {
+    const label = group.key.normalize('NFKC').trim().toLocaleLowerCase();
+    labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+  }
+  return result.map(group => {
+    const label = group.key.normalize('NFKC').trim().toLocaleLowerCase();
+    if ((labelCounts.get(label) ?? 0) < 2) return group;
+    const normalizeWords = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const labelWords = new Set(normalizeWords(group.key));
+    const qualifier = group.condition === 'invalid' ? 'inválido'
+      : group.condition === 'expired' ? 'vencido'
+      : normalizeWords(group.sourceKey).filter(word => !labelWords.has(word) && !['jira', 'step', 'input'].includes(word)).join(' ')
+        || group.sourceKey;
+    return { ...group, displayLabel: `${group.key} · ${qualifier}` };
+  });
 }
 
 /** Writes one shared value into every case that uses that datum; touched cases count as edited. */

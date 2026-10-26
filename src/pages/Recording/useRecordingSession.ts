@@ -21,7 +21,10 @@ export type RecordingPhase =
   | 'deriving'
   | 'derived';
 
-export type RecordingBrowserMode = 'integrated' | 'desktop';
+// integrated: server headless Chromium streamed into the panel. desktop: a visible Chromium on
+// the machine running the engine (only useful when that is the user's own PC). agent: the
+// Chromium on the user's PC, opened by the QA Lab agent IT installed there.
+export type RecordingBrowserMode = 'integrated' | 'desktop' | 'agent';
 
 // A recording is human-paced and the backend appends each interaction immediately. Keep the
 // live projection responsive enough that the UI does not make a captured action look delayed.
@@ -49,6 +52,8 @@ export function useRecordingSession(projectSlug: string) {
   // must never reach `PUT /scenario-value`, no matter how "ready" some other scenario is.
   const [persistedScenarioIds, setPersistedScenarioIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  // Informational, not an error: e.g. the recording ended because the user closed the window.
+  const [notice, setNotice] = useState<string | null>(null);
   const [history, setHistory] = useState<RecordingSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyReady, setHistoryReady] = useState(false);
@@ -60,6 +65,8 @@ export function useRecordingSession(projectSlug: string) {
   // Invalidates responses that were started before STOP, a project switch, or a new session.
   const pollGenerationRef = useRef(0);
   const historyRequestRef = useRef(0);
+  // The user pressed Detener: the poll must not also finish the session on its own.
+  const userStoppingRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -111,15 +118,49 @@ export function useRecordingSession(projectSlug: string) {
     setLifecycle(null);
     setPersistedScenarioIds(new Set());
     setError(null);
+    setNotice(null);
   }, [projectSlug, stopPolling]);
 
   useEffect(() => () => { generationRunRef.current += 1; stopPolling(); }, [stopPolling]);
 
+  /**
+   * Reads the scenarios STOP just persisted. Shared by the user's own STOP and by a recording
+   * the engine ended by itself (the user closed the browser window on their PC).
+   */
+  const hydrateStoppedRecording = useCallback(async (id: string) => {
+    // FIRST_LOSS fix: STOP's own response (`res.summary`) only ever carries a scenario COUNT
+    // (`RecordingSummary.scenarioCount`), never the scenarioIds/payload the backend already
+    // persisted (`materializeObservedPrimaryScenario` + `saveScenarios`, both already done by
+    // the time this call resolves). The old code below unconditionally cleared
+    // `persistedScenarioIds` here and never populated `scenarios` at all, so the observed
+    // primary STOP just persisted stayed invisible to `scenarioPersisted`/readiness until
+    // "Generar escenarios" (`derive()`) was clicked -- the exact false "escenario pendiente de
+    // materialización" this ticket exists to remove. `GET .../scenarios` reads the SAME
+    // persisted store `openExisting` already trusts as authoritative (see its own
+    // `setPersistedScenarioIds` above) -- reusing it here is a read, never `derive()`/AI
+    // generation, which stays a fully separate, optional, user-triggered call.
+    try {
+      const scenarioResult = await recordingsApi.scenarios(id, projectSlug);
+      const scenariosArray = Array.isArray(scenarioResult.scenarios) ? scenarioResult.scenarios : [];
+      setScenarios(scenariosArray);
+      setPersistedScenarioIds(new Set(scenariosArray.map((scenario) => scenario.scenarioId)));
+      setLifecycle(scenarioResult.lifecycle ?? { recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: scenariosArray.length > 0 });
+    } catch {
+      // A transient failure to read the persisted store right after STOP must never be
+      // mistaken for "nothing was persisted" -- it leaves `scenarios`/`persistedScenarioIds`
+      // exactly as they were (never fabricates an empty/false result); the history reopen path
+      // (`openExisting`, same GET) remains the way to recover from a genuine transport outage.
+      setLifecycle({ recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: false });
+    }
+  }, [projectSlug]);
+
   const start = useCallback(
-    async (recordingGoal?: string, browserMode: RecordingBrowserMode = 'integrated') => {
+    async (recordingGoal?: string, browserMode: RecordingBrowserMode = 'integrated'): Promise<boolean> => {
       generationRunRef.current += 1;
       setGeneration(null);
       setError(null);
+      setNotice(null);
+      userStoppingRef.current = false;
       setPhase('starting');
       setScenarios([]);
       setNarrative('');
@@ -166,6 +207,19 @@ export function useRecordingSession(projectSlug: string) {
                 });
                 // Never update per-scenario persisted authority from the live poll either -- same
                 // reason: nothing here is backend-persisted while the recording is still active.
+              } else if (!userStoppingRef.current) {
+                // The engine ended the recording by itself -- in agent mode, because the user
+                // closed the Chromium window on their PC. What was captured is already saved.
+                stopPolling();
+                setSummary(status.summary);
+                setPhase('stopping');
+                setNotice(browserMode === 'agent'
+                  ? 'Se cerró la ventana del navegador: la grabación se detuvo y se guardó lo capturado.'
+                  : 'La grabación se detuvo en el servidor; se guardó lo capturado.');
+                void hydrateStoppedRecording(res.recordingId).then(() => {
+                  setPhase('stopped');
+                  void refreshHistory();
+                });
               }
             }).catch(() => {
               // A transient poll failure must not kill an in-progress walkthrough.
@@ -177,16 +231,19 @@ export function useRecordingSession(projectSlug: string) {
             if (pollGenerationRef.current === pollGeneration) pollInFlightRef.current = false;
           }
         }, POLL_INTERVAL_MS);
+        return true;
       } catch (err) {
         setPhase('idle');
         setError(err instanceof Error ? err.message : String(err));
+        return false;
       }
     },
-    [projectSlug],
+    [projectSlug, stopPolling, hydrateStoppedRecording, refreshHistory],
   );
 
   const stop = useCallback(async () => {
     if (!recordingId) return;
+    userStoppingRef.current = true;
     setPhase('stopping');
     try {
       const res = await recordingsApi.stop(recordingId, projectSlug);
@@ -195,39 +252,17 @@ export function useRecordingSession(projectSlug: string) {
       // after that authoritative response arrives.
       stopPolling();
       setSummary(res.summary);
-      // FIRST_LOSS fix: STOP's own response (`res.summary`) only ever carries a scenario COUNT
-      // (`RecordingSummary.scenarioCount`), never the scenarioIds/payload the backend already
-      // persisted (`materializeObservedPrimaryScenario` + `saveScenarios`, both already done by
-      // the time this call resolves). The old code below unconditionally cleared
-      // `persistedScenarioIds` here and never populated `scenarios` at all, so the observed
-      // primary STOP just persisted stayed invisible to `scenarioPersisted`/readiness until
-      // "Generar escenarios" (`derive()`) was clicked -- the exact false "escenario pendiente de
-      // materialización" this ticket exists to remove. `GET .../scenarios` reads the SAME
-      // persisted store `openExisting` already trusts as authoritative (see its own
-      // `setPersistedScenarioIds` above) -- reusing it here is a read, never `derive()`/AI
-      // generation, which stays a fully separate, optional, user-triggered call.
-      try {
-        const scenarioResult = await recordingsApi.scenarios(recordingId, projectSlug);
-        const scenariosArray = Array.isArray(scenarioResult.scenarios) ? scenarioResult.scenarios : [];
-        setScenarios(scenariosArray);
-        setPersistedScenarioIds(new Set(scenariosArray.map((scenario) => scenario.scenarioId)));
-        setLifecycle(scenarioResult.lifecycle ?? { recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: scenariosArray.length > 0 });
-      } catch {
-        // A transient failure to read the persisted store right after STOP must never be
-        // mistaken for "nothing was persisted" -- it leaves `scenarios`/`persistedScenarioIds`
-        // exactly as they were (never fabricates an empty/false result); the history reopen path
-        // (`openExisting`, same GET) remains the way to recover from a genuine transport outage.
-        setLifecycle({ recordingExists: true, traceReady: true, semanticReady: true, scenariosReady: false });
-      }
+      await hydrateStoppedRecording(recordingId);
       // Keep the session in `stopping` until the persisted scenario read has completed. This
       // is the synchronization boundary used by the UI to enable scenario replay actions.
       setPhase('stopped');
       void refreshHistory();
     } catch (err) {
+      userStoppingRef.current = false;
       setPhase('recording');
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [recordingId, projectSlug, stopPolling, refreshHistory]);
+  }, [recordingId, projectSlug, stopPolling, refreshHistory, hydrateStoppedRecording]);
 
   const derive = useCallback(
     async (title?: string) => {
@@ -436,6 +471,7 @@ export function useRecordingSession(projectSlug: string) {
     persistedScenarioIds,
     error,
     setError,
+    notice,
     history,
     historyLoading,
     historyReady,
