@@ -9,6 +9,7 @@ const styles: Record<string, { bg: string; label: string }> = {
   success: { bg: '#48A157', label: 'OK' },
   partial: { bg: '#F4A261', label: 'Parcial' },
   failed: { bg: '#E63946', label: 'Fallo' },
+  interrupted: { bg: '#B7791F', label: 'Interrumpida' },
   running: { bg: '#104B99', label: 'Activo' },
 };
 

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { TestRailClient } from '../testrail-client';
 import { TestRailCacheService } from '../testrail-cache';
+import { engineHeaders } from '../engine-auth';
 
 const router = Router();
 const client = new TestRailClient();
@@ -17,7 +18,7 @@ type AutomationEngineSectionCasesResponse = {
   [key: string]: unknown;
 };
 
-type SectionCasesFetcher = (url: string) => Promise<globalThis.Response>;
+type SectionCasesFetcher = (url: string, init?: RequestInit) => Promise<globalThis.Response>;
 
 export async function fetchAutomationEngineSectionCases(input: {
   baseUrl: string;
@@ -31,7 +32,8 @@ export async function fetchAutomationEngineSectionCases(input: {
   if (!baseUrl) throw new Error("Automation Engine base URL is not configured");
   const localProjectParam = input.localProjectId ? `&localProjectId=${encodeURIComponent(input.localProjectId)}` : '';
   const url = `${baseUrl}/api/testrail/sections/${input.sectionId}/cases?projectId=${input.projectId}&suiteId=${input.suiteId}${localProjectParam}`;
-  const response = await (input.fetcher ?? fetch)(url);
+  // The engine runs with AUTH_ENABLED, so forward the caller's credentials.
+  const response = await (input.fetcher ?? fetch)(url, { headers: engineHeaders() });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`Automation Engine section cases failed: ${response.status}`);
   if (!payload || typeof payload !== "object" || !Array.isArray((payload as AutomationEngineSectionCasesResponse).cases)) {

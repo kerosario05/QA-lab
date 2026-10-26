@@ -35,6 +35,7 @@ describe('TestRail section cases Automation Engine proxy', () => {
 
     expect(fetcher).toHaveBeenCalledWith(
       'http://automation-engine.test/api/testrail/sections/9/cases?projectId=56&suiteId=1731&localProjectId=local-project-1',
+      expect.objectContaining({ headers: expect.any(Object) }),
     );
     expect(result.cases[0]).toEqual(enrichedCase);
     expect(result.cases[0].runtimeTransformStatus).toBe('success');

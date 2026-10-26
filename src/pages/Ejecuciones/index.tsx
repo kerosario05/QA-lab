@@ -12,7 +12,8 @@ import type { ExecutionListItem, ExecutionSummary } from '../../services/executi
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-function mapStatusToBadge(status?: string): string {
+function mapStatusToBadge(status?: string, interrupted?: boolean): string {
+  if (interrupted) return 'interrupted';
   if (!status) return 'running';
   if (['completed', 'done', 'passed', 'success'].includes(status.toLowerCase())) return 'success';
   if (['completed_with_failures', 'failed', 'error'].includes(status.toLowerCase())) return 'failed';
@@ -221,7 +222,7 @@ function ExecutionList({ onOpen }: { onOpen: (launchId: string) => void }) {
               <button onClick={() => onOpen(it.jobId ?? it.launchId)} className="flex-1 min-w-0 text-left">
                 <div className="flex items-center gap-2.5 mb-1">
                   <span className="text-[11px] font-mono font-bold text-[#104B99] bg-[#104B99]/8 px-2 py-0.5 rounded">{it.huKey ?? '—'}</span>
-                  <StatusBadge status={mapStatusToBadge(it.status)} />
+                  <StatusBadge status={mapStatusToBadge(it.status, it.interrupted)} />
                   {index > 0 && <span className="text-[10px] text-[#8B999D]">Ejecución anterior</span>}
                 </div>
                 <div className="text-[14px] font-medium text-[#1a1f2e] truncate">{it.huTitle || it.huKey || 'Ejecución'}</div>
@@ -383,7 +384,7 @@ function ExecutionDetail({ launchId, onBack }: { launchId: string; onBack: () =>
         <div>
           <div className="flex items-center gap-2.5 mb-1">
             <span className="text-[12px] font-mono font-bold text-[#104B99] bg-[#104B99]/8 px-2 py-0.5 rounded">{exec.hu.key ?? '—'}</span>
-            <StatusBadge status={mapStatusToBadge(exec.status)} />
+            <StatusBadge status={mapStatusToBadge(exec.status, exec.interrupted)} />
           </div>
           <h2 className="text-[24px] font-medium text-[#1a1f2e] leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>
             {exec.hu.title || exec.hu.key || 'Ejecución'}
