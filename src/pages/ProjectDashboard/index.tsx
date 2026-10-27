@@ -3,6 +3,7 @@ import { BentoCard } from '../../components/ui/BentoCard';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import type { DashboardExecution, DashboardProject } from '../../services/dashboard';
 import type { ActiveRun } from '../../types';
+import { TestDesignSection } from '../Dashboard/TestDesignSection';
 
 interface ProjectDashboardProps {
   project: DashboardProject;
@@ -10,6 +11,8 @@ interface ProjectDashboardProps {
   activeRuns: ActiveRun[];
   onBack: () => void;
   onCloseExecution?: (execution: any) => void;
+  /** Changes on every Panorama refresh so the design metrics refresh too. */
+  refreshKey?: string;
 }
 
 function displayStatus(execution: DashboardExecution) {
@@ -26,7 +29,7 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? 'Fecha no disponible' : new Intl.DateTimeFormat('es-DO', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
-export function ProjectDashboard({ project, executions, activeRuns, onBack }: ProjectDashboardProps) {
+export function ProjectDashboard({ project, executions, activeRuns, onBack, refreshKey }: ProjectDashboardProps) {
   const totals = executions.reduce((result, execution) => ({
     launches: result.launches + 1,
     scenarios: result.scenarios + execution.scenarioCount,
@@ -48,6 +51,8 @@ export function ProjectDashboard({ project, executions, activeRuns, onBack }: Pr
         <ProjectMetric label="Fallidos" value={totals.failed} />
       </div>
     </BentoCard>
+
+    <TestDesignSection projectSlug={project.slug} refreshKey={refreshKey} />
 
     <BentoCard>
       <div className="mb-4 flex items-center gap-2"><Radio size={14} className="text-[#48A157]" /><h3 className="text-[17px] font-medium text-[#1a1f2e]">Jobs activos</h3><span className="ml-auto text-[10px] text-[#8B999D]">{activeRuns.length}</span></div>

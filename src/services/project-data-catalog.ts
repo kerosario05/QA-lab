@@ -2,7 +2,7 @@ export type ProjectDataCatalogOption = { id: string; label: string; value: strin
 export type ProjectDataCatalog = { id: string; projectSlug: string; name: string; fieldName: string; aliases: string[]; active: boolean; revision: number; options: ProjectDataCatalogOption[] };
 export type ProjectDataCatalogWrite = Omit<ProjectDataCatalog, 'id' | 'projectSlug' | 'revision' | 'options'> & { options: Array<Partial<ProjectDataCatalogOption> & Pick<ProjectDataCatalogOption, 'label' | 'value'>> };
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE = import.meta.env.VITE_API_URL ?? '';
 const catalogLists = new Map<string, Promise<ProjectDataCatalog[]>>();
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { headers: { 'Content-Type': 'application/json' }, ...init });

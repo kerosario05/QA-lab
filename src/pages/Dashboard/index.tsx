@@ -93,6 +93,7 @@ export function DashboardView({ onOpenRun, onCloseExecution }: DashboardViewProp
           executions={data.executions.filter((execution) => execution.appSlug === selectedProject.slug)}
           activeRuns={data.activeRuns.filter((run) => run.project === selectedProject.name)}
           onBack={() => setSelectedProjectSlug(null)}
+          refreshKey={String(data.loadedAt)}
           onCloseExecution={onCloseExecution}
         />
       )}

@@ -193,3 +193,38 @@ export interface TestDesignTestRailSection {
   depth: number;
   display_order?: number;
 }
+
+/** Dashboard summary: design cases, and how they did when executed. */
+export type TestDesignMetrics = {
+  period: { days: number; from: string; to: string };
+  funnel: {
+    designed: number;
+    published: number;
+    executed: number;
+    passed: number;
+    failed: number;
+    notExecuted: number;
+  };
+  passRate: number | null;
+  executions: number;
+  weekly: Array<{ weekStart: string; passed: number; failed: number }>;
+  byProject: Array<{
+    projectSlug: string;
+    projectName: string;
+    published: number;
+    executed: number;
+    passed: number;
+    failed: number;
+  }>;
+  recent: Array<{
+    caseId: number;
+    title: string;
+    issueKey: string;
+    projectSlug: string | null;
+    projectName: string | null;
+    result: 'passed' | 'failed';
+    executedAt: string;
+    launchId: string;
+    caseUrl: string | null;
+  }>;
+};
