@@ -3,11 +3,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalAgentProvider, useLocalAgent } from './LocalAgentContext';
 import { LocalAgentSetupDialog } from './LocalAgentSetupDialog';
+import { agentInstallerCmd } from '../../services/localAgent';
 
 /**
  * Right after login the panel asks the server whether this PC has the QA Lab agent and the
  * recording Chromium. Agent without Chromium -> the install starts on its own and the user
- * sees "Instalando Chromium…" with progress. No agent -> nothing is shown.
+ * sees "Instalando Chromium…" with progress. No agent -> the login offers to install it.
  */
 
 let root: Root | undefined;
@@ -20,6 +21,7 @@ afterEach(() => {
   container = undefined;
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -89,15 +91,79 @@ describe('LocalAgent setup after login', () => {
     expect(container?.querySelector('[data-testid="local-agent-setup"]')).toBeNull();
   });
 
-  it('no agent on this PC: nothing is shown and recordings stay integrated', async () => {
+  const noAgent = () => jsonResponse({ ok: true, requiredRevision: '1223', pairing: 'none', agent: null, install: null, ready: false });
+  const button = (label: string) => [...container!.querySelectorAll('button')].find((b) => b.textContent?.trim() === label)!;
+
+  it('no agent on this PC: the login offers to install it; "Ahora no" keeps recordings integrated', async () => {
     vi.useFakeTimers();
-    const fetchMock = vi.fn(async () => jsonResponse({ ok: true, requiredRevision: '1223', pairing: 'none', agent: null, install: null, ready: false }));
+    const fetchMock = vi.fn(async () => noAgent());
     vi.stubGlobal('fetch', fetchMock);
     render();
     await flush();
     expect(latestPhase).toBe('unavailable');
-    expect(container?.querySelector('[data-testid="local-agent-setup"]')).toBeNull();
+    expect(text()).toContain('QA Lab necesita instalar su agente');
+    await act(async () => { button('Ahora no').click(); });
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('qalab.localAgent.offerDismissed')).toBeNull();
+  });
+
+  it('"No volver a preguntar" is remembered in this browser', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => noAgent()));
+    render();
+    await flush();
+    await act(async () => { button('No volver a preguntar').click(); });
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+
+    act(() => root?.unmount());
+    container?.remove();
+    render();
+    await flush();
+    expect(latestPhase).toBe('unavailable');
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+  });
+
+  it('accepting downloads the installer, waits for the agent and then installs Chromium', async () => {
+    vi.useFakeTimers();
+    const createObjectURL = vi.fn(() => 'blob:instalador');
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }));
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    let agentConnected = false;
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? 'GET'} ${url}`);
+      if (url.endsWith('/api/local-agent/install')) {
+        return jsonResponse({ ok: true, install: { requestId: 'r1', revision: '1223', state: 'preparing', percent: 0 } }, 202);
+      }
+      return agentConnected
+        ? jsonResponse({ ok: true, requiredRevision: '1223', pairing: 'found', agent, install: null, ready: false })
+        : noAgent();
+    }));
+    render();
+    await flush();
+    await act(async () => { button('Instalar').click(); });
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(clicked).toHaveBeenCalledTimes(1);
+    expect(text()).toContain('Esperando a que se instale el agente');
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(text()).toContain('Esperando a que se instale el agente');
+
+    agentConnected = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+    expect(calls).toContain('POST /api/local-agent/install');
+    expect(text()).toContain('Instalando Chromium en tu equipo para la grabación');
+    clicked.mockRestore();
+  });
+
+  it('the installer points the agent at the panel origin', () => {
+    const cmd = agentInstallerCmd('http://SRVDEVQACA01:3003');
+    expect(cmd).toContain("'http://SRVDEVQACA01:3003/descargas/instalar-agente.ps1'");
+    expect(cmd).toContain("-Servidor 'http://SRVDEVQACA01:3003'");
+    expect(cmd).toContain('\r\n');
   });
 
   it('agent already has Chromium: ready without any dialog', async () => {

@@ -175,6 +175,7 @@ function LocalAgentHint() {
   const percent = Math.round(agent.install?.percent ?? 0);
   let text: string;
   let action: { label: string; run: () => void } | null = null;
+  let command: string | null = null;
   switch (agent.phase) {
     case 'installing':
       text = `Instalando Chromium en tu equipo (${percent}%). Mientras termina, se graba con el navegador integrado.`;
@@ -188,8 +189,11 @@ function LocalAgentHint() {
       text = agent.error ?? 'No se pudo instalar Chromium en tu equipo.';
       action = { label: 'Reintentar', run: () => void agent.startInstall() };
       break;
-    default:
-      text = 'No se detectó el agente de QA Lab en este equipo: la grabación usará el navegador integrado. Si debería estar instalado, contacta a TI.';
+    default: {
+      text = 'No se detectó el agente de QA Lab en este equipo: la grabación usará el navegador integrado. Para grabar en tu Chromium, instala el agente (no requiere administrador) ejecutando el comando en PowerShell y vuelve a pulsar el selector.';
+      // Shown as selectable text: the panel is served over plain http, where the Clipboard API is unavailable.
+      command = `iwr ${window.location.origin}/descargas/instalar-agente.ps1 -OutFile $env:TEMP\\ia.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\\ia.ps1 -Servidor ${window.location.origin}`;
+    }
   }
   return (
     <div data-testid="local-agent-hint" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[#58646D]">
@@ -199,6 +203,11 @@ function LocalAgentHint() {
         <button onClick={action.run} className="font-semibold text-[#104B99] hover:underline">
           {action.label}
         </button>
+      )}
+      {command && (
+        <code className="w-full select-all break-all rounded border border-[#E8EBEC] bg-[#FAFAF7] px-2 py-1 font-mono text-[10px] text-[#1a1f2e]">
+          {command}
+        </code>
       )}
     </div>
   );
@@ -987,8 +996,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   role="switch"
                   aria-label="Usar Chromium del PC para grabar"
                   aria-checked={usePcBrowser}
-                  disabled={session.phase === 'starting' || busy || pcBrowserMode === null}
-                  onClick={() => setPreferPcBrowser(!usePcBrowser)}
+                  disabled={session.phase === 'starting' || busy}
+                  // Without a ready agent the switch asks again (e.g. right after installing it);
+                  // the hint below explains how to get the agent when it is still missing.
+                  onClick={() => (pcBrowserMode === null ? void localAgent.check() : setPreferPcBrowser(!usePcBrowser))}
                   className="flex items-center gap-2 rounded-full border border-[#E8EBEC] bg-white px-3 py-2 text-[11px] font-medium text-[#58646D] transition disabled:opacity-50"
                 >
                   <span className={cn('relative h-4 w-7 rounded-full transition-colors', usePcBrowser ? 'bg-[#48A157]' : 'bg-[#B7C0C4]')}>
