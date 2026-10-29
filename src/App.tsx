@@ -16,6 +16,7 @@ import { LocalAgentSetupDialog } from './components/localAgent/LocalAgentSetupDi
 import { Configuracion } from './pages/Configuracion';
 import { Usuarios } from './pages/Usuarios';
 import { TestDesign } from './pages/TestDesign';
+import { ServiceCatalog } from './pages/ServiceCatalog';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
 import { useAuth } from './auth/AuthContext';
@@ -64,6 +65,7 @@ const LANDING_ORDER: { id: View; permissions: PermissionKey[] }[] = [
   { id: 'grabacion', permissions: ['recordings.view', 'recordings.create'] },
   { id: 'diseno', permissions: ['testdesign.view'] },
   { id: 'configuracion', permissions: ['projects.view'] },
+  { id: 'servicios', permissions: ['services.view'] },
   { id: 'usuarios', permissions: ['admin.users', 'admin.roles'] },
 ];
 
@@ -165,6 +167,7 @@ function Workspace() {
     configuracion: 'Configuración',
     usuarios: 'Usuarios y roles',
     diseno: 'Diseño de pruebas',
+    servicios: 'Catálogo de servicios',
   };
 
   const subtitles: Record<string, string> = {
@@ -178,6 +181,7 @@ function Workspace() {
     configuracion: 'Administración de proyectos de automatización.',
     usuarios: 'Gestiona accesos, roles y permisos por proyecto',
     diseno: 'Genera casos con IA desde historias de Jira, edítalos y publícalos',
+    servicios: 'Servicios reutilizables (OTP, tokens) que llenan campos al ejecutar',
   };
 
   return (
@@ -277,6 +281,9 @@ function Workspace() {
           )}
           {view === 'diseno' && (
             <TestDesign />
+          )}
+          {view === 'servicios' && (
+            <ServiceCatalog />
           )}
         </div>
       </main>

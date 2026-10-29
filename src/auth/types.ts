@@ -19,6 +19,8 @@ export type PermissionKey =
   | 'testdesign.generate'
   | 'testdesign.publish_testrail'
   | 'testdesign.publish_jira'
+  | 'services.view'
+  | 'services.edit'
   | 'admin.users'
   | 'admin.roles';
 

@@ -32,6 +32,22 @@ import type { JiraIssue } from '../../services/jira/types';
 import type { ActiveRun } from '../../types';
 import { derivationFeedback } from './derivation-feedback';
 import { isQaOverridableRuntimeInput, missingInputLabel, readinessBadge, resolveScenarioReadiness, runtimeRequirementsForScenario } from './recording-readiness';
+import type { BindingParamValue, ScenarioServiceView, ServiceBindingsView } from '../../services/service-catalog';
+import { useRecordingServiceBindings } from './useRecordingServiceBindings';
+import { RecordingServicesPanel, type PendingSuggestion } from './RecordingServicesPanel';
+import { ServiceBindingField } from './ServiceBindingField';
+import { bindableFieldsForScenario, fieldEntry, serviceBoundKeys, withServicePlaceholders } from './service-binding-ui';
+
+/** Catalog services (OTP...) for one scenario card; absent when the catalog is not available. */
+type ScenarioServiceProps = {
+  view: ScenarioServiceView | undefined;
+  enabledServices: ServiceBindingsView['enabledServices'];
+  busy: boolean;
+  onApply: (scope: 'general' | 'scenario', keys: string[], serviceKey: string, params: Record<string, BindingParamValue>) => void;
+  onTypeByHand: (keys: string[]) => void;
+  onInherit: (keys: string[]) => void;
+  onRemoveGeneral: (keys: string[]) => void;
+};
 
 /**
  * Recording module.
@@ -309,10 +325,57 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     }
     return result;
   }, [session.scenarios, sharedDatasetValues, datasetOverrides]);
+  // Catalog services (OTP...) bound to this recording's fields. A field a service fills counts
+  // as filled for readiness; the values sent to the engine stay exactly what the user typed.
+  const serviceBindings = useRecordingServiceBindings(projectSlug, session.recordingId ?? undefined, session.scenarios);
+  const readinessDatasetValues = useMemo(() => {
+    const result = new Map<string, Record<string, string | undefined>>();
+    for (const [scenarioId, values] of scenarioDatasetValues) {
+      result.set(scenarioId, withServicePlaceholders(values, serviceBoundKeys(serviceBindings.scenarioView(scenarioId))));
+    }
+    return result;
+  }, [scenarioDatasetValues, serviceBindings.scenarioView]);
+  const serviceFieldLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const scenario of session.scenarios) {
+      for (const requirement of runtimeRequirementsForScenario(scenario)) labels.set(requirement.valueKey, humanRequirementLabel(requirement));
+      for (const field of bindableFieldsForScenario(scenario)) if (field.keys.length > 1) labels.set(field.primaryKey, field.label);
+    }
+    return labels;
+  }, [session.scenarios]);
+  const pendingServiceSuggestions = useMemo((): PendingSuggestion[] => {
+    const pending = new Map<string, PendingSuggestion>();
+    for (const scenario of session.scenarios) {
+      const view = serviceBindings.scenarioView(scenario.scenarioId);
+      for (const field of bindableFieldsForScenario(scenario)) {
+        const entry = fieldEntry(view, field);
+        if (!entry?.suggestion || entry.effective) continue;
+        const id = field.keys.join('|');
+        if (!pending.has(id)) {
+          pending.set(id, { keys: field.keys, label: serviceFieldLabels.get(field.primaryKey) ?? field.label, serviceKey: entry.suggestion.serviceKey, params: entry.suggestion.params });
+        }
+      }
+    }
+    return [...pending.values()];
+  }, [session.scenarios, serviceBindings.scenarioView, serviceFieldLabels]);
+  const scenarioServiceProps = (scenarioId: string): ScenarioServiceProps | undefined => serviceBindings.view ? {
+    view: serviceBindings.scenarioView(scenarioId),
+    enabledServices: serviceBindings.view.enabledServices,
+    busy: serviceBindings.busy,
+    onApply: (scope, keys, serviceKey, params) => void serviceBindings.applyService(scope === 'general' ? '' : scenarioId, keys, serviceKey, params),
+    onTypeByHand: (keys) => void serviceBindings.typeByHand(scenarioId, keys),
+    onInherit: (keys) => void serviceBindings.clear(scenarioId, keys),
+    onRemoveGeneral: (keys) => void serviceBindings.clear('', keys),
+  } : undefined;
+  async function handleAcceptServiceSuggestions() {
+    for (const suggestion of pendingServiceSuggestions) {
+      await serviceBindings.applyService('', suggestion.keys, suggestion.serviceKey, suggestion.params);
+    }
+  }
   const activeScenario = session.scenarios.find((scenario) => scenario.scenarioId === activeScenarioId) ?? primaryScenario;
   const selectedReadiness = useMemo(
-    () => selectedScenarios.map((scenario) => ({ scenario, readiness: resolveScenarioReadiness(scenario, scenarioDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues) })),
-    [selectedScenarios, scenarioDatasetValues, sharedDatasetValues],
+    () => selectedScenarios.map((scenario) => ({ scenario, readiness: resolveScenarioReadiness(scenario, readinessDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues) })),
+    [selectedScenarios, readinessDatasetValues, sharedDatasetValues],
   );
   const readySelectedReadiness = useMemo(() => selectedReadiness.filter(({ readiness }) => readiness.publicationReadiness), [selectedReadiness]);
   const blockedSelectedReadiness = useMemo(() => selectedReadiness.filter(({ readiness }) => !readiness.publicationReadiness), [selectedReadiness]);
@@ -328,11 +391,11 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   // `GET .../scenarios` (the persisted store itself).
   const executionReadinessForSelection = useMemo(
     () => executionScenarios.map((scenario) => {
-      const readiness = resolveScenarioReadiness(scenario, scenarioDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues);
+      const readiness = resolveScenarioReadiness(scenario, readinessDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues);
       const scenarioPersisted = session.persistedScenarioIds?.has(scenario.scenarioId) ?? false;
       return { scenario, readiness, scenarioPersisted, executable: canReplayScenario({ executionReadiness: readiness.executionReadiness, scenarioPersisted }) };
     }),
-    [executionScenarios, scenarioDatasetValues, sharedDatasetValues, session.persistedScenarioIds],
+    [executionScenarios, readinessDatasetValues, sharedDatasetValues, session.persistedScenarioIds],
   );
   const executionBlocked = isExecutionSelectionBlocked(
     executionReadinessForSelection.map(({ readiness, scenarioPersisted }) => ({ executionReadiness: readiness.executionReadiness, scenarioPersisted })),
@@ -1233,6 +1296,18 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             <div className="mb-3 text-[12px] text-[#58646D] bg-[#FAFAF7] rounded-lg px-3 py-2">{execution.notice}</div>
           )}
 
+          {serviceBindings.view && session.scenarios.length > 0 && (
+            <RecordingServicesPanel
+              view={serviceBindings.view}
+              pendingSuggestions={pendingServiceSuggestions}
+              labelFor={(key) => serviceFieldLabels.get(key) ?? key}
+              busy={serviceBindings.busy}
+              error={serviceBindings.error}
+              onAcceptSuggestions={() => void handleAcceptServiceSuggestions()}
+              onRemove={(keys) => void serviceBindings.clear('', keys)}
+            />
+          )}
+
           {primaryScenario && (
             <div className="mb-4">
               <div className="text-[11px] uppercase tracking-[0.12em] text-[#104B99] font-semibold mb-2">Escenario principal · observado</div>
@@ -1254,6 +1329,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 onDatasetValueChange={(valueKey, value) => handleDatasetValueChange(primaryScenario.scenarioId, valueKey, value)}
                 onDatasetBlur={(valueKey, value) => void handleDatasetBlur(primaryScenario.scenarioId, valueKey, value)}
                 sensitiveDatasetKeys={sensitiveDatasetKeys}
+                services={scenarioServiceProps(primaryScenario.scenarioId)}
               />
             </div>
           )}
@@ -1279,6 +1355,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   onDatasetValueChange={(valueKey, value) => handleDatasetValueChange(s.scenarioId, valueKey, value)}
                   onDatasetBlur={(valueKey, value) => void handleDatasetBlur(s.scenarioId, valueKey, value)}
                   sensitiveDatasetKeys={sensitiveDatasetKeys}
+                  services={scenarioServiceProps(s.scenarioId)}
                 />
               ))}
             </div>
@@ -1589,6 +1666,7 @@ export function ScenarioCard({
   onDatasetValueChange,
   onDatasetBlur,
   sensitiveDatasetKeys,
+  services,
 }: {
   projectSlug?: string;
   scenario: RecordedScenario;
@@ -1602,11 +1680,13 @@ export function ScenarioCard({
   onDatasetValueChange: (valueKey: string, value: string) => void;
   onDatasetBlur: (valueKey: string, value: string) => void;
   sensitiveDatasetKeys: Set<string>;
+  services?: ScenarioServiceProps;
 }) {
   const reviewDraft = '';
   const setReviewDraft = (_value: string) => undefined;
   const onReviewChange = (_status: 'PENDING' | 'APPROVED' | 'REJECTED', _expected: string) => undefined;
-  const readiness = resolveScenarioReadiness(scenario, datasetValues);
+  const boundByService = serviceBoundKeys(services?.view);
+  const readiness = resolveScenarioReadiness(scenario, withServicePlaceholders(datasetValues, boundByService));
   const stepRequirementsByKey = new Map(runtimeRequirementsForScenario(scenario).map((requirement) => [requirement.valueKey, requirement] as const));
   const resolveStepPrivacy = (step: RecordedScenarioStep) => {
     const recordedInteraction = step.interactionId
@@ -1754,9 +1834,14 @@ export function ScenarioCard({
                         const disabled = !isQaOverridableRuntimeInput(requirement) || requirement.editable === false;
                         const constraintDescription = requirementConstraintDescription(requirement);
                         const listMode = recordedListSelectionMode(scenario, requirement.valueKey);
+                        const bindingKeys = segmentKeys ?? [requirement.valueKey];
+                        const serviceEntry = services
+                          ? fieldEntry(services.view, { primaryKey: requirement.valueKey, keys: bindingKeys, label: humanRequirementLabel(requirement) })
+                          : undefined;
+                        const filledByService = Boolean(serviceEntry?.effective?.serviceKey);
                         return (
                           <div key={requirement.valueKey} className="block">
-                            <span className={cn('text-[10px]', !value.trim() ? 'text-[#B4463C]' : 'text-[#58646D]')}>
+                            <span className={cn('text-[10px]', !value.trim() && !filledByService ? 'text-[#B4463C]' : 'text-[#58646D]')}>
                               {humanRequirementLabel(requirement)}{requirement.required ? ' · Requerido' : ''}{requirement.sensitive ? ' · QA sensible' : ''}
                             </span>
                             {constraintDescription && <div className="mt-0.5 text-[9px] text-[#58646D]">{constraintDescription}</div>}
@@ -1764,7 +1849,11 @@ export function ScenarioCard({
                               {listMode === 'index' ? 'Lista dinámica · Selección configurable' : listMode === 'value' ? 'Selección por valor' : 'Tipo de lista sin confirmar'}
                             </div> : null}
                             <div className="mt-0.5 font-mono break-all text-[9px] text-[#8B999D]" title={requirement.valueKey}>valueKey: {requirement.valueKey}</div>
-                            {listMode === 'index' && requirement.allowedValues?.length ? (
+                            {filledByService ? (
+                              <div className="mt-0.5 w-full px-2 py-1 rounded border border-dashed border-[#48A157]/50 bg-[#F4FAF5] text-[11px] text-[#2F7A3D]">
+                                Lo llena el servicio al ejecutar
+                              </div>
+                            ) : listMode === 'index' && requirement.allowedValues?.length ? (
                               <DynamicListSelection
                                 projectSlug={projectSlug ?? ''} fieldKey={requirement.valueKey}
                                 label={humanRequirementLabel(requirement)} value={value}
@@ -1801,6 +1890,25 @@ export function ScenarioCard({
                                 disabled={disabled}
                                 placeholder={requirement.sensitive ? 'Valor seguro requerido' : 'Sin valor confirmado'}
                                 className="mt-0.5 w-full px-2 py-1 rounded border border-[#D9E2EC] bg-white text-[11px] outline-none focus:border-[#104B99] disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"
+                              />
+                            )}
+                            {services && (
+                              <ServiceBindingField
+                                entry={serviceEntry}
+                                services={services.enabledServices}
+                                identityOptions={datasetRequirements
+                                  .filter((candidate) => !bindingKeys.includes(candidate.valueKey) && !candidate.otpSegmentKeys)
+                                  .map((candidate) => ({ key: candidate.valueKey, label: humanRequirementLabel(candidate) }))}
+                                labelFor={(key) => {
+                                  const known = stepRequirementsByKey.get(key);
+                                  return known ? humanRequirementLabel(known) : key;
+                                }}
+                                offerService={Boolean(segmentKeys) || (requirement.sensitive === true && !/contrase|password|clave/i.test(humanRequirementLabel(requirement)))}
+                                busy={services.busy}
+                                onApply={(scope, serviceKey, params) => services.onApply(scope, bindingKeys, serviceKey, params)}
+                                onTypeByHand={() => services.onTypeByHand(bindingKeys)}
+                                onInherit={() => services.onInherit(bindingKeys)}
+                                onRemoveGeneral={() => services.onRemoveGeneral(bindingKeys)}
                               />
                             )}
                           </div>

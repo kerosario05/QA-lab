@@ -165,7 +165,7 @@ export interface FailedTest {
   reportToJira: boolean;
 }
 
-export type View = 'dashboard' | 'execute' | 'grabacion' | 'live' | 'close' | 'ejecuciones' | 'checklist' | 'configuracion' | 'usuarios' | 'diseno';
+export type View = 'dashboard' | 'execute' | 'grabacion' | 'live' | 'close' | 'ejecuciones' | 'checklist' | 'configuracion' | 'usuarios' | 'diseno' | 'servicios';
 
 export interface Scenario {
   jiraKey: string;

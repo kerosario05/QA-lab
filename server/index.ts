@@ -124,6 +124,8 @@ async function proxyEngineJson(req: any, res: any) {
 // /api/projects → automation engine (SQL-backed multi-project storage)
 app.use(identityRouter);
 app.use('/api/test-design', (req, res) => proxyEngineJson(req, res));
+app.use('/api/service-catalog', (req, res) => proxyEngineJson(req, res));
+app.use('/api/service-bindings', (req, res) => proxyEngineJson(req, res));
 
 app.all('/api/projects', async (req, res) => proxyProjects(req, res));
 app.all('/api/projects/*splat', async (req, res) => proxyProjects(req, res));
