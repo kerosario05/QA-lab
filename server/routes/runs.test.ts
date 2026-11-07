@@ -2,8 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import express from 'express';
 import type { Server } from 'http';
 
-const PORT = 9878;
-const MOCK_PROVIDER_PORT = 9879;
+// Port 0: the OS picks free ones, so test files running in parallel never collide.
+let PORT = 0;
+let MOCK_PROVIDER_PORT = 0;
 const ORIG_ENV = { ...process.env };
 
 let app: ReturnType<typeof express>;
@@ -106,8 +107,8 @@ beforeAll(async () => {
   });
 
   await Promise.all([
-    new Promise<void>((resolve) => { server = app.listen(PORT, () => resolve()); }),
-    new Promise<void>((resolve) => { mockProvider = mockApp.listen(MOCK_PROVIDER_PORT, () => resolve()); }),
+    new Promise<void>((resolve) => { server = app.listen(0, () => { PORT = (server.address() as { port: number }).port; resolve(); }); }),
+    new Promise<void>((resolve) => { mockProvider = mockApp.listen(0, () => { MOCK_PROVIDER_PORT = (mockProvider.address() as { port: number }).port; resolve(); }); }),
   ]);
 });
 

@@ -294,14 +294,14 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const startBrowserMode: RecordingBrowserMode = usePcBrowser && pcBrowserMode ? pcBrowserMode : 'integrated';
   // The mode the CURRENT recording was started with (the switch may change afterwards).
   const [recordingBrowserMode, setRecordingBrowserMode] = useState<RecordingBrowserMode>('integrated');
+  // Mobile: the emulator or phone of this PC to record on; null records on the server's emulator.
+  const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
+  const [recordingDevice, setRecordingDevice] = useState<string | null>(null);
   // Opening the page asks again: the agent may have connected after login.
   useEffect(() => {
     void localAgent.check();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // Mobile: the emulator or phone of this PC to record on; null records on the server's emulator.
-  const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
-  const [recordingDevice, setRecordingDevice] = useState<string | null>(null);
   // The project's own TestRail configuration (projectIdTr) seeds the picker; the user can
   // still choose another project/section when executing.
   const testRail = useTestRailDestination(projectDetail?.testRail

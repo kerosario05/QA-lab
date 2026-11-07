@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { RevealableInput } from '../../components/ui/RevealableInput';
 import type { InputRequirement } from './input-requirements';
 import { composeSelectedInputRequirements, groupRuntimeInputRequirements, orderRuntimeInputsByStepOrder, type RuntimeInputPresentation } from './input-requirements';
 import {
@@ -133,7 +134,7 @@ function RequirementControl({
   let control: React.ReactNode;
   if (manualMode) {
     const manualType = controlType === 'select' || controlType === 'radio' ? 'text' : controlType;
-    control = <input {...commonProps} {...constraintProps} data-field-capability={capability?.kind ?? controlType} data-catalog-manual="true" type={manualType} />;
+    control = <RevealableInput {...commonProps} {...constraintProps} data-field-capability={capability?.kind ?? controlType} data-catalog-manual="true" type={manualType} />;
   } else if (boundCatalog) {
     control = (
       <div className="flex flex-col gap-1.5">
@@ -151,7 +152,7 @@ function RequirementControl({
       </div>
     );
   } else if (matches.length > 1) {
-    control = <div className="flex flex-col gap-1.5"><select className={commonProps.className} value="" onChange={event => { setCatalogId(event.target.value); onChange(''); }}><option value="">Selecciona catálogo…</option>{matches.map(catalog => <option key={catalog.id} value={catalog.id}>{catalog.name}</option>)}</select><input {...commonProps} {...constraintProps} type={controlType} /></div>;
+    control = <div className="flex flex-col gap-1.5"><select className={commonProps.className} value="" onChange={event => { setCatalogId(event.target.value); onChange(''); }}><option value="">Selecciona catálogo…</option>{matches.map(catalog => <option key={catalog.id} value={catalog.id}>{catalog.name}</option>)}</select><RevealableInput {...commonProps} {...constraintProps} type={controlType} /></div>;
   } else if (syntheticSupporting) {
     control = <span data-input-policy="safe_synthetic" className="text-[11px] text-white/45">Se resolverá en ejecución</span>;
   } else if (emptyChoice && requirement.required === true && (!capability || requirement.valuePolicy === 'scenario_controlled')) {
@@ -190,7 +191,7 @@ function RequirementControl({
   } else if (controlType === 'file') {
     control = <TestFileAssetInput area="runs" projectSlug={projectSlug} value={value} onChange={onChange} />;
   } else {
-    control = <input {...commonProps} {...constraintProps} data-field-capability={capability?.kind} type={controlType} />;
+    control = <RevealableInput {...commonProps} {...constraintProps} data-field-capability={capability?.kind} type={controlType} />;
   }
 
   return (

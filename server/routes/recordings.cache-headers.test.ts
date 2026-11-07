@@ -11,7 +11,8 @@ import type { Server } from 'http';
  * a conditional GET can never come back as 304 in the first place.
  */
 
-const PORT = 9879;
+// Port 0: the OS picks a free one, so test files running in parallel never collide.
+let PORT = 0;
 let app: ReturnType<typeof express>;
 let server: Server;
 
@@ -21,7 +22,10 @@ beforeAll(async () => {
   app.use(express.json());
   app.use('/api/recordings', recordingsRouter);
   await new Promise<void>((resolve) => {
-    server = app.listen(PORT, resolve);
+    server = app.listen(0, () => {
+      PORT = (server.address() as { port: number }).port;
+      resolve();
+    });
   });
 });
 

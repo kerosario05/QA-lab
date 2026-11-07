@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { RevealableInput } from '../../components/ui/RevealableInput';
 import { Key, Plus, Trash2 } from 'lucide-react';
 import type { TestDesignDatum } from '../../services/test-design';
 import { hasPlaceholders, isSensitiveKey, textParts } from './scenario-utils';
@@ -140,7 +141,7 @@ export function CaseDataPanel({
               {datum.controlType === 'file-set' ? <TestDocumentSetInput area="test-design" projectSlug={projectSlug} value={datum.value} disabled={readOnly} onChange={value => update(index, { value, catalogBinding: undefined })} /> : isFile ? <TestFileAssetInput area="test-design" projectSlug={projectSlug} value={datum.value} disabled={readOnly} onChange={fileRef => update(index, { value: fileRef, catalogBinding: undefined })} /> : binding ? <select className={darkInput} disabled={readOnly} value={datum.catalogBinding?.optionId ?? ''} aria-label={`Opción para ${datum.label ?? datum.key}`} onChange={event => {
                 const option = binding.options.find(item => item.id === event.target.value && item.active);
                 update(index, { value: option?.value ?? '', catalogBinding: { catalogId: binding.id, optionId: option?.id, revision: binding.revision, mode: datum.catalogBinding?.mode ?? 'manual' } });
-              }}><option value="">Selecciona valor…</option>{binding.options.filter(option => option.active).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select> : <input
+              }}><option value="">Selecciona valor…</option>{binding.options.filter(option => option.active).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select> : <RevealableInput
               type={datum.sensitive ? 'password' : 'text'}
               autoComplete="off"
               value={datum.value}
