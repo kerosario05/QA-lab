@@ -15,6 +15,7 @@ import type {
   TestDesignTestRailProject,
   TestDesignTestRailSuite,
   TestDesignTestRailSection,
+  TestDesignMetrics,
 } from './types';
 
 export * from './types';
@@ -65,6 +66,14 @@ function query(params: Record<string, string | boolean | undefined>): string {
 }
 
 export const testDesignApi = {
+  /** Dashboard summary, narrowed by the engine to the caller's drafts (or to `projectSlug`). */
+  metrics: async (params: { days?: number; projectSlug?: string } = {}): Promise<TestDesignMetrics> => {
+    const res = await api.get<{ metrics: TestDesignMetrics }>(
+      `${BASE}/metrics${query({ days: params.days ? String(params.days) : undefined, projectSlug: params.projectSlug })}`,
+    );
+    return res.metrics;
+  },
+
   listJiraProjects: async (): Promise<TestDesignJiraProject[]> => {
     const res = await api.get<{ projects: TestDesignJiraProject[] }>(`${BASE}/jira/projects`);
     return res.projects ?? [];

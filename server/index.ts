@@ -121,9 +121,33 @@ async function proxyEngineJson(req: any, res: any) {
   }
 }
 
+// Test-file fixtures: the upload is multipart, so stream it as-is (the JSON proxy would drop the bytes).
+async function proxyEngineFiles(req: any, res: any) {
+  const base = engineBaseUrl();
+  if (!base) return res.status(503).json({ ok: false, errorCode: 'ENGINE_NOT_CONFIGURED', message: 'SCENARIO_PREVIEW_BASE_URL is not set' });
+  try {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers as Record<string, any>)) {
+      if (!v || ['host', 'content-length', 'connection', 'transfer-encoding', 'expect'].includes(k.toLowerCase())) continue;
+      headers[k] = Array.isArray(v) ? v.join(',') : String(v);
+    }
+    const init: any = { method: req.method, headers };
+    if (req.method !== 'GET' && req.method !== 'HEAD') { init.body = req; init.duplex = 'half'; }
+    const r: any = await fetch(`${base}${req.originalUrl}`, init);
+    res.status(r.status).json(await r.json().catch(() => ({})));
+  } catch (err: any) {
+    res.status(502).json({ ok: false, errorCode: 'PROXY_ERROR', message: err.message });
+  }
+}
+
 // /api/projects → automation engine (SQL-backed multi-project storage)
 app.use(identityRouter);
+app.use(['/api/test-design/files', '/api/runs/test-files'], (req, res) => proxyEngineFiles(req, res));
+app.use('/api/runs/workflow-applications', (req, res) => proxyEngineJson(req, res));
 app.use('/api/test-design', (req, res) => proxyEngineJson(req, res));
+app.use('/api/service-catalog', (req, res) => proxyEngineJson(req, res));
+app.use('/api/service-bindings', (req, res) => proxyEngineJson(req, res));
+app.use('/api/data-cedulas', (req, res) => proxyEngineJson(req, res));
 
 app.all('/api/projects', async (req, res) => proxyProjects(req, res));
 app.all('/api/projects/*splat', async (req, res) => proxyProjects(req, res));

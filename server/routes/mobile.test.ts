@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import type { Server } from 'http';
 
-const PORT = 9878;
+// Port 0: the OS picks a free one, so test files running in parallel never collide.
+let PORT = 0;
 const ORIG_ENV = { ...process.env };
 
 let app: ReturnType<typeof express>;
@@ -15,7 +16,10 @@ beforeAll(async () => {
   app.use(express.json());
   app.use('/api/mobile', mobileRouter);
   await new Promise<void>((resolve) => {
-    server = app.listen(PORT, resolve);
+    server = app.listen(0, () => {
+      PORT = (server.address() as { port: number }).port;
+      resolve();
+    });
   });
 });
 

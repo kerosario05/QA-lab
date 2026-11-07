@@ -20,6 +20,15 @@ describe('Recording page — TestRail destination hand-off wiring', () => {
     expect(source).not.toContain('<TestRailDestinationPicker');
   });
 
+  // Mobile goes through the same destination screen as web, not an inline "Publicar y ejecutar".
+  it('mobile uses the same TestRail hand-off as web', () => {
+    expect(source).not.toContain('Publicar y ejecutar');
+    const button = source.indexOf('data-testid="recording-mobile-to-testrail"');
+    expect(button).toBeGreaterThan(-1);
+    expect(source.slice(button - 400, button)).toContain('onClick={handleReplay}');
+    expect(source).toContain("deviceSerial={projectDetail?.type === 'mobile' ? deviceSerial : null}");
+  });
+
   // CASE 2
   it('renames the web action to "Reproducir y subir a TestRail"', () => {
     expect(source).toContain('Reproducir y subir a TestRail');
@@ -39,6 +48,10 @@ describe('Recording page — TestRail destination hand-off wiring', () => {
   it('the destination screen receives the live recordingId and onBack only clears local state', () => {
     expect(source).toMatch(/recordingId=\{session\.recordingId\}/);
     expect(source).toMatch(/onBack=\{\(\)\s*=>\s*setTestRailUpload\(null\)\}/);
+  });
+
+  it('forwards per-scenario spec data to the TestRail launch screen', () => {
+    expect(source).toMatch(/scenarioSpecDatasetValues=\{testRailUpload\.scenarioSpecDatasetValues\}/);
   });
 
   // CASE 8: no TestRail project/suite/section literal reintroduced on this page.

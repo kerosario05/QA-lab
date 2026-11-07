@@ -339,8 +339,8 @@ function ExecutionDetail({ launchId, onBack }: { launchId: string; onBack: () =>
   };
 
   const backButton = (
-    <button onClick={onBack} className="text-[12px] text-[#58646D] hover:text-[#104B99] flex items-center gap-1 transition mb-4">
-      <ChevronLeft size={13} /> Volver a la lista
+    <button onClick={onBack} className="mb-4 inline-flex min-h-10 items-center gap-2 rounded-full border border-[#48A157]/25 bg-[#48A157] px-4 py-2 text-[11px] font-semibold text-white shadow-sm transition hover:border-[#347F43] hover:bg-[#347F43] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#48A157]/35 focus-visible:ring-offset-2">
+      <ChevronLeft size={14} strokeWidth={2.5} aria-hidden="true" /> Volver a la lista
     </button>
   );
 

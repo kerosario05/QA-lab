@@ -45,6 +45,8 @@ async function requestEditReview(body:unknown){
 export function JiraScenarioStepEditor({scenario,scenarios,issueKey,appSlug,initialValues={},onApply,onEditingChange}:{scenario:StoryScenario;scenarios:StoryScenario[];issueKey:string;appSlug:string;initialValues?:Record<string,string|boolean>;onApply:(reviewed:ReviewedLaunchScenario[],valuesByKey:Record<string,string>)=>void;onEditingChange?:(editing:boolean)=>void}){
  const [open,setOpen]=useState(false);
  const [steps,setSteps]=useState<string[]>([]);
+ const draggedStep=useRef<number|null>(null);
+ const [dropTarget,setDropTarget]=useState<number|null>(null);
  const [title,setTitle]=useState('');
  const [expectedResult,setExpectedResult]=useState('');
  const [draftValues,setDraftValues]=useState<Record<string,string|boolean>>({});
@@ -65,7 +67,18 @@ export function JiraScenarioStepEditor({scenario,scenarios,issueKey,appSlug,init
   }
   setSteps(currentSteps);setTitle(scenario.title);setExpectedResult(scenario.custom_expected??'');setDraftValues(values);setError('');setOpen(true);
  };
- const move=(index:number,delta:number)=>setSteps(previous=>{const next=[...previous];[next[index],next[index+delta]]=[next[index+delta],next[index]];return next;});
+ const reorder=(from:number,to:number)=>{
+  if(busy||from===to||from<0||to<0||from>=steps.length||to>=steps.length)return;
+  const order=steps.map((_,index)=>index);const [moved]=order.splice(from,1);order.splice(to,0,moved);
+  setSteps(order.map(index=>steps[index]));
+  setDraftValues(previous=>{
+   const next={...previous};
+   for(let index=0;index<steps.length;index++)delete next[`jira_edit_draft_${index+1}`];
+   order.forEach((oldIndex,newIndex)=>{const value=previous[`jira_edit_draft_${oldIndex+1}`];if(value!==undefined)next[`jira_edit_draft_${newIndex+1}`]=value;});
+   return next;
+  });
+ };
+ const move=(index:number,delta:number)=>reorder(index,index+delta);
  const apply=async()=>{
   if(!title.trim()||!expectedResult.trim()||!steps.length||steps.some(step=>!step.trim())){setError('Completa el título, todos los pasos y el resultado esperado.');return;}
   setBusy(true);setError('');
@@ -99,7 +112,8 @@ export function JiraScenarioStepEditor({scenario,scenarios,issueKey,appSlug,init
   <p className="mb-3 text-white/60">Los cambios se validan con la HU. Usa pasos de acción individuales y pasos «Validar…» para comprobar resultados. Se aplican a esta preparación de ejecución.</p>
   <fieldset disabled={busy} className="space-y-3">
    <label className="block">Título<input aria-label="Título del escenario" className="block mt-1 w-full rounded border border-white/20 bg-[#151922] p-2" value={title} onChange={event=>setTitle(event.target.value)}/></label>
-   {steps.map((step,index)=><div key={index} className="flex items-start gap-2">
+   {steps.map((step,index)=><div key={index} onDragOver={event=>{if(!busy&&draggedStep.current!==null){event.preventDefault();event.dataTransfer.dropEffect='move';setDropTarget(index);}}} onDrop={event=>{event.preventDefault();const from=draggedStep.current;draggedStep.current=null;setDropTarget(null);if(from!==null)reorder(from,index);}} className={`flex items-start gap-2 rounded ${dropTarget===index?'ring-2 ring-[#5EC470]':''}`}>
+    <button type="button" draggable={!busy} aria-label={`Arrastrar paso ${index+1}`} title="Arrastra para mover este paso" onDragStart={event=>{draggedStep.current=index;event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',String(index));}} onDragEnd={()=>{draggedStep.current=null;setDropTarget(null);}} className="p-2 cursor-grab active:cursor-grabbing text-white/60">⋮⋮</button>
     <span className="pt-2 w-5">{index+1}</span>
     <div className="flex-1 min-w-0"><textarea aria-label={`Paso ${index+1}`} rows={2} className="w-full rounded border border-white/20 bg-[#151922] p-2" value={step} onChange={event=>setSteps(previous=>previous.map((value,i)=>i===index?event.target.value:value))}/>
      <JiraStepInputs fields={draftInputRequirements(steps).filter(field=>field.stepIndex===index+1)} values={draftValues} onChange={(fieldKey,value)=>setDraftValues(previous=>({...previous,[fieldKey]:value}))}/>

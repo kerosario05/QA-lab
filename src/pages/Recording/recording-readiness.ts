@@ -21,6 +21,7 @@ function fallbackRequirement(field: RecordedDataField): RuntimeInputRequirement 
     resolved: derived || value !== null,
     editable: !derived,
     sensitive: field.sensitive,
+    ...(field.controlType ? { controlType: field.controlType } : {}),
     masked: field.sensitive,
     stepIndex: field.stepIndex,
     ...(field.technicalTargetRefs ? { technicalTargetRefs: field.technicalTargetRefs } : {}),
@@ -60,7 +61,9 @@ export function resolveScenarioReadiness(scenario: RecordedScenario, values: Rea
       source: values[requirement.valueKey] !== undefined ? 'CURRENT_QA_EDIT' : requirement.source,
       authority: values[requirement.valueKey] !== undefined ? 'explicit_qa_edit' : requirement.authority,
       authorityValue: values[requirement.valueKey] !== undefined ? value : requirement.authorityValue,
-      resolved: typeof value === 'string' ? value.trim().length > 0 : false,
+      resolved: requirement.controlType === 'file-set'
+        ? isCompleteDocumentSet(value)
+        : typeof value === 'string' ? value.trim().length > 0 : false,
     };
   });
   const missingByKey = new Map<string, RuntimeInputRequirement>();
@@ -141,6 +144,18 @@ export function resolveScenarioReadiness(scenario: RecordedScenario, values: Rea
   const promotionReadiness = executionReadiness && technicalReadiness;
   const publicationContentReadiness = functionalReadiness && mutationEffectReadiness && scenario.testRailSteps.every((step) => Boolean(step.content?.trim()));
   return { functionalReadiness, dataReadiness, technicalReadiness, oracleReadiness, reviewReadiness: oracleReadiness, publicationContentReadiness, executionReadiness, promotionReadiness, publicationReadiness: functionalReadiness && dataReadiness && publicationContentReadiness, missingInputs };
+}
+
+function isCompleteDocumentSet(value: string | null): boolean {
+  if (!value?.trim()) return false;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const entries = Object.entries(parsed as Record<string, unknown>);
+    return entries.length > 0 && entries.length <= 20 && entries.every(([label, ref]) =>
+      label.trim().length > 0 && typeof ref === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(ref),
+    );
+  } catch { return false; }
 }
 
 export function readinessBadge(readiness: RecordingReadiness): string {

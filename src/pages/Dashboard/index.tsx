@@ -30,9 +30,12 @@ export function DashboardView({ onOpenRun, onCloseExecution }: DashboardViewProp
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const dataRef = useRef<DashboardData | null>(null);
+  const refreshingRef = useRef(false);
 
-  const refresh = useCallback(async (initial = false) => {
-    if (initial || !dataRef.current) setLoading(true);
+  const refresh = useCallback(async () => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    setLoading(true);
     try {
       const next = await loadDashboardData();
       dataRef.current = next;
@@ -42,12 +45,13 @@ export function DashboardView({ onOpenRun, onCloseExecution }: DashboardViewProp
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'No se pudieron cargar los datos del Panorama.');
     } finally {
+      refreshingRef.current = false;
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void refresh(true);
+    void refresh();
     const interval = window.setInterval(() => void refresh(), 60_000);
     return () => window.clearInterval(interval);
   }, [refresh]);
@@ -86,13 +90,14 @@ export function DashboardView({ onOpenRun, onCloseExecution }: DashboardViewProp
 
       {error && data && <div role="status" className="mb-4 flex items-center gap-2 rounded-xl border border-[#F1E4BE] bg-[#FBF5E6] px-4 py-3 text-[11px] text-[#8B6A20]"><AlertTriangle size={14} /> No se pudo actualizar; se conservan los últimos datos recibidos. {error}</div>}
       {!data && loading && <DashboardMessage title="Cargando Panorama" detail="Consultando los proyectos y ejecuciones del backend." loading />}
-      {!data && !loading && error && <DashboardMessage title="No se cargaron las métricas" detail={error} onRetry={() => void refresh(true)} />}
+      {!data && !loading && error && <DashboardMessage title="No se cargaron las métricas" detail={error} onRetry={() => void refresh()} />}
       {data && selectedProject && (
         <ProjectDashboard
           project={selectedProject}
           executions={data.executions.filter((execution) => execution.appSlug === selectedProject.slug)}
           activeRuns={data.activeRuns.filter((run) => run.project === selectedProject.name)}
           onBack={() => setSelectedProjectSlug(null)}
+          refreshKey={String(data.loadedAt)}
           onCloseExecution={onCloseExecution}
         />
       )}

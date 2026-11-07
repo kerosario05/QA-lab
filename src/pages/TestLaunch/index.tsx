@@ -1,3 +1,4 @@
+import { JiraWorkflowApplications } from '../../components/JiraWorkflowApplications';
 import {JiraScenarioReview,jiraReviewBlockingErrors,jiraReviewBlockingMessages,JiraReviewErrorNotice} from './JiraScenarioReview';
 import {JiraScenarioStepEditor,applyReviewedLaunchScenario} from './JiraScenarioStepEditor';
 import {jiraPrerequisiteSummary} from './jira-prerequisites';
@@ -23,6 +24,7 @@ import { runsProxy } from '../../services/runs';
 import { newmanProxy } from '../../services/newman';
 import type { NewmanRunPayload, NewmanCollection } from '../../services/newman';
 import { mobileProxy } from '../../services/mobile';
+import { DevicePicker } from '../../components/localAgent/DevicePicker';
 import type {
   EmulatorStatus, AppiumStatus, MobileScenario, MobileRejectedScenario,
   MobileScenarioGenerationIssueProgress, MobileScenarioGenerationStatusResponse,
@@ -465,7 +467,10 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   // Authority for the mobile "Continuar" gate: BOTH infra must be truly ready.
   // emulator ready = running && bootCompleted; appium ready = ready flag.
-  const infrastructureReady = !!(emulatorStatus?.running && emulatorStatus?.bootCompleted && appiumStatus?.ready);
+  // An emulator or phone of the user's PC replaces both: the picker only offers usable devices.
+  const [mobileDeviceSerial, setMobileDeviceSerial] = useState<string | null>(null);
+  const infrastructureReady = !!mobileDeviceSerial || !!(emulatorStatus?.running && emulatorStatus?.bootCompleted && appiumStatus?.ready);
+  const mobileDevice = mobileDeviceSerial ? { deviceSerial: mobileDeviceSerial } : {};
 
   const [mobileScenarios, setMobileScenarios] = useState<MobileScenario[]>([]);
   const [mobileRejected, setMobileRejected] = useState<MobileRejectedScenario[]>([]);
@@ -912,7 +917,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
 
   // ── Poll emulator + Appium status while on the mobile Emulador step ─────
   useEffect(() => {
-    if (step !== 2 || currentProjectType !== 'mobile') return;
+    if (step !== 2 || currentProjectType !== 'mobile' || mobileDeviceSerial) return;
 
     const refresh = () => {
       mobileProxy.getEmulatorStatus().then(setEmulatorStatus).catch(() => {});
@@ -921,7 +926,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
     refresh();
     const interval = setInterval(refresh, 4_000);
     return () => clearInterval(interval);
-  }, [step, currentProjectType]);
+  }, [step, currentProjectType, mobileDeviceSerial]);
 
   const handleStartEmulator = () => {
     setEmulatorActionLoading(true);
@@ -1385,6 +1390,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
       jiraKey: scs[0]?.sourceIssueKey,
       publishStrategy: 'always_create',
       scenarios: scs,
+      ...mobileDevice,
     });
 
     setMobilePublishing(true);
@@ -1406,7 +1412,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         if (!appPackage && !apkPath) {
           throw new Error('El proyecto no tiene APK ni package configurado. Configúralo en Configuración.');
         }
-        setMobileLaunchPhase('Aprendiendo ruta en el emulador…');
+        setMobileLaunchPhase(mobileDeviceSerial ? `Aprendiendo ruta en ${mobileDeviceSerial}…` : 'Aprendiendo ruta en el emulador…');
         // Contexto de la HU para la capa interpretativa (IA) del walk + flowId para persistir el flujo.
         const rlScenarios = publish.routeLearningScenarios ?? [];
         const primaryIssueKey = rlScenarios[0]?.sourceIssueKey ?? scenariosToLaunch[0]?.sourceIssueKey;
@@ -1430,6 +1436,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         }
         const learn = await mobileProxy.startRouteLearning({
           appSlug,
+          ...mobileDevice,
           ...(appPackage ? { appPackage } : { apkPath: apkPath! }),
           ...(flowId && primaryIssueKey ? { flowId, triggerKeywords: [primaryIssueKey] } : {}),
           ...(learnScreenData.length > 0 ? { screenData: learnScreenData } : {}),
@@ -1514,6 +1521,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         appSlug,
         scenarios: scenariosToLaunch.map(s => ({ scenarioId: s.scenarioId, title: s.title, steps: s.steps, requiredData: s.requiredData })),
         ...(Object.keys(dataOverrides).length > 0 ? { dataOverrides } : {}),
+        ...mobileDevice,
       });
 
       // 4) Navegar a la pantalla de ejecución
@@ -2336,7 +2344,7 @@ try {
     : isMobileProject
     ? [
         { n: 1, label: 'Proyecto', icon: Boxes },
-        { n: 2, label: 'Emulador', icon: Layers },
+        { n: 2, label: 'Dispositivo', icon: Layers },
         { n: 3, label: 'Fuentes', icon: GitBranch },
         { n: 4, label: 'Escenarios', icon: ScanLine },
         { n: 5, label: 'Publicar y ejecutar', icon: Rocket },
@@ -2466,6 +2474,7 @@ try {
             <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Colección y reporte</h2>
             <p className="text-[13px] text-[#58646D] mb-7">Elige la colección Newman y el destino TestRail.</p>
 
+            <JiraWorkflowApplications projectSlug={config.automationProject} area="runs" />
             <div className="grid grid-cols-2 gap-5">
 
               {/* ΓöÇΓöÇ Panel Newman ΓöÇΓöÇ */}
@@ -2734,9 +2743,14 @@ try {
         {step === 2 && isMobileProject && (
           <BentoCard className="!p-8">
             <div className="text-[10px] uppercase tracking-[0.2em] text-[#48A157] font-semibold mb-2">Paso dos · Infraestructura</div>
-            <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Emulador Android</h2>
-            <p className="text-[13px] text-[#58646D] mb-7">Arranca el emulador y verifica Appium antes de generar escenarios.</p>
+            <h2 className="text-[34px] font-medium text-[#1a1f2e] mb-1 leading-tight" style={{ fontFamily: 'Geist, system-ui, sans-serif', letterSpacing: '-0.03em' }}>Dispositivo Android</h2>
+            <p className="text-[13px] text-[#58646D] mb-7">Elige el emulador o teléfono de tu equipo donde se ejecutarán las pruebas, o usa el emulador del servidor.</p>
 
+            <div className="mb-6 max-w-xl">
+              <DevicePicker value={mobileDeviceSerial} onChange={setMobileDeviceSerial} purpose="launch" />
+            </div>
+
+            {!mobileDeviceSerial && (<>
             <div className="grid grid-cols-2 gap-5 mb-6">
               <div className="bg-[#FAFAF7] rounded-2xl p-5 space-y-3">
                 <div className="flex items-center justify-between">
@@ -2792,6 +2806,7 @@ try {
                 ))}
               </div>
             )}
+            </>)}
           </BentoCard>
         )}
 
@@ -2989,7 +3004,7 @@ try {
 
                         return (
                           <div key={story.jiraKey}>
-                            <JiraCommonInputs story={story} values={jiraCommonValues[story.jiraKey] ?? {}} catalogs={jiraProjectCatalogs} onChange={(fieldKey,value) => setJiraCommonValues(prev => ({...prev,[story.jiraKey]:{...prev[story.jiraKey],[fieldKey]:value}}))}/>
+                            <JiraCommonInputs story={story} values={jiraCommonValues[story.jiraKey] ?? {}} catalogs={jiraProjectCatalogs} projectSlug={config.automationProject} onChange={(fieldKey,value) => setJiraCommonValues(prev => ({...prev,[story.jiraKey]:{...prev[story.jiraKey],[fieldKey]:value}}))}/>
                             {/* ΓöÇΓöÇ Story header row ΓöÇΓöÇ */}
                             <div className={cn(
                               'flex items-center gap-3 px-6 py-3 bg-[#FAFAF9] border-b border-[#F4F1EA]',
@@ -3200,7 +3215,7 @@ try {
                                                 <span className="text-[10px] font-mono text-white/30 flex-shrink-0 w-5 text-right mt-0.5">{idx + 1}</span>
                                                 <div className="flex-1 min-w-0">
                                                   <div className="text-[11px] font-mono text-white/75 leading-relaxed">{s.content}</div>
-                                                  <JiraStepInputs fields={(sc.inputRequirements ?? []).filter(field => field.stepIndex === idx + 1)} values={resolveJiraScenarioValues(story, story.scenarios.indexOf(sc), webDataValues[key] ?? {}, jiraCommonValues)} onChange={(fieldKey, value) => setWebFieldValue(key, fieldKey, value)} catalogs={jiraProjectCatalogs} />
+                                                  <JiraStepInputs fields={(sc.inputRequirements ?? []).filter(field => field.stepIndex === idx + 1)} values={resolveJiraScenarioValues(story, story.scenarios.indexOf(sc), webDataValues[key] ?? {}, jiraCommonValues)} onChange={(fieldKey, value) => setWebFieldValue(key, fieldKey, value)} catalogs={jiraProjectCatalogs} projectSlug={config.automationProject} />
                                                   {s.expected && (
                                                     <div className="text-[10px] font-mono text-[#5EC470]/60 mt-0.5">ΓåÆ {s.expected}</div>
                                                   )}
@@ -3614,8 +3629,9 @@ try {
               setStep(s => Math.max(1, s - 1));
             }}
             disabled={step === 1}
-            className="text-[12px] font-medium px-4 py-2.5 rounded-full disabled:opacity-30 disabled:cursor-not-allowed text-[#58646D] hover:bg-white hover:text-[#1a1f2e] transition flex items-center gap-1.5">
-            <ChevronLeft size={13} /> Atrás
+            className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[#48A157]/25 bg-[#48A157] px-4 py-2 text-[11px] font-semibold text-white shadow-sm transition hover:border-[#347F43] hover:bg-[#347F43] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#48A157]/35 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-30">
+            <ChevronLeft size={14} strokeWidth={2.5} aria-hidden="true" />
+            <span>Atrás</span>
           </button>
           {step < maxStep ? (
             <div className="flex flex-col items-end gap-2">

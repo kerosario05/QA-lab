@@ -2,6 +2,7 @@ import { canonicalInputKey, type InputRequirement } from './input-requirements';
 
 export type RuntimeEntry = {
   key: string;
+  fieldLabel?: string;
   value: string;
   source: string;
   sensitive: boolean;
@@ -195,6 +196,7 @@ export function buildRuntimeEntriesByCase(
       if (!hasRequiredValue(raw)) continue;
       entries.push({
         key: requirement.key,
+        fieldLabel: requirement.label,
         value: raw as string,
         source: 'manual_runtime',
         sensitive: requirement.sensitive === true,

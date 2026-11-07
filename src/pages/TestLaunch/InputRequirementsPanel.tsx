@@ -13,6 +13,9 @@ import {
 } from './input-requirements-values';
 import { cn } from '../../constants/theme';
 import { matchProjectDataCatalogs, projectDataCatalogApi, type ProjectDataCatalog } from '../../services/project-data-catalog';
+import { TestDocumentSetInput } from '../../components/TestDocumentSetInput';
+import { TestFileAssetInput } from '../../components/TestFileAssetInput';
+import { DataGeneratorButton } from '../../services/data-services';
 
 type RequirementCase = {
   id: number;
@@ -48,6 +51,11 @@ function resolveControlType(requirement: InputRequirement): string {
     .find((label): label is string => typeof label === 'string' && label.trim() !== '');
   const declaredKind = requirement.fieldCapability?.kind
     ?? requirement.controlType?.trim().toLowerCase();
+  const authoredKind = requirement.controlType?.trim().toLowerCase();
+
+  // File contracts are authored by the Jira step parser. A generic/unknown
+  // capability inferred from TestRail must not turn them into ordinary text.
+  if (authoredKind === 'file' || authoredKind === 'file-set') return authoredKind;
 
   // `sensitive` is used by the runtime for data handling and can include OTPs,
   // tokens, user IDs, and account data. It must not decide the visual input mask.
@@ -75,12 +83,14 @@ function RequirementControl({
   value,
   onChange,
   catalogs = [],
+  projectSlug,
 }: {
   requirement: InputRequirement;
   presentation?: RuntimeInputPresentation;
   value: string;
   onChange: (value: string) => void;
   catalogs?: ProjectDataCatalog[];
+  projectSlug?: string;
 }) {
   const controlType = resolveControlType(requirement);
   const capability = requirement.fieldCapability;
@@ -90,7 +100,8 @@ function RequirementControl({
     || requirement.semanticField
     || requirement.label
     || requirement.key;
-  const catalogEligible = requirement.sensitive !== true && !CATALOG_SENSITIVE_LABEL.test(label) && !CATALOG_SENSITIVE_LABEL.test(requirement.key);
+  const sensitivityBlocksCatalog = requirement.sensitive === true || CATALOG_SENSITIVE_LABEL.test(label) || CATALOG_SENSITIVE_LABEL.test(requirement.key);
+  const catalogEligible = !controlType.startsWith('file') && !sensitivityBlocksCatalog;
   const matches = catalogEligible ? matchProjectDataCatalogs(label, catalogs) : [];
   const [catalogId, setCatalogId] = useState(() => matches.length === 1 ? matches[0].id : '');
   const [manualMode, setManualMode] = useState(false);
@@ -174,15 +185,10 @@ function RequirementControl({
         ))}
       </select>
     );
+  } else if (controlType === 'file-set') {
+    control = <TestDocumentSetInput area="runs" projectSlug={projectSlug} value={value} onChange={onChange} />;
   } else if (controlType === 'file') {
-    control = (
-      <input
-        {...(commonProps as any)}
-        type="file"
-        data-field-capability={capability?.kind}
-        onChange={(event) => onChange(event.target.files?.[0]?.name ?? '')}
-      />
-    );
+    control = <TestFileAssetInput area="runs" projectSlug={projectSlug} value={value} onChange={onChange} />;
   } else {
     control = <input {...commonProps} {...constraintProps} data-field-capability={capability?.kind} type={controlType} />;
   }
@@ -191,14 +197,21 @@ function RequirementControl({
     // The technical key only repeated the label under every field; it stays as a data attribute and
     // tooltip for debugging instead of visible text.
     <div className="flex flex-col gap-1" data-technical-input-key={inputKey} title={inputKey}>
-      <label className="flex flex-col gap-1">
+      {controlType.startsWith('file') ? <>
         <span className="text-[11px] font-medium text-white/75 flex items-center gap-1">
-          {label}
-           {requirement.required === true && !syntheticSupporting && <span className="text-[#F4A261]">*</span>}
+          {label}{requirement.required === true && !syntheticSupporting && <span className="text-[#F4A261]">*</span>}
+          <DataGeneratorButton projectSlug={projectSlug} label={label} fieldKey={requirement.key} onGenerated={onChange} className="ml-1" />
         </span>
         {control}
-      </label>
-      {!catalogEligible && <span className="text-[10px] text-white/40">Por seguridad, este dato sensible no puede usar catálogos.</span>}
+      </> : <label className="flex flex-col gap-1">
+        <span className="text-[11px] font-medium text-white/75 flex items-center gap-1">
+          {label}
+          {requirement.required === true && !syntheticSupporting && <span className="text-[#F4A261]">*</span>}
+          <DataGeneratorButton projectSlug={projectSlug} label={label} fieldKey={requirement.key} onGenerated={onChange} className="ml-1" />
+        </span>
+        {control}
+      </label>}
+      {sensitivityBlocksCatalog && <span className="text-[10px] text-white/40">Por seguridad, este dato sensible no puede usar catálogos.</span>}
     </div>
   );
 }
@@ -237,6 +250,7 @@ export function InlineInputRequirements({
       value={runtimeInputValues?.[presentation.inputKey] ?? ''}
       onChange={(value) => onRuntimeInput?.(caseId, presentation.inputKey, value)}
       catalogs={catalogs}
+      projectSlug={projectSlug}
     />
   );
 
@@ -262,10 +276,12 @@ export function CommonInputRequirements({
   requirements,
   values,
   onChange,
+  projectSlug,
 }: {
   requirements: InputRequirement[];
   values: Record<string, string>;
   onChange: (key: string, value: string) => void;
+  projectSlug?: string;
 }) {
   if (requirements.length === 0) return null;
   const grouped = groupRuntimeInputRequirements(requirements);
@@ -276,6 +292,7 @@ export function CommonInputRequirements({
       presentation={presentation}
       value={values[presentation.inputKey] ?? ''}
       onChange={(value) => onChange(presentation.inputKey, value)}
+      projectSlug={projectSlug}
     />
   );
   return (
@@ -301,6 +318,7 @@ export function InputRequirementsPanel({
   onRuntimeInput,
   runtimeInputValuesByCaseId,
   onBlocked,
+  projectSlug,
 }: InputRequirementsPanelProps) {
   const composition = useMemo(
     () => composeSelectedInputRequirements(cases, selectedCaseIds),
@@ -359,6 +377,7 @@ export function InputRequirementsPanel({
                 key={requirement.key}
                 requirement={requirement}
                 value={values.shared[requirement.key] ?? ''}
+                projectSlug={projectSlug}
                 onChange={(value) => {
                   setValues((prev) => setSharedValue(prev, requirement.key, value));
                   for (const caseId of selectedCaseIds) onRuntimeInput?.(caseId, requirement.key, value);
@@ -388,6 +407,7 @@ export function InputRequirementsPanel({
                     key={requirement.key}
                     requirement={requirement}
                     value={values.byCase[caseId]?.[requirement.key] ?? ''}
+                    projectSlug={projectSlug}
                     onChange={(value) => {
                       setValues((prev) => setByCaseValue(prev, caseId, requirement.key, value));
                       onRuntimeInput?.(Number(caseId), requirement.key, value);

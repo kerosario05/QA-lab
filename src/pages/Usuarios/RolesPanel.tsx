@@ -26,12 +26,18 @@ export function RolesPanel({ roles, modules, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const selected = roles.find((r) => r.id === selectedId) ?? null;
-  const current = draft ?? new Set(selected?.permissions ?? []);
+  // A role can hold keys this engine no longer has (a module from another release). They are
+  // never shown, and sending them back makes the engine refuse the whole list, so the editor
+  // works only with the catalog's keys; saving drops the unknown ones.
+  const catalogKeys = new Set(modules.flatMap((module) => module.permissions.map((permission) => permission.key)));
+  const savedKnown = (selected?.permissions ?? []).filter((key) => catalogKeys.has(key));
+  const unknownKeys = (selected?.permissions ?? []).filter((key) => !catalogKeys.has(key));
+  const current = draft ?? new Set(savedKnown);
   const dirty =
     draft !== null &&
     selected !== null &&
-    (draft.size !== selected.permissions.length ||
-      selected.permissions.some((p) => !draft.has(p)));
+    (draft.size !== savedKnown.length ||
+      savedKnown.some((p) => !draft.has(p)));
 
   function select(role: AdminRole) {
     setSelectedId(role.id);
@@ -52,7 +58,7 @@ export function RolesPanel({ roles, modules, onChanged }: Props) {
     setBusy(true);
     setError(null);
     try {
-      await rolesApi.setPermissions(selected.id, [...current]);
+      await rolesApi.setPermissions(selected.id, [...current].filter((key) => catalogKeys.has(key)));
       setDraft(null);
       onChanged(
         `Permisos de "${selected.name}" actualizados.` +
@@ -145,6 +151,12 @@ export function RolesPanel({ roles, modules, onChanged }: Props) {
             {error && (
               <div className="rounded-lg bg-[#FEF2F2] border border-[#FECACA] px-3 py-2 text-[11.5px] text-[#991B1B] mb-4">
                 {error}
+              </div>
+            )}
+
+            {unknownKeys.length > 0 && (
+              <div className="rounded-lg bg-[#FFF9E9] border border-[#E8D9B5] px-3 py-2 text-[11px] text-[#765D22] mb-4">
+                Este rol tiene permisos que esta versión no reconoce ({unknownKeys.join(', ')}). Al guardar se quitarán.
               </div>
             )}
 

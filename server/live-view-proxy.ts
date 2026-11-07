@@ -18,9 +18,10 @@ const LIVE_PATH = /^\/api\/recordings\/[^/?#]+\/live(?:[?#].*)?$/;
 /**
  * The same tunnel carries the local agent's WebSockets: the agent on a user's PC reaches the
  * engine through this port, the only one the network lets through. The engine authenticates
- * the agent itself (agent id, optional LOCAL_AGENT_KEY, one-time token per browser).
+ * the agent itself (agent id, optional LOCAL_AGENT_KEY, one-time token per browser or stream).
+ * `stream` carries one TCP connection to the adb or Appium on the user's PC.
  */
-const LOCAL_AGENT_PATH = /^\/api\/local-agent\/(?:control|cdp)(?:[?#].*)?$/;
+const LOCAL_AGENT_PATH = /^\/api\/local-agent\/(?:control|cdp|stream)(?:[?#].*)?$/;
 const HOP_BY_HOP = new Set(['host', 'connection', 'upgrade', 'keep-alive', 'proxy-connection', 'transfer-encoding']);
 
 function reject(socket: Duplex, status: number, message: string): void {

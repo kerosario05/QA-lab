@@ -1,3 +1,4 @@
+import { documentSetComplete } from '../../components/TestDocumentSetInput';
 import type {
   TestDesignDatum,
   TestDesignDraftStory,
@@ -100,6 +101,23 @@ export function isGeneratedFromCurrentStory(scenario: TestDesignScenario): boole
   return Boolean(scenario.jiraSourceScenarioId || scenario.jiraSourceScenario);
 }
 
+/** A Jira review is tied to the exact authored actions and expected result it inspected. */
+export function generatedReviewPending(scenario: TestDesignScenario): boolean {
+  if (!isGeneratedFromCurrentStory(scenario) || !scenario.jiraSourceScenario || typeof scenario.jiraSourceScenario !== 'object') return false;
+  const source = scenario.jiraSourceScenario as { steps?: unknown; expectedResult?: unknown };
+  if (!Array.isArray(source.steps) || typeof source.expectedResult !== 'string') return false;
+  const sourceSteps = source.steps.map((step) => {
+    if (typeof step === 'string') return step.trim();
+    if (step && typeof step === 'object' && typeof (step as { action?: unknown }).action === 'string') {
+      return (step as { action: string }).action.trim();
+    }
+    return '';
+  }).filter(Boolean);
+  const currentSteps = scenario.steps.map((step) => step.action.trim()).filter(Boolean);
+  return JSON.stringify([currentSteps, scenario.expectedResult.trim()])
+    !== JSON.stringify([sourceSteps, source.expectedResult.trim()]);
+}
+
 /** Keep archived/retained rows intact in storage while the workspace operates only on generated cases. */
 export function currentGeneratedScenarios(scenarios: TestDesignScenario[]): TestDesignScenario[] {
   return scenarios.filter(isGeneratedFromCurrentStory);
@@ -143,14 +161,32 @@ export function uncoveredAcceptanceCriteria(scenarios: TestDesignScenario[], gen
 
 /** Coverage gaps belong in the story summary, not repeated on every case card. */
 export function scenarioReviewWarnings(scenario: TestDesignScenario): string[] {
-  return (scenario.generationWarnings ?? []).filter((warning) =>
-    !/Cobertura de la HU pendiente:|Faltan criterios de aceptación:|JIRA_ACCEPTANCE_COVERAGE_INCOMPLETE/i.test(warning.trim()));
+  const issues = generatedContractIssues(scenario);
+  const activeCodes = new Set(issues.filter((issue) => !issue.stale).map((issue) => issue.code));
+  const reviewPending = generatedReviewPending(scenario);
+  const validation = scenario.jiraSourceScenario && typeof scenario.jiraSourceScenario === 'object'
+    ? (scenario.jiraSourceScenario as { validation?: { errors?: unknown; issues?: unknown } }).validation
+    : undefined;
+  const hasCurrentReview = !reviewPending && Boolean(validation)
+    && (Array.isArray(validation?.errors) || Array.isArray(validation?.issues));
+  return (scenario.generationWarnings ?? []).filter((warning) => {
+    const text = warning.trim();
+    if (/Cobertura de la HU pendiente:|Faltan criterios de aceptación:|JIRA_ACCEPTANCE_COVERAGE_INCOMPLETE/i.test(text)) return false;
+    const code = text.match(/^Revisar este caso antes de publicarlo:\s*(JIRA_[A-Z0-9_]+)\b/)?.[1];
+    // Generation-time findings belong to the source revision. Hide them while the
+    // current edit is being re-reviewed, then retain only findings in that review.
+    return !code || (reviewPending ? false : !hasCurrentReview || activeCodes.has(code));
+  });
 }
 
 export function hasValidGeneratedContract(scenario: TestDesignScenario): boolean {
   if (!isGeneratedFromCurrentStory(scenario) || !scenario.jiraSourceScenario || typeof scenario.jiraSourceScenario !== 'object') return false;
+  if (generatedReviewPending(scenario)) return false;
   const validation = (scenario.jiraSourceScenario as { validation?: { valid?: unknown } }).validation;
-  return validation?.valid === true;
+  return validation?.valid === true
+    && generatedContractErrors(scenario).length === 0
+    && generatedContractIssues(scenario).every(issue => issue.stale)
+    && scenarioReviewWarnings(scenario).length === 0;
 }
 
 export function generatedContractErrors(scenario: TestDesignScenario): string[] {
@@ -160,9 +196,9 @@ export function generatedContractErrors(scenario: TestDesignScenario): string[] 
 }
 
 const CONTRACT_ISSUE_GUIDANCE: Record<string, string> = {
-  JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT: 'Agrega la navegación y la acción que dejan visible el contexto donde se comprobará la ausencia.',
+  JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT: 'Antes de comprobar la ausencia, agrega una validación positiva del estado visible de rechazo definido por la HU después de intentar la acción. Conserva la comprobación de ausencia a continuación, en ese mismo contexto.',
   JIRA_ADDED_ROW_IDENTITY_INCOMPLETE: 'Después de guardar, comprueba en la misma fila todos los identificadores que se ingresaron.',
-  JIRA_ASSERTION_CAPABILITY_UNSUPPORTED: 'Cambia la comprobación por un resultado visible que el motor pueda verificar.',
+  JIRA_ASSERTION_CAPABILITY_UNSUPPORTED: 'En este paso, describe una condición visible que el motor pueda comprobar y especifica el texto o estado esperado en la columna «Resultado esperado». Usa el resultado definido por la HU; no inventes mensajes.',
   JIRA_DUPLICATE_BASELINE_UNOBSERVED: 'Comprueba el estado inicial del registro antes de intentar duplicarlo.',
   JIRA_DUPLICATE_CASE_SETUP_UNDECLARED: 'Declara los valores de búsqueda o identidad que distinguen el caso duplicado.',
   JIRA_DUPLICATE_TARGET_AMBIGUOUS: 'Especifica cuál registro o control es el objetivo de la duplicación.',
@@ -174,24 +210,29 @@ const CONTRACT_ISSUE_GUIDANCE: Record<string, string> = {
   JIRA_UNSUPPORTED_INTENT: 'Reformula el paso con una acción que el motor soporte: Presionar, Ingresar, Seleccionar, Solicitar o Validar.',
 };
 
-export function generatedContractIssues(scenario: TestDesignScenario): Array<{ code: string; stepIndex?: number; location?: 'expected_result'; guidance: string }> {
+export function generatedContractIssues(scenario: TestDesignScenario): Array<{ code: string; stepIndex?: number; location?: 'expected_result'; stale?: boolean; guidance: string }> {
   if (!isGeneratedFromCurrentStory(scenario) || !scenario.jiraSourceScenario || typeof scenario.jiraSourceScenario !== 'object') return [];
   const validation = scenario.jiraSourceScenario as { validation?: { errors?: unknown; issues?: unknown } };
   const details = Array.isArray(validation.validation?.issues) ? validation.validation.issues : [];
-  const result: Array<{ code: string; stepIndex?: number; location?: 'expected_result'; guidance: string }> = [];
+  const result: Array<{ code: string; stepIndex?: number; location?: 'expected_result'; stale?: boolean; guidance: string }> = [];
   const seen = new Set<string>();
-  const add = (code: string, stepIndex?: number, location?: 'expected_result') => {
+  const normalizeDiagnosticText = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const add = (code: string, stepIndex?: number, location?: 'expected_result', stale = false) => {
     const key = `${code}:${stepIndex ?? ''}:${location ?? ''}`;
     if (seen.has(key)) return;
     seen.add(key);
-    const guidance = location === 'expected_result' && code === 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'
-      ? 'Indica un resultado esperado visible en pantalla que el motor pueda comprobar.'
-      : CONTRACT_ISSUE_GUIDANCE[code] ?? code.replace(/^JIRA_/, '').replaceAll('_', ' ').toLowerCase();
-    result.push({ code, ...(stepIndex ? { stepIndex } : {}), ...(location ? { location } : {}), guidance });
+    const guidance = stale
+      ? 'La revisión corresponde a una versión anterior: el paso cambió o se eliminó. Espera a que el escenario se guarde para obtener la validación actual.'
+      : location === 'expected_result' && code === 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'
+        ? 'En el campo «Resultado esperado», debajo de los pasos, indica el estado visible que debe aparecer tras el rechazo. Si verificas que no hay comprobante, deja esa ausencia como paso aparte y describe aquí el rechazo observable definido por la HU; no inventes mensajes.'
+        : location === 'expected_result'
+          ? `Revisa el campo «Resultado esperado», debajo de los pasos: indica el estado visible que define la HU. No inventes mensajes.`
+          : CONTRACT_ISSUE_GUIDANCE[code] ?? code.replace(/^JIRA_/, '').replaceAll('_', ' ').toLowerCase();
+    result.push({ code, ...(stepIndex ? { stepIndex } : {}), ...(location ? { location } : {}), ...(stale ? { stale: true } : {}), guidance });
   };
   for (const detail of details) {
     if (!detail || typeof detail !== 'object') continue;
-    const issue = detail as { code?: unknown; reason?: unknown; stepIndex?: unknown; step?: unknown; location?: unknown };
+    const issue = detail as { code?: unknown; reason?: unknown; stepIndex?: unknown; step?: unknown; expectedResult?: unknown; location?: unknown };
     const code = typeof issue.code === 'string' ? issue.code : typeof issue.reason === 'string' ? issue.reason : '';
     if (!code) continue;
     // Acceptance coverage belongs to the story summary. Older drafts copied it
@@ -205,7 +246,26 @@ export function generatedContractIssues(scenario: TestDesignScenario): Array<{ c
       && issue.step.trim() === scenario.expectedResult.trim()
     );
     const stepIndex = isExpectedResult ? undefined : reportedStepIndex;
-    add(code, stepIndex, isExpectedResult ? 'expected_result' : undefined);
+    const issueStep = typeof issue.step === 'string' ? issue.step.trim() : '';
+    const currentStep = stepIndex ? scenario.steps[stepIndex - 1]?.action?.trim() : undefined;
+    const sourceScenario = scenario.jiraSourceScenario as { expectedResult?: unknown; steps?: unknown };
+    const sourceSteps = Array.isArray(sourceScenario.steps) ? sourceScenario.steps : [];
+    const sourceStep = stepIndex && sourceSteps[stepIndex - 1] && typeof sourceSteps[stepIndex - 1] === 'object'
+      ? (sourceSteps[stepIndex - 1] as { action?: unknown }).action
+      : undefined;
+    const sourceStepText = typeof sourceStep === 'string' ? sourceStep.trim() : '';
+    const diagnosedStep = issueStep || sourceStepText;
+    const staleStep = Boolean(stepIndex && (
+      !currentStep
+      || (diagnosedStep && normalizeDiagnosticText(diagnosedStep) !== normalizeDiagnosticText(currentStep))
+    ));
+    const diagnosedExpectedResult = typeof issue.expectedResult === 'string' ? issue.expectedResult : issueStep;
+    const staleExpectedResult = isExpectedResult && (
+      (diagnosedExpectedResult !== '' && normalizeDiagnosticText(diagnosedExpectedResult) !== normalizeDiagnosticText(scenario.expectedResult))
+      || (typeof sourceScenario.expectedResult === 'string'
+        && normalizeDiagnosticText(sourceScenario.expectedResult) !== normalizeDiagnosticText(scenario.expectedResult))
+    );
+    add(code, stepIndex, isExpectedResult ? 'expected_result' : undefined, staleStep || staleExpectedResult);
   }
   if (Array.isArray(validation.validation?.errors)) {
     for (const error of validation.validation.errors) {
@@ -347,7 +407,7 @@ export function textParts(text: string, data: TestDesignDatum[]): TextPart[] {
 export const hasPlaceholders = (text: string) => /\{\{[^}]+\}\}/.test(text);
 
 /** Data fields of a case that still have no value. */
-export const pendingData = (scenario: TestDesignScenario) => caseData(scenario).filter((d) => !d.value);
+export const pendingData = (scenario: TestDesignScenario) => caseData(scenario).filter((d) => d.required !== false && (!d.value || d.controlType === "file-set" && !documentSetComplete(d.value)));
 
 export interface StoryDatumGroup {
   id: string;
@@ -364,13 +424,14 @@ export interface StoryDatumGroup {
   mixed: boolean;
 }
 
-const groupId = (d: TestDesignDatum) => `${d.key.toLowerCase()}${d.label ? `:${d.label.toLowerCase()}` : ''}|${d.condition ?? ''}`;
+const groupId = (d: TestDesignDatum) => `${d.application ?? 'principal'}|${d.key.toLowerCase()}${d.label ? `:${d.label.toLowerCase()}` : ''}|${d.condition ?? ''}`;
 
 /** The same datum (key + condition) used by several cases is edited once for the story. */
 export function groupStoryData(scenarios: TestDesignScenario[]): StoryDatumGroup[] {
   const groups = new Map<string, StoryDatumGroup & { values: Set<string>; caseIds: Set<string> }>();
   for (const scenario of scenarios) {
     for (const datum of caseData(scenario)) {
+      if (datum.controlType?.startsWith("file") || datum.application && datum.application !== "principal") continue;
       const id = groupId(datum);
       const group = groups.get(id) ?? {
         id,

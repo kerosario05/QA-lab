@@ -87,6 +87,7 @@ export interface LogEntry {
 
 export interface RunStatusData {
   status?: string;
+  queuePosition?: number;
   progress?: number;
   progressPercent?: number;
   total?: number;
@@ -167,7 +168,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // Callers such as launch-execution read structured errors (e.g. TEST_DESIGN_CASE_CONTENT_DIVERGED).
+    const responseBody = await res.json().catch(() => undefined);
+    throw Object.assign(new Error(`${res.status} ${res.statusText}`), { status: res.status, responseBody });
+  }
   return res.json();
 }
 
@@ -383,8 +388,9 @@ export const runsProxy = {
   launchExecution: (payload: LaunchExecutionPayload): Promise<LaunchExecutionResponse> =>
     request('/api/runs/launch-execution', { method: 'POST', body: JSON.stringify(payload) }),
 
-  getJob: (jobId: string): Promise<Record<string, unknown>> =>
-    request(`/api/runs/${jobId}`),
+  getJob: (jobId: string, options?: {logsAfter: number}): Promise<Record<string, unknown>> =>
+    request(`/api/runs/${jobId}${options ? `?logsAfter=${options.logsAfter}` : ''}`),
+  cancel: (jobId: string): Promise<{ok:boolean;status:string}> => request(`/api/runs/${jobId}`, {method:'DELETE'}),
 
   rerun: (jobId: string, mode: 'all' | 'failed_only' = 'all', issueKey?: string, checklistUrl?: string): Promise<Record<string, unknown>> => {
     const body: Record<string, unknown> = { mode };

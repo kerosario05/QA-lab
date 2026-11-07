@@ -65,6 +65,15 @@ describe('Recording runtime input gate', () => {
     expect(edited?.valueKey).toBe('entity_2.document');
   });
 
+  it('requires a nonempty set of saved project-file references for a recorded upload', () => {
+    const upload = { ...scenario(), runtimeInputRequirements: [
+      { valueKey: 'recorded_upload_4', semanticField: 'Supporting documents', valueRole: 'action_input' as const, controlType: 'file-set', required: true, value: null, source: 'unresolved' as const, resolved: false },
+    ] };
+    expect(resolveScenarioReadiness(upload, {}).missingInputs).toHaveLength(1);
+    expect(resolveScenarioReadiness(upload, { recorded_upload_4: '{"Form":"not-a-uuid"}' }).dataReadiness).toBe(false);
+    expect(resolveScenarioReadiness(upload, { recorded_upload_4: JSON.stringify({ Form: '11111111-1111-4111-8111-111111111111' }) }).dataReadiness).toBe(true);
+  });
+
   it('materializes unresolved new entity inputs and blocks MCP/TestRail', () => {
     const readiness = resolveScenarioReadiness(scenario(), {});
     expect(runtimeRequirementsForScenario(scenario())[0]?.value).toBeNull();

@@ -264,6 +264,22 @@ router.post('/launch-execution', async (req: Request, res: Response) => {
   }
 });
 
+export async function proxyCancelRun(req: Request, res: Response, fetcher: typeof fetch = fetch) {
+  const config = getRunProviderConfig();
+  if (!config.baseUrl) return sendJson(res,503,{ok:false,error:'Run provider not configured',errorCode:'RUN_PROVIDER_NOT_CONFIGURED'});
+  try {
+    const upstream = await fetcher(`${config.baseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(String(req.params.jobId))}`, {
+      method:'DELETE',headers:engineHeaders(),
+    });
+    const body = await upstream.json().catch(()=>({ok:false,error:'Invalid cancellation response'})) as Record<string,unknown>;
+    return sendJson(res,upstream.status,body);
+  } catch (error) {
+    return sendJson(res,502,{ok:false,error:'cancel_proxy_error',message:error instanceof Error?error.message:String(error)});
+  }
+}
+
+router.delete('/:jobId', (req,res)=>void proxyCancelRun(req,res));
+
 // POST /api/runs/:jobId/rerun — proxy to MCP runner
 router.post('/:jobId/rerun', async (req: Request, res: Response) => {
   const config = getRunProviderConfig();

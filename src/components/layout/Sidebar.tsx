@@ -1,4 +1,5 @@
-import { LayoutGrid, Rocket, History, Settings, Sparkles, Video, Users, ClipboardList } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { LayoutGrid, Rocket, History, Settings, Sparkles, Video, Users, ClipboardList, KeyRound, GitBranch } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { useAuth } from '../../auth/AuthContext';
 import type { PermissionKey } from '../../auth/types';
@@ -20,9 +21,19 @@ const items: { id: string; label: string; icon: typeof LayoutGrid; permissions: 
   { id: 'execute', label: 'Lanzar pruebas', icon: Rocket, permissions: ['tests.launch'] },
   { id: 'grabacion', label: 'Grabación', icon: Video, permissions: ['recordings.view', 'recordings.create'] },
   { id: 'diseno', label: 'Diseño de pruebas', icon: ClipboardList, permissions: ['testdesign.view'] },
+  { id: 'planificacion', label: 'Planificación de pruebas', icon: GitBranch, permissions: ['testplanning.view'] },
   { id: 'ejecuciones', label: 'Ejecuciones', icon: History, permissions: ['executions.view'] },
   { id: 'configuracion', label: 'Configuración', icon: Settings, permissions: ['projects.view'] },
+  { id: 'servicios', label: 'Catálogo de servicios', icon: KeyRound, permissions: ['services.view'] },
   { id: 'usuarios', label: 'Usuarios', icon: Users, permissions: ['admin.users', 'admin.roles'] },
+];
+
+const TIPS: { view: string; title: string; text: string }[] = [
+  { view: 'grabacion', title: 'Limpia tu grabación', text: 'Desplega los pasos y usa «Editar pasos» para quitar los que sobren antes de lanzar.' },
+  { view: 'grabacion', title: 'Revisa los datos', text: 'Los campos pendientes bloquean la ejecución: complétalos antes de reproducir.' },
+  { view: 'diseno', title: 'Casos desde Jira', text: 'Genera casos con IA desde una historia de Jira, edítalos y publícalos.' },
+  { view: 'execute', title: 'Lanza con contexto', text: 'Asocia la ejecución a su historia de Jira para que el checklist quede trazable.' },
+  { view: 'ejecuciones', title: 'Aprende de los fallos', text: 'Abre el checklist de defectos de cada corrida y reporta los bugs con su evidencia.' },
 ];
 
 function initials(fullName: string): string {
@@ -38,6 +49,16 @@ export function Sidebar({ active, onChange }: SidebarProps) {
   const visible = items.filter(
     item => canAny(...item.permissions),
   );
+  // Carousel over the tips for modules this user can open; pauses while the pointer is over it.
+  const [tipIndex, setTipIndex] = useState(0);
+  const [tipPaused, setTipPaused] = useState(false);
+  const tips = TIPS.filter(candidate => visible.some(item => item.id === candidate.view));
+  useEffect(() => {
+    if (tipPaused || tips.length < 2) return;
+    const timer = setInterval(() => setTipIndex(index => index + 1), 8000);
+    return () => clearInterval(timer);
+  }, [tipPaused, tips.length]);
+  const tip = tips.length ? tips[tipIndex % tips.length] : undefined;
 
   return (
     <aside className="w-[240px] bg-white border-r border-[#E8EBEC] flex flex-col">
@@ -75,14 +96,21 @@ export function Sidebar({ active, onChange }: SidebarProps) {
         })}
       </nav>
 
-      <div className="p-3 mx-3 mb-3 rounded-xl border border-[#E8EBEC] bg-gradient-to-br from-[#F4F1EA] to-white relative overflow-hidden">
-        <div className="absolute -right-2 -top-2 w-12 h-12 rounded-full opacity-20" style={{ background: C.green }} />
-        <div className="relative">
-          <Sparkles size={14} className="text-[#48A157]" />
-          <div className="text-[11px] font-semibold text-[#1a1f2e] mt-1.5 leading-tight">Pro tip</div>
-          <div className="text-[10px] text-[#58646D] mt-0.5 leading-snug">Programa ejecuciones nocturnas para optimizar recursos.</div>
+      {tip && (
+        <div
+          onMouseEnter={() => setTipPaused(true)}
+          onMouseLeave={() => setTipPaused(false)}
+          className="p-3 mx-3 mb-3 rounded-xl border border-[#E8EBEC] bg-gradient-to-br from-[#F4F1EA] to-white relative overflow-hidden"
+        >
+          <div className="absolute -right-2 -top-2 w-12 h-12 rounded-full opacity-20" style={{ background: C.green }} />
+          <div className="relative">
+            <Sparkles size={14} className="text-[#48A157]" />
+            <div className="text-[11px] font-semibold text-[#1a1f2e] mt-1.5 leading-tight">{tip.title}</div>
+            <div className="text-[10px] text-[#58646D] mt-0.5 leading-snug">{tip.text}</div>
+            <button type="button" onClick={() => onChange(tip.view)} className="mt-2 text-[10px] font-medium text-[#104B99] hover:underline">Ir ahora</button>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="p-3 mx-3 mb-4 flex items-center gap-2.5">
         <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#104B99] to-[#48A157] flex items-center justify-center text-white text-[11px] font-semibold shrink-0">{initials(user?.fullName ?? '')}</div>

@@ -11,12 +11,15 @@ import { recordingsApi } from '../../services/recordings';
 import { TestRailDestinationPicker } from './TestRailDestinationPicker';
 import { JiraRequirementPicker } from './JiraRequirementPicker';
 import { useWebRecordingReplay } from './useWebRecordingReplay';
-import type { RecordingProjectDetail } from './useRecordingExecution';
+import { useRecordingExecution, type RecordingProjectDetail } from './useRecordingExecution';
 import { groupScenariosByRecording } from './groupScenariosByRecording';
 import { testRailSelectionKey } from './testRailSelection';
 
 /**
- * Dedicated destination screen for a web recording.
+ * Dedicated destination screen for a recording, web or mobile.
+ *
+ * Mobile goes through the same screen: the chosen section receives the published cases, the
+ * Test Run is created from them, and the run uses the device picked when recording.
  *
  * Recording's own screen answers "what did I record and which of it is ready to run?" — this
  * one answers a different question, "where in TestRail does it land?", and the two stop being
@@ -40,6 +43,7 @@ export interface TestRailUploadScreenProps {
   scenarios: RecordedScenario[];
   scenarioRecordingIds?: string[];
   scenarioDatasetValues?: Record<string, Record<string, string | undefined>>;
+  scenarioSpecDatasetValues?: Record<string, Record<string, string | undefined>>;
   testRail: ReturnType<typeof useTestRailDestination>;
   selectedIssue: JiraIssue | null;
   onSelectIssue: (issue: JiraIssue | null) => void;
@@ -47,6 +51,8 @@ export interface TestRailUploadScreenProps {
   datasetValues: Record<string, string | undefined>;
   onBack: () => void;
   onLaunch?: (run: ActiveRun) => void;
+  /** Mobile only: emulator or phone of the user's PC; null = the server's emulator. */
+  deviceSerial?: string | null;
 }
 
 const EMPTY_RECORDING_IDS: string[] = [];
@@ -62,6 +68,7 @@ export function TestRailUploadScreen({
   scenarios,
   scenarioRecordingIds = EMPTY_RECORDING_IDS,
   scenarioDatasetValues = {},
+  scenarioSpecDatasetValues = {},
   testRail,
   selectedIssue,
   onSelectIssue,
@@ -70,14 +77,21 @@ export function TestRailUploadScreen({
   recordingId,
   onBack,
   onLaunch,
+  deviceSerial = null,
 }: TestRailUploadScreenProps) {
   const replay = useWebRecordingReplay();
+  const mobileExecution = useRecordingExecution();
+  const isMobile = projectDetail?.type === 'mobile';
   const [traceReadiness, setTraceReadiness] = useState<{ checking: boolean; error: string | null }>({ checking: true, error: null });
 
   const destinationReady = Boolean(testRail.destination.projectId && testRail.destination.suiteId && testRail.destination.sectionId);
   const recordingGroups = useMemo(
     () => groupScenariosByRecording(scenarios, scenarioRecordingIds, recordingId),
     [scenarios, scenarioRecordingIds, recordingId],
+  );
+  const selectedScenarios = useMemo(
+    () => recordingGroups.flatMap((group) => group.scenarios.map((scenario) => ({ recordingId: group.recordingId, scenario }))),
+    [recordingGroups],
   );
   const recordingSelectionKey = recordingGroups
     .map((group) => `${group.recordingId}:${group.scenarios.map((scenario) => scenario.scenarioId).sort().join(',')}`)
@@ -119,21 +133,90 @@ export function TestRailUploadScreen({
       : traceReadiness.checking
         ? 'Validando las grabaciones seleccionadas'
         : traceReadiness.error ?? undefined;
-  const running = replay.starting;
+  const running = isMobile ? mobileExecution.running : replay.starting;
+  const executionError = isMobile ? mobileExecution.error : replay.error;
+
+  async function handleExecuteMobile() {
+    if (!projectDetail) return;
+    // Same keys as web: per recording/scenario first, then the bare scenario id.
+    const overrides: Record<string, Record<number, string>> = {};
+    recordingGroups.forEach((group) => group.scenarios.forEach((scenario) => {
+      const selectionKey = testRailSelectionKey(group.recordingId, scenario.scenarioId);
+      const byStep: Record<number, string> = { ...(dataOverrides[selectionKey] ?? dataOverrides[scenario.scenarioId] ?? {}) };
+      // The "Datos de este escenario" panel edits values by field (valueKey), like web; the
+      // mobile run applies them by step. Every step that types that field gets the value.
+      const values = { ...datasetValues, ...(scenarioDatasetValues[selectionKey] ?? scenarioDatasetValues[scenario.scenarioId] ?? {}) };
+      for (const field of scenario.requiredData ?? []) {
+        const value = values[field.key];
+        if (typeof value === 'string' && value.trim() !== '') byStep[field.stepIndex] = value;
+      }
+      if (Object.keys(byStep).length > 0) overrides[scenario.scenarioId] = byStep;
+    }));
+    const selected = recordingGroups.flatMap((group) => group.scenarios);
+    const launch = await mobileExecution.execute(
+      {
+        ...projectDetail,
+        testRail: {
+          projectIdTr: testRail.destination.projectId,
+          suiteId: testRail.destination.suiteId,
+          sectionId: testRail.destination.sectionId,
+        },
+      },
+      selected,
+      overrides,
+      deviceSerial,
+      selectedIssue?.key,
+    );
+    if (!launch) return;
+    onLaunch?.({
+      id: launch.jobId,
+      jobId: launch.jobId,
+      recordingId,
+      scenarioIds: selected.map((scenario) => scenario.scenarioId),
+      project: projectDetail.name,
+      triggered: 'Grabación móvil',
+      startedAt: new Date().toISOString(),
+      progress: 0,
+      total: launch.scenarioCount,
+      completed: 0,
+      passed: 0,
+      failed: 0,
+      currentTest: '',
+      eta: '—',
+      status: 'running',
+      activeScenarios: selected.map((scenario, index) => ({
+        id: scenario.scenarioId,
+        title: scenario.title,
+        index: index + 1,
+        total: selected.length,
+        steps: (scenario.testRailSteps ?? []).map((step) => step.content).filter((step): step is string => typeof step === 'string' && step.trim().length > 0),
+      })),
+      issueKey: launch.issueKey ?? selectedIssue?.key,
+      checklistUrl: launch.checklistUrl,
+    });
+  }
 
   async function handleExecuteAutomation() {
     if (!canExecute || running) return;
+    if (isMobile) {
+      await handleExecuteMobile();
+      return;
+    }
     const selections = recordingGroups.flatMap((group) => group.scenarios.map((scenario) => {
       const overrides = dataOverrides[testRailSelectionKey(group.recordingId, scenario.scenarioId)]
         ?? dataOverrides[scenario.scenarioId];
       const values = scenarioDatasetValues[testRailSelectionKey(group.recordingId, scenario.scenarioId)]
         ?? scenarioDatasetValues[scenario.scenarioId]
         ?? {};
+      const specValues = scenarioSpecDatasetValues[testRailSelectionKey(group.recordingId, scenario.scenarioId)]
+        ?? scenarioSpecDatasetValues[scenario.scenarioId]
+        ?? {};
       return {
         recordingId: group.recordingId,
         scenarioId: scenario.scenarioId,
         ...(overrides ? { dataOverrides: overrides } : {}),
         datasetValues: { ...datasetValues, ...values },
+        ...(Object.keys(specValues).length > 0 ? { specDatasetValues: specValues } : {}),
       };
     }));
     const launch = await replay.replayBatch(
@@ -142,8 +225,11 @@ export function TestRailUploadScreen({
       testRail.destination,
       selectedIssue ? { key: selectedIssue.key, summary: selectedIssue.summary } : undefined,
     );
-    if (!launch?.jobId) {
-      if (!replay.error) replay.setError('No se recibió un job de ejecución del backend.');
+    // `replayBatch` returns null after it has already stored the backend's own error; only a launch that
+    // succeeded without a job needs the generic message. (`replay.error` here is a stale render value.)
+    if (!launch) return;
+    if (!launch.jobId) {
+      replay.setError('No se recibió un job de ejecución del backend.');
       return;
     }
     onLaunch?.({
@@ -199,12 +285,12 @@ export function TestRailUploadScreen({
               <span className="text-[10px] uppercase tracking-wider text-[#8B999D] font-semibold">Escenarios seleccionados</span>
               <div className="mt-3 rounded-xl border border-[#E8EBEC] divide-y divide-[#E8EBEC] bg-white overflow-hidden">
                 <div className="px-3 py-2.5 text-[12px] font-semibold text-[#1a1f2e] bg-[#FAFAF7]">
-                  {scenarios.length === 1 ? '1 escenario seleccionado' : `${scenarios.length} escenarios seleccionados`}
+                  {selectedScenarios.length === 1 ? '1 escenario seleccionado' : `${selectedScenarios.length} escenarios seleccionados`}
                 </div>
-                {scenarios.map((scenario, index) => (
+                {selectedScenarios.map(({ recordingId: selectedRecordingId, scenario }) => (
                   <div
-                    key={testRailSelectionKey(scenarioRecordingIds[index] ?? recordingId, scenario.scenarioId)}
-                    title={`Grabación ${scenarioRecordingIds[index] ?? recordingId}`}
+                    key={testRailSelectionKey(selectedRecordingId, scenario.scenarioId)}
+                    title={`Grabación ${selectedRecordingId}`}
                     className="px-3 py-2.5 flex items-center justify-between text-[12px]"
                   >
                     <span className="text-[#1a1f2e] font-medium truncate">{scenario.title}</span>
@@ -227,20 +313,30 @@ export function TestRailUploadScreen({
               <span>{traceReadiness.error}</span>
             </div>
           )}
-          {replay.error && (
+          {executionError && (
             <div className="mt-5 flex items-start gap-2 text-[12px] text-[#B4463C]">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>{replay.error}</span>
+              <span>{executionError}</span>
+            </div>
+          )}
+          {isMobile && mobileExecution.notice && (
+            <div className="mt-5 text-[12px] text-[#58646D]">{mobileExecution.notice}</div>
+          )}
+          {isMobile && (
+            <div className="mt-5 text-[12px] text-[#58646D]" data-testid="testrail-upload-device">
+              {deviceSerial ? `Se ejecuta en ${deviceSerial} de tu equipo.` : 'Se ejecuta en el emulador del servidor.'}
             </div>
           )}
         </BentoCard>
 
         <div className="mt-5 flex items-center justify-between">
           <button
+            type="button"
             onClick={onBack}
-            className="text-[12px] font-medium px-4 py-2.5 rounded-full text-[#58646D] hover:bg-white hover:text-[#1a1f2e] transition flex items-center gap-1.5"
+            className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[#48A157]/25 bg-[#48A157] px-4 py-2 text-[11px] font-semibold text-white shadow-sm transition hover:border-[#347F43] hover:bg-[#347F43] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#48A157]/35 focus-visible:ring-offset-2"
           >
-            <ChevronLeft size={13} /> Volver a la grabación
+            <ChevronLeft size={14} strokeWidth={2.5} aria-hidden="true" />
+            <span>Volver a la grabación</span>
           </button>
           <button
             onClick={handleExecuteAutomation}

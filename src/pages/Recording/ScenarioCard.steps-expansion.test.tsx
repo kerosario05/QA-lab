@@ -1,4 +1,4 @@
-import { act, useState, type ReactNode } from 'react';
+﻿import { act, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ScenarioCard } from './index';
@@ -247,4 +247,51 @@ describe('ScenarioCard steps expansion', () => {
     expect(container?.textContent).not.toContain('168,967.94');
   });
 
+  it('lists the editable document set in "Datos de este escenario" (same format as other data), not inside the step', () => {
+    const valueKey = 'recorded_upload_3';
+    const s = scenario({
+      testRailSteps: [{ content: 'Adjuntar uno o más documentos en "Documentación"', expected: '', stepNumber: 3, recordingActionType: 'upload', fileSetValueKey: valueKey }],
+      requiredData: [{ key: valueKey, label: 'Documentación', stepIndex: 3, sensitive: false, valueRole: 'action_input', source: 'OBSERVED', controlType: 'file-set' } as any],
+      runtimeInputRequirements: [{ valueKey, semanticField: 'Documentación', valueRole: 'action_input', controlType: 'file-set', required: true, value: null, source: 'unresolved', resolved: false, editable: true }],
+    });
+    render(<ScenarioCard {...cardProps(s, true, noop)} />);
+
+    const uploadRow = Array.from(container!.querySelectorAll('li')).find((row) => row.textContent?.includes('Adjuntar uno o más documentos'));
+    expect(uploadRow).toBeTruthy();
+    expect(uploadRow?.textContent).not.toContain('Documentos para adjuntar en este paso');
+    expect(uploadRow?.querySelector('select[aria-label="Archivo de prueba"]')).toBeNull();
+    expect(container?.textContent).toContain(`valueKey: ${valueKey}`);
+    const addDocumentButton = Array.from(container!.querySelectorAll('button')).find((button) => button.textContent?.includes('Agregar otro documento'));
+    expect(addDocumentButton?.textContent).toContain('Agregar otro documento');
+    act(() => addDocumentButton?.click());
+    expect(container?.querySelectorAll('select[aria-label="Archivo de prueba"]')).toHaveLength(1);
+  });
+
+  it('keeps captured file components in the same two-column runtime grid', () => {
+    const fileRef = 'a68b0fb1-201b-4d63-a343-b92adee67662';
+    const requirements = Array.from({ length: 4 }, (_, index) => ({
+      valueKey: `recorded_upload_${index + 1}`,
+      semanticField: 'Archivo',
+      valueRole: 'action_input' as const,
+      controlType: 'file-set' as const,
+      required: true,
+      value: JSON.stringify({ [`Documento ${index + 1}`]: fileRef }),
+      source: 'OBSERVED' as const,
+      resolved: true,
+      editable: true,
+    }));
+    const s = scenario({ runtimeInputRequirements: requirements });
+
+    render(<ScenarioCard {...cardProps(s, true, noop)} datasetValues={Object.fromEntries(requirements.map((item) => [item.valueKey, item.value]))} />);
+
+    const selects = Array.from(container!.querySelectorAll('select[aria-label="Archivo de prueba"]'));
+    expect(selects).toHaveLength(4);
+    for (const select of selects) {
+      const requirementWrapper = select.closest('div[class*="sm:border-l-2"]');
+      expect(requirementWrapper).toBeTruthy();
+      expect(requirementWrapper?.className).not.toContain('sm:col-span-2');
+    }
+  });
+
 });
+

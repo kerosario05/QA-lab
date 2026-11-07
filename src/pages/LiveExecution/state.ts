@@ -26,6 +26,7 @@ export type LiveExecutionSummaryLike = {
 
 export type LiveExecutionStatusLike = {
   status?: string;
+  queuePosition?: number;
   progress?: number;
   progressPercent?: number;
   total?: number;
@@ -115,7 +116,7 @@ export function parseLiveScenarioProgress(message: unknown): LiveScenarioProgres
   if (jiraSemanticProgress) return jiraSemanticProgress;
   if (typeof message !== 'string') return null;
 
-  if (/\bPromotion gate:\s*allowed\s*=\s*true\b/i.test(message) || /(?:^|\s)\[promote\]/i.test(message)) {
+  if (/\[promotion-progress\]\s+stage=\w+\s+status=started\b/i.test(message) || /(?:^|\s)\[promote\]/i.test(message)) {
     return { type: 'promoting' };
   }
 
@@ -124,7 +125,7 @@ export function parseLiveScenarioProgress(message: unknown): LiveScenarioProgres
     const index = Number(criticalPath[1]) - 1;
     if (!Number.isInteger(index) || index < 0) return null;
     const phase = criticalPath[2].toLowerCase();
-    if (phase === 'resolver_start' || phase === 'click_dispatch_start') {
+    if (phase === 'action_start' || phase === 'resolver_start' || phase === 'click_dispatch_start') {
       return { type: 'step', update: { index, status: 'running' } };
     }
     if (phase === 'semantic_verification_end' || phase === 'early_completion_end') {

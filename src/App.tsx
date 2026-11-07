@@ -16,11 +16,14 @@ import { LocalAgentSetupDialog } from './components/localAgent/LocalAgentSetupDi
 import { Configuracion } from './pages/Configuracion';
 import { Usuarios } from './pages/Usuarios';
 import { TestDesign } from './pages/TestDesign';
+import { TestPlanning } from './pages/TestPlanning';
+import { ServiceCatalog } from './pages/ServiceCatalog';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
 import { useAuth } from './auth/AuthContext';
 import type { ActiveRun, View } from './types';
 import type { PermissionKey } from './auth/types';
+import {loadWorkspaceNavigation, saveWorkspaceNavigation} from './workspace-navigation';
 
 /**
  * Authentication gate.
@@ -63,25 +66,42 @@ const LANDING_ORDER: { id: View; permissions: PermissionKey[] }[] = [
   { id: 'execute', permissions: ['tests.launch'] },
   { id: 'grabacion', permissions: ['recordings.view', 'recordings.create'] },
   { id: 'diseno', permissions: ['testdesign.view'] },
+  { id: 'planificacion', permissions: ['testplanning.view'] },
   { id: 'configuracion', permissions: ['projects.view'] },
+  { id: 'servicios', permissions: ['services.view'] },
   { id: 'usuarios', permissions: ['admin.users', 'admin.roles'] },
 ];
 
 function Workspace() {
-  const { canAny, can } = useAuth();
-  const [view, setView] = useState<View>('dashboard');
-  const [liveRun, setLiveRun] = useState<ActiveRun | null>(null);
+  const { canAny, can, user } = useAuth();
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const firstName = user?.fullName?.trim().split(/\s+/)[0];
+  const dashboardTitle = firstName ? `${greeting}, ${firstName}` : greeting;
+  const [restored] = useState(() => {
+    const saved = loadWorkspaceNavigation(sessionStorage, user!.id);
+    const permission = LANDING_ORDER.find(candidate => candidate.id === saved.view);
+    if (permission && !canAny(...permission.permissions)) saved.view = 'dashboard';
+    if (['live','checklist'].includes(saved.view) && !canAny('executions.view')) saved.view = 'dashboard';
+    return saved;
+  });
+  const [view, setView] = useState<View>(restored.view);
+  const [liveRun, setLiveRun] = useState<ActiveRun | null>(restored.liveRun);
   const [closingExecution, setClosingExecution] = useState<any>(null);
-  const [checklistIdentity, setChecklistIdentity] = useState<string | null>(null);
-  const [checklistJobId, setChecklistJobId] = useState<string | undefined>(undefined);
-  const [checklistScenarioIds, setChecklistScenarioIds] = useState<string[] | undefined>(undefined);
+  const [checklistIdentity, setChecklistIdentity] = useState<string | null>(restored.checklistIdentity);
+  const [checklistJobId, setChecklistJobId] = useState<string | undefined>(restored.checklistJobId);
+  const [checklistScenarioIds, setChecklistScenarioIds] = useState<string[] | undefined>(restored.checklistScenarioIds);
   const [prevView, setPrevView] = useState<View | null>(null);
   // Screen a run was launched from. It stays mounted (hidden) while the run is live so "Volver"
   // lands on it with the TestRail/Jira selection intact instead of a fresh form or the dashboard.
   const [launchOrigin, setLaunchOrigin] = useState<'execute' | 'grabacion' | null>(null);
 
   // Launch id the Ejecuciones page should open on (from global search); null = the list.
-  const [executionDeepLink, setExecutionDeepLink] = useState<string | null>(null);
+  const [executionDeepLink, setExecutionDeepLink] = useState<string | null>(restored.executionDeepLink);
+
+  useEffect(() => {
+    saveWorkspaceNavigation(sessionStorage, user!.id, {view,liveRun,checklistIdentity,checklistJobId,checklistScenarioIds,executionDeepLink});
+  }, [user?.id,view,liveRun,checklistIdentity,checklistJobId,checklistScenarioIds,executionDeepLink]);
 
   // Once back on (or away from) the origin, there is nothing left to keep alive.
   useEffect(() => {
@@ -157,7 +177,7 @@ function Workspace() {
   const titles: Record<string, string> = {
     live: 'Ejecución en vivo',
     close: 'Cierre de ejecución',
-    dashboard: 'Buenos días, Carlos',
+    dashboard: dashboardTitle,
     execute: 'Lanzar pruebas',
     grabacion: 'Grabación de recorridos',
     ejecuciones: 'Ejecuciones',
@@ -165,6 +185,8 @@ function Workspace() {
     configuracion: 'Configuración',
     usuarios: 'Usuarios y roles',
     diseno: 'Diseño de pruebas',
+    planificacion: 'Planificación de pruebas',
+    servicios: 'Catálogo de servicios',
   };
 
   const subtitles: Record<string, string> = {
@@ -178,6 +200,8 @@ function Workspace() {
     configuracion: 'Administración de proyectos de automatización.',
     usuarios: 'Gestiona accesos, roles y permisos por proyecto',
     diseno: 'Genera casos con IA desde historias de Jira, edítalos y publícalos',
+    planificacion: 'Revisa los test-plan de cada HU en las ramas del repositorio',
+    servicios: 'Servicios reutilizables (OTP, tokens) que llenan campos al ejecutar',
   };
 
   return (
@@ -277,6 +301,12 @@ function Workspace() {
           )}
           {view === 'diseno' && (
             <TestDesign />
+          )}
+          {view === 'planificacion' && (
+            <TestPlanning />
+          )}
+          {view === 'servicios' && (
+            <ServiceCatalog />
           )}
         </div>
       </main>

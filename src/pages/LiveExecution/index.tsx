@@ -15,6 +15,14 @@ import { flushScenarioValueWrites } from '../../services/recordings/scenario-val
 import type { ActiveRun } from '../../types';
 import { getInitialActiveScenario } from './active-scenario-queue';
 import {
+  advancePromotionLogCounterState,
+  createPromotionLogCounterState,
+  formatPromotionLog,
+  summarizePromotionLogCounterState,
+} from './promotion-progress';
+import { compactLiveLogs } from './live-log-display';
+import { scenarioFromJobSnapshot } from './snapshot-scenario';
+import {
   computeLiveExecutionElapsedMs,
   getLiveExecutionElapsedSeconds,
   isActiveRunStatus,
@@ -62,10 +70,28 @@ interface LiveExecutionScreenProps {
 }
 
 interface DisplayLog { time: string; type: string; msg: string; }
+interface LogHistoryPage {
+  start: number;
+  end: number;
+  raw: DisplayLog[];
+  entries: DisplayLog[];
+  hiddenCount: number;
+}
+
+function LiveStepLabel({text, state}: {text: string; state: string}) {
+  const marker = state === 'completed' ? '✓' : state === 'failed' ? '✕' : state === 'running' ? '●' : '○';
+  const markerClass = state === 'completed' ? 'text-[#48A157]' : state === 'failed' ? 'text-[#E63946]' : state === 'running' ? 'text-[#104B99]' : 'text-[#AAB4B8]';
+  return <div className="flex items-start gap-2 leading-5 transition-opacity duration-300 animate-[live-step-enter_220ms_ease-out]">
+    <span className={cn('w-3 shrink-0 text-center font-semibold', markerClass)}>{marker}</span><span>{text}</span>
+  </div>;
+}
 
 const DOC_STATUS_POLL_INTERVAL_MS = 2000;
 const DOC_STATUS_MAX_ATTEMPTS = 30;
 const RUN_STATUS_POLL_INTERVAL_MS = 2000;
+const LIVE_LOG_RENDER_BUFFER = 2000;
+const LIVE_LOG_HISTORY_PAGE_SIZE = 400;
+const LIVE_LOG_SUMMARY_PAGE_SIZE = LIVE_LOG_RENDER_BUFFER;
 
 /** Clipboard write that also works on non-secure origins (navigator.clipboard needs HTTPS/localhost). */
 async function copyTextToClipboard(text: string): Promise<boolean> {
@@ -131,7 +157,25 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
       ?? null,
   );
   const [jobStatus,       setJobStatus]       = useState(run?.status || 'queued');
+  const [queuePosition, setQueuePosition] = useState<number | undefined>();
   const [logs,            setLogs]            = useState<DisplayLog[]>([]);
+  const [summaryLogs, setSummaryLogs] = useState<DisplayLog[]>([]);
+  const [summaryHiddenCount, setSummaryHiddenCount] = useState(0);
+  const allLogsRef = useRef<DisplayLog[]>([]);
+  const [logEventCount, setLogEventCount] = useState(0);
+  const [historyPage, setHistoryPage] = useState<LogHistoryPage | null>(null);
+  const promotionLogCounterStateRef = useRef(createPromotionLogCounterState());
+  const [promotionLogCounters, setPromotionLogCounters] = useState(() => summarizePromotionLogCounterState(promotionLogCounterStateRef.current));
+  const resetPromotionLogCounters = () => {
+    promotionLogCounterStateRef.current = createPromotionLogCounterState();
+    setPromotionLogCounters(summarizePromotionLogCounterState(promotionLogCounterStateRef.current));
+  };
+  const liveLogView = useMemo(
+    () => ({entries: summaryLogs, hiddenCount: summaryHiddenCount}),
+    [summaryLogs, summaryHiddenCount],
+  );
+  const displayedLogView = historyPage ?? liveLogView;
+  const [showTechnicalLogs, setShowTechnicalLogs] = useState(false);
   const [logsCopied,      setLogsCopied]      = useState(false);
   const [streamError,     setStreamError]     = useState<string | null>(null);
   const [elapsed,         setElapsed]         = useState(0);
@@ -140,6 +184,8 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
   const [issueKey,        setIssueKey]        = useState<string | null>(run?.issueKey ?? null);
   const [defectCount,     setDefectCount]     = useState<number>(typeof run?.defectCount === 'number' ? run.defectCount : 0);
   const [rerunning,       setRerunning]        = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
   const [rerunError,      setRerunError]       = useState<string | null>(null);
   const [downloadingDocx,  setDownloadingDocx]  = useState(false);
   const [docxError,      setDocxError]      = useState<string | null>(null);
@@ -151,7 +197,8 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
   const [reportPreviewError, setReportPreviewError] = useState<string | null>(null);
   const [rerunKey,        setRerunKey]          = useState(0);
 
-  const logsEndRef   = useRef<HTMLDivElement>(null);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollLogsRef = useRef(true);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
   const lastStatusRef = useRef<LiveExecutionStatusLike | null>(null);
@@ -247,7 +294,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
   }, [reportPreviewUrl]);
 
   const handleRerun = async () => {
-    if (!run?.jobId || rerunning) return;
+    if (!run || !currentJobId || rerunning) return;
     setRerunning(true);
     setRerunError(null);
     try {
@@ -263,7 +310,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
           return;
         }
       }
-      const result = await runsProxy.rerun(run.jobId, 'all', issueKey || undefined, checklistUrl || undefined);
+      const result = await runsProxy.rerun(currentJobId, 'all', issueKey || undefined, checklistUrl || undefined);
       if (result?.jobId) {
         // Preserve issueKey/checklistUrl from rerun response or current state
         const newIssueKey = (result as any).issueKey || issueKey;
@@ -280,6 +327,13 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
         setCurrentTestName('');
         setActiveScenario(getInitialActiveScenario(run));
         setLogs([]);
+        setSummaryLogs([]);
+        setSummaryHiddenCount(0);
+        allLogsRef.current = [];
+        setLogEventCount(0);
+        setHistoryPage(null);
+        shouldAutoScrollLogsRef.current = true;
+        resetPromotionLogCounters();
         setJobStatus('queued');
         setChecklistUrl(newChecklistUrl);
         setIssueKey(newIssueKey);
@@ -511,6 +565,13 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
     setIssueKey(run?.issueKey ?? null);
     setDefectCount(typeof run?.defectCount === 'number' ? run.defectCount : 0);
     setLogs([]);
+    setSummaryLogs([]);
+    setSummaryHiddenCount(0);
+    allLogsRef.current = [];
+    setLogEventCount(0);
+    setHistoryPage(null);
+    shouldAutoScrollLogsRef.current = true;
+    resetPromotionLogCounters();
     terminalReceivedAtRef.current = null;
     lastStatusRef.current = null;
     documentPollAttemptsRef.current = 0;
@@ -553,10 +614,12 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
     stopDocumentPolling();
   }, []);
 
-  // Auto-scroll logs to bottom
+  // Keep the live tail following new events, but preserve the reader's position
+  // when they scroll upward to inspect earlier entries.
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+    if (!shouldAutoScrollLogsRef.current || !logsContainerRef.current) return;
+    logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+  }, [logs, historyPage]);
 
   // Consumir stream SSE
   useEffect(() => {
@@ -572,8 +635,32 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
     const mobileState = createMobileProgressState();
     if (isMobile && mobileTotal > 0) setTotal(mobileTotal);
 
+    let snapshotScenario: ActiveScenarioLike | null = null;
+    const scenarioProgressHistory: Array<NonNullable<ReturnType<typeof parseLiveScenarioProgress>>> = [];
+    const pendingLogs: DisplayLog[] = [];
+    const flushLogs = () => {
+      if (!pendingLogs.length) return;
+      const batch = pendingLogs.splice(0);
+      setLogs(previous => [...previous, ...batch].slice(-LIVE_LOG_RENDER_BUFFER));
+      const compact = compactLiveLogs(batch);
+      setSummaryLogs(previous => [...previous, ...compact.entries]);
+      setSummaryHiddenCount(previous => previous + compact.hiddenCount);
+      setLogEventCount(previous => previous + batch.length);
+    };
+    const logFlushTimer = window.setInterval(flushLogs, 250);
     const applyStatus = (data: any) => {
       if (activeJobIdRef.current !== streamJobId) return;
+      const restoredScenario = scenarioFromJobSnapshot(data);
+      if (restoredScenario) {
+        snapshotScenario = restoredScenario;
+        setActiveScenario(previous => {
+          let restored = mergeActiveScenarioSnapshot(previous, restoredScenario);
+          if (!previous?.steps.length) {
+            for (const progress of scenarioProgressHistory) restored = applyLiveScenarioProgress(restored, progress) ?? restored;
+          }
+          return restored;
+        });
+      }
       const jiraProgress = parseLiveScenarioProgress(data);
       if (jiraProgress) {
         setActiveScenario(previous => applyLiveScenarioProgress(previous, jiraProgress));
@@ -584,11 +671,12 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
       // Handle it before terminal-status filtering so the next case can become
       // active immediately after the previous case finishes.
       if (data?.type === 'case_started') {
+        scenarioProgressHistory.length = 0;
         let nextScenario = resolveActiveScenarioUpdate(data);
         if (nextScenario) {
           const queueMatch = run?.activeScenarios?.find((scenario) =>
             scenario.id === nextScenario?.id || scenario.title === nextScenario?.title,
-          ) ?? run?.activeScenarios?.[Math.max(0, nextScenario.index - 1)];
+          ) ?? run?.activeScenarios?.[Math.max(0, nextScenario.index - 1)] ?? snapshotScenario;
           if (queueMatch) {
             nextScenario = {
               ...nextScenario,
@@ -617,6 +705,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
         stableStatus = withStableTerminalTimestamp(stableStatus, terminalReceivedAtRef.current) ?? stableStatus;
       }
       const previousStatus = lastStatusRef.current?.status;
+      if (isCancelledStatus(previousStatus) && !isCancelledStatus(stableStatus.status)) return;
       if (isTerminalStatus(previousStatus) && !isTerminalStatus(stableStatus.status)) {
         return;
       }
@@ -635,6 +724,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
         setActiveScenario(previous => previous);
       }
       if (stableStatus.status)      setJobStatus(stableStatus.status);
+      setQueuePosition(typeof stableStatus.queuePosition === 'number' ? stableStatus.queuePosition : undefined);
       if (data.checklistUrl)        setChecklistUrl(data.checklistUrl);
       if (data.issueKey)            setIssueKey(data.issueKey);
       if (typeof data.defectCount === 'number') setDefectCount(data.defectCount);
@@ -691,7 +781,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
     async function pollRunStatus() {
       if (activeJobIdRef.current !== streamJobId) return;
       try {
-        const statusData = await runsProxy.getJob(streamJobId);
+        const statusData = await runsProxy.getJob(streamJobId, {logsAfter:Number.MAX_SAFE_INTEGER});
         if (activeJobIdRef.current !== streamJobId) return;
         setStreamError(null);
         applyStatus(statusData as LiveExecutionStatusLike);
@@ -706,7 +796,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
     }
 
     // Initial snapshot for issue metadata + partial counters.
-    void runsProxy.getJob(streamJobId).then(data => {
+    void runsProxy.getJob(streamJobId, {logsAfter:Number.MAX_SAFE_INTEGER}).then(data => {
       if (activeJobIdRef.current !== streamJobId) return;
       applyStatus(data as LiveExecutionStatusLike);
       if (shouldContinueRunStatusPolling(data as LiveExecutionStatusLike)) {
@@ -723,11 +813,18 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
     const cleanup = runsProxy.streamLogs(streamJobId, {
       onLog: entry => {
         if (activeJobIdRef.current !== streamJobId) return;
-        setLogs(prev => [...prev, {
+        const logEntry = {
           time: entry.timestamp ?? formatNow(),
           type: mapLevel(entry.level),
           msg:  entry.message,
-        }]);
+        };
+        allLogsRef.current.push(logEntry);
+        pendingLogs.push(logEntry);
+        const nextPromotionState = advancePromotionLogCounterState(promotionLogCounterStateRef.current, entry.message);
+        if (nextPromotionState !== promotionLogCounterStateRef.current) {
+          promotionLogCounterStateRef.current = nextPromotionState;
+          setPromotionLogCounters(summarizePromotionLogCounterState(nextPromotionState));
+        }
         const trimmedMessage = entry.message.trim();
         const jsonStart = trimmedMessage.indexOf('{');
         const jsonEnd = trimmedMessage.lastIndexOf('}');
@@ -742,7 +839,10 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
           }
         }
         const scenarioProgress = parseLiveScenarioProgress(entry.message);
-        if (scenarioProgress) setActiveScenario(previous => applyLiveScenarioProgress(previous, scenarioProgress));
+        if (scenarioProgress) {
+          scenarioProgressHistory.push(scenarioProgress);
+          setActiveScenario(previous => applyLiveScenarioProgress(previous, scenarioProgress));
+        }
         if (isMobile) {
           const counters = reduceMobileProgress(mobileState, entry.message, mobileTotal);
           if (counters) {
@@ -761,6 +861,8 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
       onStatus: applyStatus,
       onDone: data => {
         if (activeJobIdRef.current !== streamJobId) return;
+        flushLogs();
+        if (isCancelledStatus(lastStatusRef.current?.status)) return;
         stopRunStatusPolling();
         applyStatus(data);
         const finalStatus = data.status || 'completed';
@@ -799,6 +901,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
     });
 
     return () => {
+      window.clearInterval(logFlushTimer);
       cleanup();
       stopDocumentPolling();
       stopRunStatusPolling();
@@ -808,6 +911,41 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
   const eta = total > 0 && progress > 0
     ? Math.max(0, Math.round(((100 - progress) / progress) * elapsed))
     : 0;
+  const isConfigurationReturn = closeLabel === 'Volver a la configuración';
+  const buildLogHistoryPage = (start: number, end: number): LogHistoryPage => {
+    const raw = allLogsRef.current.slice(start, end);
+    const compact = compactLiveLogs(raw);
+    return {start, end, raw, entries: compact.entries, hiddenCount: compact.hiddenCount};
+  };
+  const loadOlderLogs = () => {
+    const totalLogs = allLogsRef.current.length;
+    const liveTailSize = showTechnicalLogs ? LIVE_LOG_HISTORY_PAGE_SIZE : LIVE_LOG_RENDER_BUFFER;
+    const pageSize = showTechnicalLogs ? LIVE_LOG_HISTORY_PAGE_SIZE : LIVE_LOG_SUMMARY_PAGE_SIZE;
+    const end = historyPage?.start ?? Math.max(0, totalLogs - liveTailSize);
+    if (end <= 0) return;
+    const start = Math.max(0, end - pageSize);
+    setHistoryPage(buildLogHistoryPage(start, end));
+    shouldAutoScrollLogsRef.current = true;
+  };
+  const loadNewerLogs = () => {
+    if (!historyPage) return;
+    const totalLogs = allLogsRef.current.length;
+    const pageSize = showTechnicalLogs ? LIVE_LOG_HISTORY_PAGE_SIZE : LIVE_LOG_SUMMARY_PAGE_SIZE;
+    if (historyPage.end >= totalLogs) {
+      setHistoryPage(null);
+    } else {
+      const start = historyPage.end;
+      const end = Math.min(totalLogs, start + pageSize);
+      setHistoryPage(buildLogHistoryPage(start, end));
+    }
+    shouldAutoScrollLogsRef.current = true;
+  };
+  const visibleLogRows = showTechnicalLogs
+    ? (historyPage?.raw ?? logs.slice(-400))
+    : displayedLogView.entries;
+  const canLoadOlderLogs = historyPage
+    ? historyPage.start > 0
+    : logEventCount > LIVE_LOG_RENDER_BUFFER;
 
   return (
     <div className="p-7 min-h-full" style={{ background: C.canvas }}>
@@ -815,7 +953,12 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
 
         {/* ΓöÇΓöÇ Topbar ΓöÇΓöÇ */}
         <div className="flex items-center justify-between mb-5">
-          <button onClick={onClose} className="text-[11px] text-[#58646D] hover:text-[#104B99] flex items-center gap-1 transition">
+          <button
+            onClick={onClose}
+            className={isConfigurationReturn
+              ? 'text-[11px] bg-gradient-to-r from-[#48A157] to-[#357a42] text-white px-4 py-1.5 rounded-full flex items-center gap-1.5 font-semibold shadow-lg shadow-[#48A157]/20 hover:from-[#5EC470] hover:to-[#48A157]'
+              : 'text-[11px] text-[#58646D] hover:text-[#104B99] flex items-center gap-1 transition'}
+          >
             <ChevronLeft size={12} /> {closeLabel}
           </button>
           <div className="flex items-center gap-2">
@@ -860,8 +1003,17 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
                 <button className="text-[11px] border border-[#E8EBEC] bg-white px-3 py-1.5 rounded-full hover:bg-[#FAFAF7] flex items-center gap-1.5 text-[#58646D]">
                   <Pause size={11} /> Pausar
                 </button>
-                <button className="text-[11px] border border-[#E63946]/30 bg-white text-[#E63946] px-3 py-1.5 rounded-full hover:bg-[#E63946]/5 flex items-center gap-1.5 font-medium">
-                  <Square size={10} fill="currentColor" /> Detener
+                <button disabled={stopping} onClick={async()=>{
+                  if (!currentJobId || stopping) return;
+                  setStopping(true);setStopError(null);
+                  try {
+                    await runsProxy.cancel(currentJobId);
+                    lastStatusRef.current = {status:'cancelled',completedAt:new Date().toISOString()};
+                    setJobStatus('cancelled');stopTimer();
+                  } catch(error) {setStopError(error instanceof Error ? error.message : 'No se pudo detener la ejecución');}
+                  finally {setStopping(false);}
+                }} className="text-[11px] border border-[#E63946]/30 bg-white text-[#E63946] px-3 py-1.5 rounded-full hover:bg-[#E63946]/5 flex items-center gap-1.5 font-medium disabled:opacity-50">
+                  <Square size={10} fill="currentColor" /> {stopping ? 'Deteniendo…' : 'Detener'}
                 </button>
               </>
             )}
@@ -901,7 +1053,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
                       <div className="absolute inset-0 rounded-full bg-[#5EC470] animate-ping" />
                     </div>
                     <span className="text-[10px] uppercase tracking-[0.2em] text-white/80 font-semibold">
-                      Ejecución en curso · {run?.jobId || run?.id}
+                      {jobStatus === 'queued' ? 'En espera' : 'Ejecución en curso'} · {run?.jobId || run?.id}
                     </span>
                   </>
                 )}
@@ -967,6 +1119,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
           </div>
         </BentoCard>
 
+        {stopError && <div role="alert" className="mb-3 text-[11px] text-[#E63946]">{stopError}</div>}
         <div className="grid grid-cols-12 gap-4 mb-4">
           {/* ΓöÇΓöÇ Test en curso ΓöÇΓöÇ */}
           <BentoCard className="col-span-8">
@@ -986,12 +1139,25 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
               )}>
                 {isDone
                   ? finalUserMessage.text
-                  : displayActiveScenario ? `Ejecutándose ahora · ${displayActiveScenario.title}` : 'Ejecutándose ahora'}
+                  : jobStatus === 'queued' ? 'En espera de un turno' : displayActiveScenario ? `Ejecutándose ahora · ${displayActiveScenario.title}` : 'Ejecutándose ahora'}
               </div>
             </div>
 
             {/* Show only the current step; the case title lives in the one-line header above. */}
-             {displayActiveScenario && (
+            {jobStatus === 'queued' && <div className="text-[12px] text-[#58646D]">{queuePosition ? `Posición en la cola: ${queuePosition}. ` : ''}La ejecución comenzará automáticamente cuando haya capacidad disponible.</div>}
+            {jobStatus !== 'queued' && promotionLogCounters.active && (
+              <div className="border-t border-[#E8ECEE] pt-2.5 text-[12px] text-[#58646D]" aria-live="polite">
+                <div className="text-[9px] uppercase tracking-[0.14em] font-semibold text-[#8B999D] mb-1.5">
+                  Promoción · Paso {promotionLogCounters.current}{displayActiveScenario?.steps.length ? ` de ${displayActiveScenario.steps.length}` : ''}
+                </div>
+                <LiveStepLabel key={`promotion-${promotionLogCounters.current}`}
+                  state={promotionLogCounters.current > 0 ? 'running' : 'pending'}
+                  text={promotionLogCounters.current > 0
+                    ? displayActiveScenario?.steps[promotionLogCounters.current - 1] ?? `Ejecutando paso ${promotionLogCounters.current} del spec candidato`
+                    : 'Validando el spec antes de iniciar sus pasos…'} />
+              </div>
+            )}
+             {jobStatus !== 'queued' && displayActiveScenario && !promotionLogCounters.active && (
                <div className="border-t border-[#E8ECEE] pt-2.5 text-[12px] text-[#58646D]">
                    <div className="text-[9px] uppercase tracking-[0.14em] font-semibold text-[#8B999D] mb-1.5">
                      {displayActiveScenario.phase === 'promoting'
@@ -999,21 +1165,15 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
                        : `Paso actual${currentScenarioStepIndex >= 0 ? ` · ${currentScenarioStepIndex + 1} de ${displayActiveScenario.steps.length}` : ''}`}
                    </div>
                    {currentScenarioStep && (
-                     <div key={`${displayActiveScenario.id}-${currentScenarioStepIndex}`} className="flex items-start gap-2 leading-5 transition-opacity duration-300 animate-[live-step-enter_220ms_ease-out]">
-                       {(() => {
-                       const state = getScenarioStepState(displayActiveScenario.stepResults, currentScenarioStepIndex);
-                       const marker = state === 'completed' ? '✓' : state === 'failed' ? '✕' : state === 'running' ? '●' : '○';
-                       const markerClass = state === 'completed' ? 'text-[#48A157]' : state === 'failed' ? 'text-[#E63946]' : state === 'running' ? 'text-[#104B99]' : 'text-[#AAB4B8]';
-                       return <><span className={cn('w-3 shrink-0 text-center font-semibold', markerClass)}>{marker}</span><span>{currentScenarioStep}</span></>;
-                       })()}
-               </div>
+                     <LiveStepLabel key={`${displayActiveScenario.id}-${currentScenarioStepIndex}`}
+                       text={currentScenarioStep} state={getScenarioStepState(displayActiveScenario.stepResults, currentScenarioStepIndex)} />
                    )}
                    {!currentScenarioStep && !isDone && (
                      <div className="text-[11px] text-[#8B999D]">Esperando el siguiente paso…</div>
                    )}
                   </div>
              )}
-            {!displayActiveScenario && (
+            {jobStatus !== 'queued' && !displayActiveScenario && !promotionLogCounters.active && (
               <div>
                 <div className="text-[16px] font-medium text-[#1a1f2e]">{currentTestName || 'Preparando el primer escenario…'}</div>
                 <div className="text-[13px] text-[#8B999D] mt-1">Esperando que inicie el caso para mostrar sus pasos.</div>
@@ -1147,14 +1307,48 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
                   <span className="w-1.5 h-1.5 rounded-full bg-[#5EC470] animate-pulse" /> stream
                 </span>
               )}
-              <span className="text-[9px] text-white/40 font-mono">{logs.length} eventos</span>
+              <span className="text-[9px] text-white/40 font-mono">
+                {historyPage
+                  ? `Eventos ${Math.min(historyPage.start + 1, historyPage.end).toLocaleString('es-DO')}–${historyPage.end.toLocaleString('es-DO')} de ${logEventCount.toLocaleString('es-DO')}`
+                  : `${logEventCount.toLocaleString('es-DO')} eventos · ${liveLogView.entries.length.toLocaleString('es-DO')} relevantes del historial`}
+              </span>
+              {canLoadOlderLogs && (
+                <button
+                  type="button"
+                  title={showTechnicalLogs ? 'Cargar eventos técnicos anteriores' : 'Cargar pasos y avisos anteriores'}
+                  onClick={loadOlderLogs}
+                  className="text-[9px] text-white/60 hover:text-white font-mono"
+                >
+                  {showTechnicalLogs ? '← Eventos anteriores' : '← Pasos anteriores'}
+                </button>
+              )}
+              {historyPage && (
+                <button
+                  type="button"
+                  title="Ver el bloque más reciente"
+                  onClick={loadNewerLogs}
+                  className="text-[9px] text-white/60 hover:text-white font-mono"
+                >
+                  Más recientes →
+                </button>
+              )}
               <button
                 type="button"
-                title={logsCopied ? 'Copiado' : 'Copiar logs'}
+                title={showTechnicalLogs ? 'Volver al resumen' : 'Ver los últimos registros técnicos'}
+                aria-label={showTechnicalLogs ? 'Ver resumen de logs' : 'Ver detalles técnicos de logs'}
+                aria-pressed={showTechnicalLogs}
+                onClick={() => setShowTechnicalLogs((value) => !value)}
+                className="text-[9px] text-white/60 hover:text-white font-mono"
+              >
+                {showTechnicalLogs ? 'Resumen' : 'Ver detalles'}
+              </button>
+              <button
+                type="button"
+                title={logsCopied ? 'Copiado' : 'Copiar registro completo'}
                 aria-label="Copiar logs"
-                disabled={logs.length === 0}
+                disabled={logEventCount === 0}
                 onClick={async () => {
-                  const copied = await copyTextToClipboard(logs.map((log) => `${log.time} ${log.msg}`).join('\n'));
+                  const copied = await copyTextToClipboard(allLogsRef.current.map((log) => `${log.time} ${log.msg}`).join('\n'));
                   if (!copied) return;
                   setLogsCopied(true);
                   window.setTimeout(() => setLogsCopied(false), 1500);
@@ -1166,15 +1360,22 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
               <button className="text-white/60 hover:text-white"><Maximize2 size={12} /></button>
             </div>
           </div>
-          <div className="bg-[#0d1119] p-5 font-mono text-[11px] max-h-[320px] overflow-y-auto">
-            {logs.length === 0 && !isDone ? (
+          <div
+            ref={logsContainerRef}
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              shouldAutoScrollLogsRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+            }}
+            className="bg-[#0d1119] p-5 font-mono text-[11px] max-h-[320px] overflow-y-auto"
+          >
+            {logEventCount === 0 && !isDone ? (
               <div className="flex items-center gap-2 text-white/40">
                 <Loader2 size={12} className="animate-spin" />
                 <span>Conectando al stream...</span>
               </div>
             ) : (
-              logs.map((log, i) => (
-                <div key={i} className="flex items-start gap-3 py-0.5 hover:bg-white/[0.02] -mx-2 px-2 rounded">
+              visibleLogRows.map((log, i) => (
+                <div key={`${historyPage?.start ?? 'live'}-${i}`} className="flex items-start gap-3 py-0.5 hover:bg-white/[0.02] -mx-2 px-2 rounded">
                   <span className="text-white/30 select-none flex-shrink-0">{log.time}</span>
                   <span className={cn(
                     'flex-1',
@@ -1182,12 +1383,22 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
                     log.type === 'error'   && 'text-[#FFB4B4]',
                     log.type === 'info'    && 'text-white/70',
                   )}>
-                    {log.msg}
+                    {formatPromotionLog(log.msg)}
                   </span>
                 </div>
               ))
             )}
-            {!isDone && logs.length > 0 && (
+            {!showTechnicalLogs && displayedLogView.hiddenCount > 0 && (
+              <div className="mt-2 border-t border-white/10 pt-2 text-[9px] text-white/40">
+                Se compactaron {displayedLogView.hiddenCount.toLocaleString('es-DO')} líneas {historyPage ? 'en este bloque' : 'del historial'}. “Copiar registro completo” conserva todas las líneas.
+              </div>
+            )}
+            {!showTechnicalLogs && logEventCount > 0 && visibleLogRows.length === 0 && (
+              <div className="py-2 text-[10px] text-white/50">
+                Sin novedades funcionales. Los diagnósticos completos están disponibles en “Ver detalles”.
+              </div>
+            )}
+            {!isDone && logEventCount > 0 && !historyPage && (
               <div className="flex items-center gap-3 py-0.5 mt-1">
                 <span className="text-white/30 select-none">{formatTime(elapsed)}</span>
                 <span className="text-white/50 text-[10px] flex items-center gap-1.5">
@@ -1200,7 +1411,6 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
                 </span>
               </div>
             )}
-            <div ref={logsEndRef} />
           </div>
         </BentoCard>
 

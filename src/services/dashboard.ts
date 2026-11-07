@@ -45,6 +45,43 @@ interface JobRecord {
   currentCaseTitle?: string | null;
 }
 
+type ActiveScenario = NonNullable<ActiveRun['activeScenarios']>[number];
+
+function displayScenarioStep(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const step = value.trim();
+  if (!step) return '';
+  // Jobs created from recordings can carry the resolved input in params. The
+  // dashboard only needs the authored action, so keep the field label while
+  // masking values that are typed into controls.
+  return step.replace(/^(\s*(?:Ingresar|Escribir|Completar)\s+")[^"]*("\s+en\s+")/i, '$1[REDACTED]$2');
+}
+
+export function buildActiveScenariosFromJobParams(
+  params: Record<string, unknown>,
+): NonNullable<ActiveRun['activeScenarios']> {
+  const rawScenarios = Array.isArray(params.activeScenarios)
+    ? params.activeScenarios
+    : Array.isArray(params.scenarios) ? params.scenarios : [];
+  const candidates = rawScenarios.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value))).flatMap((scenario) => {
+    const title = typeof scenario.title === 'string' ? scenario.title.trim() : '';
+    const steps = Array.isArray(scenario.steps)
+      ? scenario.steps.map(displayScenarioStep).filter(Boolean)
+      : Array.isArray(scenario.testRailSteps)
+        ? scenario.testRailSteps.flatMap((step) => displayScenarioStep(typeof step === 'string' ? step : (step as Record<string, unknown>)?.content)).filter(Boolean)
+        : [];
+    if (!title || !steps.length) return [];
+    return [{ scenario, title, steps }];
+  });
+  const total = candidates.length;
+  return candidates.map(({ scenario, title, steps }, offset): ActiveScenario => {
+    const id = [scenario.id, scenario.scenarioId, scenario.recordedScenarioId, scenario.sourceIssueKey]
+      .find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0)
+      ?.trim() ?? `scenario-${offset + 1}`;
+    return { id, title, index: offset + 1, total, steps };
+  });
+}
+
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 async function getJson<T>(path: string): Promise<T> {
@@ -107,6 +144,7 @@ function normalizeActiveJob(job: JobRecord, project: DashboardProject): ActiveRu
     currentTest: job.currentCaseTitle || job.currentCase || job.type,
     eta: '—',
     status: job.status,
+    activeScenarios: buildActiveScenariosFromJobParams(params),
   };
 }
 
@@ -201,24 +239,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
   }
   const allExecutions = [...byLaunchId.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-  // The compact execution list may omit case titles. Resolve only the newest clean pass per
-  // configured project so the dashboard can identify successful cases without fetching every run.
-  const latestPassByProject = new Map<string, DashboardExecution>();
-  for (const execution of allExecutions) {
-    if (execution.passed < 1 || execution.failed > 0 || latestPassByProject.has(execution.appSlug)) continue;
-    latestPassByProject.set(execution.appSlug, execution);
-  }
-  await Promise.all([...latestPassByProject.values()].filter((execution) => !execution.huTitle).map(async (execution) => {
-    try {
-      const detail = await getJson<{ execution?: { hu?: { title?: string }; scenarios?: Array<{ title?: string; result?: string }> } }>(`/api/executions/${encodeURIComponent(execution.launchId)}`);
-      const title = detail.execution?.hu?.title
-        ?? detail.execution?.scenarios?.find((scenario) => scenario.result === 'passed' && scenario.title?.trim())?.title
-        ?? detail.execution?.scenarios?.find((scenario) => scenario.title?.trim())?.title;
-      if (title) execution.huTitle = title;
-    } catch {
-      // Keep the real execution row even when its optional detail request is unavailable.
-    }
-  }));
+  // Execution details and evidence are loaded when the user opens a run.
 
   return { projects, executions: allExecutions, activeRuns, activeRunsAvailable: jobsResult.ok, loadedAt: new Date().toISOString() };
 }

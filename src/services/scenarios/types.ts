@@ -18,6 +18,7 @@ export interface DataRequirement {
 }
 
 export interface JiraInputRequirement {
+  application?: string;
   key: string;
   label: string;
   stepIndex: number;
@@ -25,7 +26,7 @@ export interface JiraInputRequirement {
   required: boolean;
   editable: boolean;
   sensitive: boolean;
-  controlType: 'text' | 'password' | 'number' | 'date' | 'select';
+  controlType: 'text' | 'password' | 'number' | 'date' | 'select' | 'file' | 'file-set';
   source: 'jira_step';
   dataCondition?: 'valid' | 'invalid' | 'expired';
 }

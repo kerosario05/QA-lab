@@ -19,6 +19,7 @@ import type {
 import {
   caseData,
   generatedContractIssues,
+  generatedReviewPending,
   hasValidGeneratedContract,
   isSelectedForPublish,
   JIRA_PUBLISH_ENABLED,
@@ -215,8 +216,10 @@ export function ScenarioEditor({
 }: ScenarioEditorProps) {
   const [open, setOpen] = useState(defaultOpen);
   const problems = scenarioProblems(scenario);
-  const contractIssues = generatedContractIssues(scenario);
+  const contractIssues = generatedContractIssues(scenario).filter((issue) => !issue.stale);
   const reviewWarnings = scenarioReviewWarnings(scenario);
+  const reviewPending = generatedReviewPending(scenario);
+  const contractValid = hasValidGeneratedContract(scenario);
   const selected = isSelectedForPublish(scenario);
   const data = caseData(scenario);
   const missing = pendingData(scenario).length;
@@ -265,8 +268,8 @@ export function ScenarioEditor({
             <span>·</span>
             <span>{scenario.origin === 'ai' ? (scenario.edited ? 'IA, editado' : 'IA') : 'Manual'}</span>
             {scenario.jiraSourceScenarioId && (
-              <span className={cn('px-1.5 rounded font-semibold', hasValidGeneratedContract(scenario) ? 'bg-[#E8F5EA] text-[#2F7D46]' : 'bg-[#FFF4D6] text-[#B7791F]')}>
-                {hasValidGeneratedContract(scenario) ? 'Validación estructural correcta' : 'Requiere edición'}
+              <span className={cn('px-1.5 rounded font-semibold', contractValid ? 'bg-[#E8F5EA] text-[#2F7D46]' : 'bg-[#FFF4D6] text-[#B7791F]')}>
+                {contractValid ? 'Validación estructural correcta' : reviewPending ? 'Revalidación pendiente' : 'Requiere edición'}
               </span>
             )}
             {data.length > 0 && (
@@ -344,7 +347,7 @@ export function ScenarioEditor({
                 {reviewWarnings.map((warning, warningIndex) => <li key={`warning-${warningIndex}`}>{warning}</li>)}
                 {contractIssues.map((issue, issueIndex) => (
                   <li key={`contract-${issue.code}-${issue.stepIndex ?? issueIndex}`} title={issue.code}>
-                    {issue.stepIndex ? `Paso ${issue.stepIndex}: ` : issue.location === 'expected_result' ? 'Resultado esperado: ' : ''}{issue.guidance}
+                    {issue.stale ? 'Diagnóstico pendiente de actualizar: ' : issue.stepIndex ? `Paso ${issue.stepIndex}: ` : issue.location === 'expected_result' ? 'Resultado esperado: ' : ''}{issue.guidance}
                   </li>
                 ))}
               </ul>

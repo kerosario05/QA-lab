@@ -3,11 +3,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalAgentProvider, useLocalAgent } from './LocalAgentContext';
 import { LocalAgentSetupDialog } from './LocalAgentSetupDialog';
+import { agentInstallerCmd } from '../../services/localAgent';
 
 /**
  * Right after login the panel asks the server whether this PC has the QA Lab agent and the
  * recording Chromium. Agent without Chromium -> the install starts on its own and the user
- * sees "Instalando Chromium…" with progress. No agent -> nothing is shown.
+ * sees "Instalando Chromium…" with progress. No agent -> the login offers to install it.
  */
 
 let root: Root | undefined;
@@ -20,6 +21,7 @@ afterEach(() => {
   container = undefined;
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -89,15 +91,145 @@ describe('LocalAgent setup after login', () => {
     expect(container?.querySelector('[data-testid="local-agent-setup"]')).toBeNull();
   });
 
-  it('no agent on this PC: nothing is shown and recordings stay integrated', async () => {
+  const noAgent = () => jsonResponse({ ok: true, requiredRevision: '1223', pairing: 'none', agent: null, install: null, ready: false });
+  const button = (label: string) => [...container!.querySelectorAll('button')].find((b) => b.textContent?.trim() === label)!;
+
+  it('no agent on this PC: the login offers to install it; "Ahora no" keeps recordings integrated', async () => {
     vi.useFakeTimers();
-    const fetchMock = vi.fn(async () => jsonResponse({ ok: true, requiredRevision: '1223', pairing: 'none', agent: null, install: null, ready: false }));
+    const fetchMock = vi.fn(async () => noAgent());
     vi.stubGlobal('fetch', fetchMock);
     render();
     await flush();
     expect(latestPhase).toBe('unavailable');
-    expect(container?.querySelector('[data-testid="local-agent-setup"]')).toBeNull();
+    expect(text()).toContain('QA Lab necesita instalar su agente');
+    await act(async () => { button('Ahora no').click(); });
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('qalab.localAgent.offerDismissed')).toBeNull();
+  });
+
+  it('"No volver a preguntar" is remembered in this browser', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => noAgent()));
+    render();
+    await flush();
+    await act(async () => { button('No volver a preguntar').click(); });
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+
+    act(() => root?.unmount());
+    container?.remove();
+    render();
+    await flush();
+    expect(latestPhase).toBe('unavailable');
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+  });
+
+  it('accepting downloads the installer, waits for the agent and then installs Chromium', async () => {
+    vi.useFakeTimers();
+    const createObjectURL = vi.fn(() => 'blob:instalador');
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }));
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    let agentConnected = false;
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? 'GET'} ${url}`);
+      if (url.endsWith('/api/local-agent/install')) {
+        return jsonResponse({ ok: true, install: { requestId: 'r1', revision: '1223', state: 'preparing', percent: 0 } }, 202);
+      }
+      return agentConnected
+        ? jsonResponse({ ok: true, requiredRevision: '1223', pairing: 'found', agent, install: null, ready: false })
+        : noAgent();
+    }));
+    render();
+    await flush();
+    await act(async () => { button('Instalar').click(); });
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(clicked).toHaveBeenCalledTimes(1);
+    expect(text()).toContain('Esperando a que se instale el agente');
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(text()).toContain('Esperando a que se instale el agente');
+
+    agentConnected = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+    expect(calls).toContain('POST /api/local-agent/install');
+    expect(text()).toContain('Instalando Chromium en tu equipo para la grabación');
+    clicked.mockRestore();
+  });
+
+  const readyAgent = (version: string) => jsonResponse({
+    ok: true, requiredRevision: '1223', pairing: 'found', install: null, ready: true,
+    agent: { ...agent, chromiumInstalled: true, agentVersion: version, latestVersion: '0.3.0', updateAvailable: version !== '0.3.0' },
+  });
+
+  it('outdated agent: the login offers the update and waits for the agent to come back updated', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:instalador'), revokeObjectURL: vi.fn() }));
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    let state: 'old' | 'restarting' | 'new' = 'old';
+    vi.stubGlobal('fetch', vi.fn(async () => (state === 'restarting' ? noAgent() : readyAgent(state === 'old' ? '0.2.0' : '0.3.0'))));
+    render();
+    await flush();
+    expect(latestPhase).toBe('ready');
+    expect(text()).toContain('Actualizar el agente de QA Lab');
+    expect(text()).toContain('Tu equipo tiene la versión 0.2.0; la actual es 0.3.0.');
+
+    await act(async () => { button('Actualizar').click(); });
+    expect(clicked).toHaveBeenCalledTimes(1);
+    expect(text()).toContain('Esperando a que se actualice el agente');
+
+    // The installer stops the agent (no agent for a moment) and starts the new one.
+    state = 'restarting';
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(text()).toContain('Esperando a que se actualice el agente');
+    state = 'new';
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+    expect(latestPhase).toBe('ready');
+    clicked.mockRestore();
+  });
+
+  it('declining an update for good is remembered only for that version', async () => {
+    vi.useFakeTimers();
+    let latest = '0.3.0';
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      ok: true, requiredRevision: '1223', pairing: 'found', install: null, ready: true,
+      agent: { ...agent, chromiumInstalled: true, agentVersion: '0.2.0', latestVersion: latest, updateAvailable: true },
+    })));
+    render();
+    await flush();
+    await act(async () => { button('No volver a preguntar').click(); });
+    expect(localStorage.getItem('qalab.localAgent.updateDismissed')).toBe('0.3.0');
+
+    act(() => root?.unmount());
+    container?.remove();
+    render();
+    await flush();
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+
+    latest = '0.4.0';
+    act(() => root?.unmount());
+    container?.remove();
+    render();
+    await flush();
+    expect(text()).toContain('Actualizar el agente de QA Lab');
+  });
+
+  it('an up-to-date agent is never offered an update', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => readyAgent('0.3.0')));
+    render();
+    await flush();
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+  });
+
+  it('the installer points the agent at the panel origin', () => {
+    const cmd = agentInstallerCmd('http://SRVDEVQACA01:3003');
+    expect(cmd).toContain("'http://SRVDEVQACA01:3003/descargas/instalar-agente.ps1'");
+    expect(cmd).toContain("-Servidor 'http://SRVDEVQACA01:3003'");
+    expect(cmd).toContain('\r\n');
   });
 
   it('agent already has Chromium: ready without any dialog', async () => {

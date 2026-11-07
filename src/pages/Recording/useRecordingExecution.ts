@@ -67,11 +67,16 @@ export function useRecordingExecution() {
       project: RecordingProjectDetail,
       scenarios: RecordedScenario[],
       dataOverrides: Record<string, Record<number, string>>,
+      /** Emulator or phone of the user's PC (via the agent); absent = the server's emulator. */
+      deviceSerial?: string | null,
+      /** Jira story picked on the destination screen. */
+      issueKey?: string | null,
     ): Promise<ExecutionLaunch | null> => {
       setError(null);
       setNotice(null);
 
       const executable = toMobileScenarios(scenarios);
+      const recordingIdOf = new Map(scenarios.map((s) => [s.scenarioId, s.sourceRecordingId] as const));
       if (executable.length === 0) {
         setError('Ninguno de los escenarios seleccionados tiene pasos ejecutables.');
         return null;
@@ -81,7 +86,7 @@ export function useRecordingExecution() {
       const sectionId = Number(project.testRail?.sectionId ?? 0);
       if (!projectIdTr || !sectionId) {
         setError(
-          `El proyecto ${project.name} no tiene TestRail configurado (projectId y sectionId). Configúralo antes de ejecutar.`,
+          'Elige el proyecto y la sección de TestRail donde se publican los casos antes de ejecutar.',
         );
         return null;
       }
@@ -115,8 +120,12 @@ export function useRecordingExecution() {
             title: s.title,
             steps: s.steps,
             requiredData: s.requiredData,
+            // Lets the engine apply the recording's service bindings (OTP from the catalog).
+            ...(recordingIdOf.get(s.scenarioId) ? { recordingId: recordingIdOf.get(s.scenarioId) } : {}),
           })),
           ...(Object.keys(dataOverrides).length > 0 ? { dataOverrides } : {}),
+          ...(deviceSerial ? { deviceSerial } : {}),
+          ...(issueKey ? { issueKey } : {}),
         });
 
         const skipped = scenarios.length - executable.length;

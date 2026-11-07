@@ -1,8 +1,11 @@
 import { DynamicListSelection } from "./DynamicListSelection";
+import { RevealableInput } from '../../components/ui/RevealableInput';
+import { TestDocumentSetInput } from '../../components/TestDocumentSetInput';
 import { groupOtpDatasetRequirements, otpSegmentValues } from './otp-dataset';
 import { parseSelectionRule, selectionRuleDescription } from "../../services/recordings/dynamic-selection-rule";
 import { LiveBrowserView } from './LiveBrowserView';
 import { useLocalAgent } from '../../components/localAgent/LocalAgentContext';
+import { DevicePicker } from '../../components/localAgent/DevicePicker';
 import { GenerationProgressIndicator } from './GenerationProgressIndicator';
 import { RecordingStepper } from './RecordingStepper';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -21,7 +24,7 @@ import {
 } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { useRecordingSession, type RecordingBrowserMode, type RecordingPhase } from './useRecordingSession';
-import { useRecordingExecution, type RecordingProjectDetail } from './useRecordingExecution';
+import type { RecordingProjectDetail } from './useRecordingExecution';
 import { useTestRailDestination } from './useTestRailDestination';
 import { TestRailUploadScreen } from './TestRailUploadScreen';
 import { getTestRailSelections, reconcileTestRailSelection, setTestRailScenarioSelected, testRailSelectionKey, type TestRailSelection } from './testRailSelection';
@@ -32,6 +35,24 @@ import type { JiraIssue } from '../../services/jira/types';
 import type { ActiveRun } from '../../types';
 import { derivationFeedback } from './derivation-feedback';
 import { isQaOverridableRuntimeInput, missingInputLabel, readinessBadge, resolveScenarioReadiness, runtimeRequirementsForScenario } from './recording-readiness';
+import type { BindingParamValue, ScenarioServiceView, ServiceBindingsView } from '../../services/service-catalog';
+import { useRecordingServiceBindings } from './useRecordingServiceBindings';
+import { RecordingServicesPanel, type PendingSuggestion } from './RecordingServicesPanel';
+import { ServiceBindingField } from './ServiceBindingField';
+import { bindableFieldsForScenario, fieldEntry, serviceBoundKeys, withServicePlaceholders } from './service-binding-ui';
+
+/** Catalog services (OTP...) for one scenario card; absent when the catalog is not available. */
+type ScenarioServiceProps = {
+  view: ScenarioServiceView | undefined;
+  enabledServices: ServiceBindingsView['enabledServices'];
+  busy: boolean;
+  onApply: (scope: 'general' | 'scenario', keys: string[], serviceKey: string, params: Record<string, BindingParamValue>) => void;
+  onTypeByHand: (keys: string[]) => void;
+  onInherit: (keys: string[]) => void;
+  onRemoveGeneral: (keys: string[]) => void;
+};
+import { DataGeneratorButton, isRecordingSpecGenerationEnabled, supportsDataCedulaGeneration } from '../../services/data-services';
+import {generateAutomaticRecordingData} from './automatic-cedula-data';
 
 /**
  * Recording module.
@@ -159,6 +180,7 @@ function LocalAgentHint() {
   const percent = Math.round(agent.install?.percent ?? 0);
   let text: string;
   let action: { label: string; run: () => void } | null = null;
+  let command: string | null = null;
   switch (agent.phase) {
     case 'installing':
       text = `Instalando Chromium en tu equipo (${percent}%). Mientras termina, se graba con el navegador integrado.`;
@@ -172,8 +194,11 @@ function LocalAgentHint() {
       text = agent.error ?? 'No se pudo instalar Chromium en tu equipo.';
       action = { label: 'Reintentar', run: () => void agent.startInstall() };
       break;
-    default:
-      text = 'No se detectó el agente de QA Lab en este equipo: la grabación usará el navegador integrado. Si debería estar instalado, contacta a TI.';
+    default: {
+      text = 'No se detectó el agente de QA Lab en este equipo: la grabación usará el navegador integrado. Para grabar en tu Chromium, instala el agente (no requiere administrador) ejecutando el comando en PowerShell y vuelve a pulsar el selector.';
+      // Shown as selectable text: the panel is served over plain http, where the Clipboard API is unavailable.
+      command = `iwr ${window.location.origin}/descargas/instalar-agente.ps1 -OutFile $env:TEMP\\ia.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\\ia.ps1 -Servidor ${window.location.origin}`;
+    }
   }
   return (
     <div data-testid="local-agent-hint" className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[#58646D]">
@@ -183,6 +208,11 @@ function LocalAgentHint() {
         <button onClick={action.run} className="font-semibold text-[#104B99] hover:underline">
           {action.label}
         </button>
+      )}
+      {command && (
+        <code className="w-full select-all break-all rounded border border-[#E8EBEC] bg-[#FAFAF7] px-2 py-1 font-mono text-[10px] text-[#1a1f2e]">
+          {command}
+        </code>
       )}
     </div>
   );
@@ -226,6 +256,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const [activeScenarioId, setActiveScenarioId] = useState<string | undefined>();
   const [scenariosPanelCollapsed, setScenariosPanelCollapsed] = useState(false);
   const [datasetOverrides, setDatasetOverrides] = useState<Record<string, Record<string, string>>>({});
+  const [specDatasetOverrides, setSpecDatasetOverrides] = useState<Record<string, Record<string, string>>>({});
+  const [specGenerationEnabled, setSpecGenerationEnabled] = useState(false);
+  const [autoGeneratingData,setAutoGeneratingData]=useState(false);
+  const autoGeneratedRecordings=useRef(new Set<string>());
   const [publishResult, setPublishResult] = useState<string | null>(null);
   const [selectedHistoryRecordingIds, setSelectedHistoryRecordingIds] = useState<string[]>([]);
   const [deletingSelectedHistory, setDeletingSelectedHistory] = useState(false);
@@ -243,6 +277,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     dataOverrides: Record<string, Record<number, string>>;
     datasetValues: Record<string, string | undefined>;
     scenarioDatasetValues: Record<string, Record<string, string | undefined>>;
+    scenarioSpecDatasetValues: Record<string, Record<string, string | undefined>>;
   } | null>(null);
   // Both source choices outlive the upload screen: that screen is unmounted when the user
   // returns to Recording, so its local Jira selection cannot own this state.
@@ -264,9 +299,25 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     void localAgent.check();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const execution = useRecordingExecution();
-  const testRail = useTestRailDestination(projectDetail?.testRail);
+  // Mobile: the emulator or phone of this PC to record on; null records on the server's emulator.
+  const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
+  const [recordingDevice, setRecordingDevice] = useState<string | null>(null);
+  // The project's own TestRail configuration (projectIdTr) seeds the picker; the user can
+  // still choose another project/section when executing.
+  const testRail = useTestRailDestination(projectDetail?.testRail
+    ? { projectId: projectDetail.testRail.projectIdTr, suiteId: projectDetail.testRail.suiteId, sectionId: projectDetail.testRail.sectionId }
+    : null);
   const project = projects.find((p) => p.slug === projectSlug);
+
+  useEffect(() => {
+    let current = true;
+    setSpecGenerationEnabled(false);
+    if (!projectSlug) return () => { current = false; };
+    void isRecordingSpecGenerationEnabled(projectSlug)
+      .then((enabled) => { if (current) setSpecGenerationEnabled(enabled); })
+      .catch(() => { if (current) setSpecGenerationEnabled(false); });
+    return () => { current = false; };
+  }, [projectSlug]);
 
   const primaryScenario = session.scenarios.find((scenario) => scenario.primary) ?? session.scenarios[0];
   const suggestionScenarios = primaryScenario
@@ -309,10 +360,57 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     }
     return result;
   }, [session.scenarios, sharedDatasetValues, datasetOverrides]);
+  // Catalog services (OTP...) bound to this recording's fields. A field a service fills counts
+  // as filled for readiness; the values sent to the engine stay exactly what the user typed.
+  const serviceBindings = useRecordingServiceBindings(projectSlug, session.recordingId ?? undefined, session.scenarios);
+  const readinessDatasetValues = useMemo(() => {
+    const result = new Map<string, Record<string, string | undefined>>();
+    for (const [scenarioId, values] of scenarioDatasetValues) {
+      result.set(scenarioId, withServicePlaceholders(values, serviceBoundKeys(serviceBindings.scenarioView(scenarioId))));
+    }
+    return result;
+  }, [scenarioDatasetValues, serviceBindings.scenarioView]);
+  const serviceFieldLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const scenario of session.scenarios) {
+      for (const requirement of runtimeRequirementsForScenario(scenario)) labels.set(requirement.valueKey, humanRequirementLabel(requirement));
+      for (const field of bindableFieldsForScenario(scenario)) if (field.keys.length > 1) labels.set(field.primaryKey, field.label);
+    }
+    return labels;
+  }, [session.scenarios]);
+  const pendingServiceSuggestions = useMemo((): PendingSuggestion[] => {
+    const pending = new Map<string, PendingSuggestion>();
+    for (const scenario of session.scenarios) {
+      const view = serviceBindings.scenarioView(scenario.scenarioId);
+      for (const field of bindableFieldsForScenario(scenario)) {
+        const entry = fieldEntry(view, field);
+        if (!entry?.suggestion || entry.effective) continue;
+        const id = field.keys.join('|');
+        if (!pending.has(id)) {
+          pending.set(id, { keys: field.keys, label: serviceFieldLabels.get(field.primaryKey) ?? field.label, serviceKey: entry.suggestion.serviceKey, params: entry.suggestion.params });
+        }
+      }
+    }
+    return [...pending.values()];
+  }, [session.scenarios, serviceBindings.scenarioView, serviceFieldLabels]);
+  const scenarioServiceProps = (scenarioId: string): ScenarioServiceProps | undefined => serviceBindings.view ? {
+    view: serviceBindings.scenarioView(scenarioId),
+    enabledServices: serviceBindings.view.enabledServices,
+    busy: serviceBindings.busy,
+    onApply: (scope, keys, serviceKey, params) => void serviceBindings.applyService(scope === 'general' ? '' : scenarioId, keys, serviceKey, params),
+    onTypeByHand: (keys) => void serviceBindings.typeByHand(scenarioId, keys),
+    onInherit: (keys) => void serviceBindings.clear(scenarioId, keys),
+    onRemoveGeneral: (keys) => void serviceBindings.clear('', keys),
+  } : undefined;
+  async function handleAcceptServiceSuggestions() {
+    for (const suggestion of pendingServiceSuggestions) {
+      await serviceBindings.applyService('', suggestion.keys, suggestion.serviceKey, suggestion.params);
+    }
+  }
   const activeScenario = session.scenarios.find((scenario) => scenario.scenarioId === activeScenarioId) ?? primaryScenario;
   const selectedReadiness = useMemo(
-    () => selectedScenarios.map((scenario) => ({ scenario, readiness: resolveScenarioReadiness(scenario, scenarioDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues) })),
-    [selectedScenarios, scenarioDatasetValues, sharedDatasetValues],
+    () => selectedScenarios.map((scenario) => ({ scenario, readiness: resolveScenarioReadiness(scenario, readinessDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues) })),
+    [selectedScenarios, readinessDatasetValues, sharedDatasetValues],
   );
   const readySelectedReadiness = useMemo(() => selectedReadiness.filter(({ readiness }) => readiness.publicationReadiness), [selectedReadiness]);
   const blockedSelectedReadiness = useMemo(() => selectedReadiness.filter(({ readiness }) => !readiness.publicationReadiness), [selectedReadiness]);
@@ -328,11 +426,11 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   // `GET .../scenarios` (the persisted store itself).
   const executionReadinessForSelection = useMemo(
     () => executionScenarios.map((scenario) => {
-      const readiness = resolveScenarioReadiness(scenario, scenarioDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues);
+      const readiness = resolveScenarioReadiness(scenario, readinessDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues);
       const scenarioPersisted = session.persistedScenarioIds?.has(scenario.scenarioId) ?? false;
       return { scenario, readiness, scenarioPersisted, executable: canReplayScenario({ executionReadiness: readiness.executionReadiness, scenarioPersisted }) };
     }),
-    [executionScenarios, scenarioDatasetValues, sharedDatasetValues, session.persistedScenarioIds],
+    [executionScenarios, readinessDatasetValues, sharedDatasetValues, session.persistedScenarioIds],
   );
   const executionBlocked = isExecutionSelectionBlocked(
     executionReadinessForSelection.map(({ readiness, scenarioPersisted }) => ({ executionReadiness: readiness.executionReadiness, scenarioPersisted })),
@@ -559,7 +657,11 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         setRecordingSelectionNotice('El backend no devolvió una lista válida de escenarios para esta grabación.');
         return;
       }
-      const selections = response.scenarios.map((scenario) => ({
+      // Marking a recording selects what was recorded (the main scenario); derived suggestions
+      // (e.g. "omit a data field") are chosen explicitly from the scenario list.
+      const main = response.scenarios.filter((scenario) => scenario.primary === true || scenario.provenance === 'observed');
+      const chosen = main.length > 0 ? main : response.scenarios.slice(0, 1);
+      const selections = chosen.map((scenario) => ({
         recordingId,
         scenario,
         dataOverrides: {} as Record<number, string>,
@@ -571,8 +673,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         );
         return selections.reduce((next, selection) => setTestRailScenarioSelected(next, selection, true), withoutThisRecording);
       });
+      const extra = response.scenarios.length - selections.length;
       setRecordingSelectionNotice(selections.length > 0
-        ? `Se seleccionaron ${selections.length} escenarios de esta grabación para ejecutar.`
+        ? `Se seleccionó el escenario principal de esta grabación para ejecutar${extra > 0 ? ` (${extra} sugerencia${extra === 1 ? '' : 's'} más disponible${extra === 1 ? '' : 's'} al abrirla)` : ''}.`
         : 'Esta grabación no tiene escenarios guardados para ejecutar.');
     } catch (error) {
       if (historyScenarioRequestRefs.current.get(recordingId) !== requestId) return;
@@ -612,7 +715,29 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   }
 
   const isRecording = session.phase === 'recording' || session.phase === 'starting' || session.phase === 'stopping';
-  const busy = session.phase === 'starting' || session.phase === 'stopping' || session.phase === 'deriving';
+  const busy = autoGeneratingData || session.phase === 'starting' || session.phase === 'stopping' || session.phase === 'deriving';
+
+  useEffect(()=>{
+    if(session.phase!=='stopped' || !session.recordingId || !projectSlug || !session.scenarios.length) return;
+    const identity=`${projectSlug}:${session.recordingId}`;
+    const recordingId=session.recordingId;
+    if(autoGeneratedRecordings.current.has(identity)) return;
+    autoGeneratedRecordings.current.add(identity);
+    let cancelled=false;
+    setAutoGeneratingData(true);
+    void (async()=>{
+      const updates=await generateAutomaticRecordingData(projectSlug,session.scenarios);
+      if(cancelled) return;
+      for(const update of updates) {
+        handleDatasetValueChange(update.scenarioId,update.key,update.value);
+        if(update.specValue) handleSpecDatasetValueChange(update.scenarioId,update.key,update.specValue);
+      }
+      const persisted=await flushScenarioValueWrites(recordingId);
+      if(persisted.persistFailedCount) throw new Error('No se pudo guardar la identificación generada');
+    })().catch(error=>{if(!cancelled) setPublishResult(`No se pudo renovar la cédula: ${error instanceof Error?error.message:String(error)}. Usa Generar data antes de ejecutar.`);})
+      .finally(()=>{if(!cancelled) setAutoGeneratingData(false);});
+    return ()=>{cancelled=true;setAutoGeneratingData(false);};
+  },[session.phase,session.recordingId,session.scenarios.length,projectSlug]);
 
   /**
    * "Reproducir y subir a TestRail".
@@ -625,9 +750,18 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
    * already-selected scenarios and overrides and navigates there.
    */
   function handleReplay() {
-    if (session.phase === 'stopping' || !projectSlug || replayEntries.length === 0) return;
-    const selectedIds = replayEntries.map(({ scenario }) => scenario.scenarioId);
-    console.info(`[recording:testrail] handlerSelectedIds=${JSON.stringify(selectedIds)} handlerSelectedCount=${selectedIds.length}`);
+    if (autoGeneratingData || session.phase === 'stopping' || !projectSlug || replayEntries.length === 0) return;
+    const missingHistory = selectedHistoryRecordingIds
+      .map((recordingId) => projectHistory.find((recording) => recording.recordingId === recordingId))
+      .filter((recording): recording is RecordingSummary => Boolean(recording))
+      .filter((recording) => !replayEntries.some((entry) => entry.recordingId === recording.recordingId));
+    if (missingHistory.length > 0) {
+      const labels = missingHistory.map((recording) => recording.label || recording.recordingId.slice(0, 8));
+      setRecordingSelectionNotice(`No se cargó un escenario de ${labels.join(', ')}. Desmarca y vuelve a seleccionar esa grabación antes de avanzar.`);
+      return;
+    }
+    const selectedPairs = replayEntries.map(({ recordingId, scenario }) => ({ recordingId, scenarioId: scenario.scenarioId }));
+    console.info(`[recording:testrail] handlerSelectedPairs=${JSON.stringify(selectedPairs)} handlerSelectedCount=${selectedPairs.length}`);
     setTestRailUpload({
       scenarios: replayEntries.map(({ scenario }) => scenario),
       scenarioRecordingIds: replayEntries.map(({ recordingId }) => recordingId),
@@ -640,54 +774,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
       scenarioDatasetValues: Object.assign({}, ...replayEntries.map((entry) => ({
         [testRailSelectionKey(entry.recordingId, entry.scenario.scenarioId)]: entry.datasetValues,
       }))),
-    });
-  }
-
-  async function handleExecute() {
-    if (!projectDetail || executionScenarios.length === 0) return;
-    const executionReadiness = executionScenarios.map((scenario) => ({ scenario, readiness: resolveScenarioReadiness(scenario, scenarioDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues) }));
-    if (executionReadiness.some(({ scenario, readiness }) => !canReplayScenario({
-      executionReadiness: readiness.executionReadiness,
-      scenarioPersisted: session.persistedScenarioIds?.has(scenario.scenarioId) ?? false,
-    }))) return;
-    // Publishing and executing must land in the same place: the run is created from the
-    // cases this publishes, so honouring the picker here and not there would file the run
-    // against a different section than the one on screen.
-    const target: RecordingProjectDetail = {
-      ...projectDetail,
-      testRail: {
-        projectIdTr: testRail.destination.projectId ?? projectDetail.testRail?.projectIdTr,
-        suiteId: testRail.destination.suiteId ?? projectDetail.testRail?.suiteId,
-        sectionId: testRail.destination.sectionId ?? projectDetail.testRail?.sectionId,
-      },
-    };
-    const launch = await execution.execute(target, executionScenarios, effectiveDataOverrides);
-    if (!launch) return;
-    onLaunch?.({
-      id: launch.jobId,
-      jobId: launch.jobId,
-      recordingId: session.recordingId ?? undefined,
-      scenarioIds: executionScenarios.map((scenario) => scenario.scenarioId),
-      project: projectDetail.name,
-      triggered: 'Grabación',
-      startedAt: new Date().toISOString(),
-      progress: 0,
-      total: launch.scenarioCount,
-      completed: 0,
-      passed: 0,
-      failed: 0,
-      currentTest: '',
-      eta: '—',
-      status: 'running',
-      activeScenarios: executionScenarios.map((scenario, index) => ({
-        id: scenario.scenarioId,
-        title: scenario.title,
-        index: index + 1,
-        total: executionScenarios.length,
-        steps: (scenario.testRailSteps ?? []).map((step) => step.content).filter((step): step is string => typeof step === 'string' && step.trim().length > 0),
-      })),
-      issueKey: launch.issueKey,
-      checklistUrl: launch.checklistUrl,
+      scenarioSpecDatasetValues: Object.assign({}, ...replayEntries.map((entry) => ({
+        [testRailSelectionKey(entry.recordingId, entry.scenario.scenarioId)]: specGenerationEnabled ? specDatasetOverrides[entry.scenario.scenarioId] ?? {} : {},
+      }))),
     });
   }
 
@@ -707,6 +796,13 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     }
   }
 
+  function handleSpecDatasetValueChange(scenarioId: string, valueKey: string, value: string) {
+    setSpecDatasetOverrides((previous) => ({
+      ...previous,
+      [scenarioId]: { ...(previous[scenarioId] ?? {}), [valueKey]: value },
+    }));
+  }
+
   /** Attempts one real PUT. Never throws -- reports whether it saved, hit the known transient
    *  not-ready race, or failed for another reason (in which case the caller's prior state is
    *  refreshed from the backend, never wiped locally). */
@@ -724,6 +820,26 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
       const refreshed = await recordingsApi.scenarios(recordingId, projectSlug).catch(() => null);
       if (refreshed?.scenarios) session.setScenarios(refreshed.scenarios);
       return 'failed';
+    }
+  }
+
+  async function handleRemoveStep(scenarioId: string, interactionId: string) {
+    if (!session.recordingId || !projectSlug) return;
+    try {
+      const result = await recordingsApi.removeScenarioStep(session.recordingId, projectSlug, scenarioId, interactionId);
+      session.setScenarios(session.scenarios.map((scenario) => scenario.scenarioId === scenarioId ? result.scenario : scenario));
+    } catch (error) {
+      setPublishResult(error instanceof Error ? error.message : 'No se pudo eliminar el paso.');
+    }
+  }
+
+  async function handleRestoreStep(scenarioId: string, interactionId: string) {
+    if (!session.recordingId || !projectSlug) return;
+    try {
+      const result = await recordingsApi.restoreScenarioStep(session.recordingId, projectSlug, scenarioId, interactionId);
+      session.setScenarios(session.scenarios.map((scenario) => scenario.scenarioId === scenarioId ? result.scenario : scenario));
+    } catch (error) {
+      setPublishResult(error instanceof Error ? error.message : 'No se pudo restaurar el paso.');
     }
   }
 
@@ -821,11 +937,13 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         dataOverrides={testRailUpload.dataOverrides}
         datasetValues={testRailUpload.datasetValues}
         scenarioDatasetValues={testRailUpload.scenarioDatasetValues}
+        scenarioSpecDatasetValues={testRailUpload.scenarioSpecDatasetValues}
         testRail={testRail}
         selectedIssue={selectedJiraIssue}
         onSelectIssue={setSelectedJiraIssue}
         onBack={() => setTestRailUpload(null)}
         onLaunch={onLaunch}
+        deviceSerial={projectDetail?.type === 'mobile' ? deviceSerial : null}
       />
     );
   }
@@ -924,8 +1042,10 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   role="switch"
                   aria-label="Usar Chromium del PC para grabar"
                   aria-checked={usePcBrowser}
-                  disabled={session.phase === 'starting' || busy || pcBrowserMode === null}
-                  onClick={() => setPreferPcBrowser(!usePcBrowser)}
+                  disabled={session.phase === 'starting' || busy}
+                  // Without a ready agent the switch asks again (e.g. right after installing it);
+                  // the hint below explains how to get the agent when it is still missing.
+                  onClick={() => (pcBrowserMode === null ? void localAgent.check() : setPreferPcBrowser(!usePcBrowser))}
                   className="flex items-center gap-2 rounded-full border border-[#E8EBEC] bg-white px-3 py-2 text-[11px] font-medium text-[#58646D] transition disabled:opacity-50"
                 >
                   <span className={cn('relative h-4 w-7 rounded-full transition-colors', usePcBrowser ? 'bg-[#48A157]' : 'bg-[#B7C0C4]')}>
@@ -939,7 +1059,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   setScenariosPanelCollapsed(false);
                   const mode = startBrowserMode;
                   setRecordingBrowserMode(mode);
-                  void session.start(label.trim() || undefined, mode).then((started) => {
+                  const device = project?.type === 'mobile' ? deviceSerial : null;
+                  setRecordingDevice(device);
+                  void session.start(label.trim() || undefined, mode, device ?? undefined).then((started) => {
                     // The agent may have gone away (or lost Chromium) since the last check.
                     if (!started && mode === 'agent') void localAgent.check();
                   });
@@ -962,6 +1084,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             </button>
           )}
         </div>
+        {!isRecording && project?.type === 'mobile' && (
+          <div className="mt-4">
+            <div className="text-[10px] uppercase tracking-[0.12em] text-[#8B999D] mb-1.5">Dispositivo</div>
+            <DevicePicker value={deviceSerial} onChange={setDeviceSerial} purpose="record" disabled={session.phase === 'starting' || busy} />
+          </div>
+        )}
         {!isRecording && project?.type !== 'mobile' && pcBrowserMode === null && localAgent.phase !== 'unknown' && (
           <LocalAgentHint />
         )}
@@ -1001,7 +1129,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse" />
               <span className="text-[12px] font-semibold text-[#1a1f2e]">
                 Grabando — {project?.type === 'mobile'
-                  ? 'usa la app en el emulador'
+                  ? (recordingDevice ? `usa la app en ${recordingDevice} de tu equipo` : 'usa la app en el emulador')
                   : recordingBrowserMode === 'agent'
                     ? 'interactúa con la ventana de Chromium que se abrió en tu equipo'
                     : recordingBrowserMode === 'desktop' ? 'interactúa con la ventana Chromium del PC' : 'interactúa con el navegador integrado'}
@@ -1122,18 +1250,16 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 {deletingSelectedHistory ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                 {deletingSelectedHistory ? 'Eliminando…' : `Eliminar seleccionadas${selectedHistoryRecordingIds.length ? ` (${selectedHistoryRecordingIds.length})` : ''}`}
               </button>
-              {project?.type !== 'mobile' && (
-                <button
-                  type="button"
-                  onClick={handleReplay}
-                  disabled={session.phase === 'stopping' || replayEntries.length === 0 || selectingHistoryScenarios || loadingHistoryScenarioRecordingIds.length > 0}
-                  title={session.phase === 'stopping' ? 'Espera a que termine la sincronización de la grabación' : 'Configura TestRail y ejecuta los escenarios seleccionados'}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-[#1a1f2e] px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <Play size={12} />
-                  Reproducir y subir a TestRail{replayEntries.length > 0 ? ` (${replayEntries.length})` : ''}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={handleReplay}
+                disabled={autoGeneratingData || session.phase === 'stopping' || replayEntries.length === 0 || selectingHistoryScenarios || loadingHistoryScenarioRecordingIds.length > 0}
+                title={session.phase === 'stopping' ? 'Espera a que termine la sincronización de la grabación' : 'Configura TestRail y ejecuta los escenarios seleccionados'}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#1a1f2e] px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {autoGeneratingData ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                {autoGeneratingData ? 'Generando identificaciones nuevas…' : `Reproducir y subir a TestRail${replayEntries.length > 0 ? ` (${replayEntries.length})` : ''}`}
+              </button>
             </div>
           </div>
           {recordingSelectionNotice && <div role="status" className="mt-2 rounded-lg bg-[#F4F8FD] px-3 py-2 text-[11px] text-[#58646D]">{recordingSelectionNotice}</div>}
@@ -1158,17 +1284,15 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               )}
               {projectDetail?.type === 'mobile' && (
                 <button
-                  onClick={handleExecute}
-                  disabled={execution.running || executionScenarios.length === 0 || executionBlockedWithLifecycle}
-                  title={
-                    executionBlockedWithLifecycle
-                      ? 'Completa los requisitos de ejecución antes de ejecutar'
-                      : 'Publica y ejecuta únicamente los escenarios seleccionados'
-                  }
+                  type="button"
+                  onClick={handleReplay}
+                  disabled={session.phase === 'stopping' || replayEntries.length === 0}
+                  title={replayEntries.length === 0 ? 'Selecciona al menos un escenario' : 'Elige proyecto y sección de TestRail y la historia de Jira, y ejecuta'}
+                  data-testid="recording-mobile-to-testrail"
                   className="bg-[#1a1f2e] hover:bg-black disabled:opacity-40 text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5 transition"
                 >
-                  {execution.running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
-                  Publicar y ejecutar
+                  <Play size={13} />
+                  Configurar TestRail y ejecutar{replayEntries.length > 0 ? ` (${replayEntries.length})` : ''}
                 </button>
               )}
               <button
@@ -1223,14 +1347,17 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
           {publishResult && (
             <div className="mb-3 text-[12px] text-[#58646D] bg-[#FAFAF7] rounded-lg px-3 py-2">{publishResult}</div>
           )}
-          {execution.error && (
-            <div className="mb-3 flex items-start gap-2 text-[12px] text-[#B4463C]">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>{execution.error}</span>
-            </div>
-          )}
-          {execution.notice && (
-            <div className="mb-3 text-[12px] text-[#58646D] bg-[#FAFAF7] rounded-lg px-3 py-2">{execution.notice}</div>
+
+          {serviceBindings.view && session.scenarios.length > 0 && (
+            <RecordingServicesPanel
+              view={serviceBindings.view}
+              pendingSuggestions={pendingServiceSuggestions}
+              labelFor={(key) => serviceFieldLabels.get(key) ?? key}
+              busy={serviceBindings.busy}
+              error={serviceBindings.error}
+              onAcceptSuggestions={() => void handleAcceptServiceSuggestions()}
+              onRemove={(keys) => void serviceBindings.clear('', keys)}
+            />
           )}
 
           {primaryScenario && (
@@ -1251,9 +1378,15 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 expanded={Boolean(expandedScenarioIds[primaryScenario.scenarioId])}
                 onToggleExpanded={() => setExpandedScenarioIds((prev) => ({ ...prev, [primaryScenario.scenarioId]: !prev[primaryScenario.scenarioId] }))}
                 datasetValues={scenarioDatasetValues.get(primaryScenario.scenarioId) ?? sharedDatasetValues}
+                specDatasetValues={specDatasetOverrides[primaryScenario.scenarioId] ?? {}}
+                specGenerationEnabled={specGenerationEnabled}
                 onDatasetValueChange={(valueKey, value) => handleDatasetValueChange(primaryScenario.scenarioId, valueKey, value)}
+                onSpecDatasetValueChange={(valueKey, value) => handleSpecDatasetValueChange(primaryScenario.scenarioId, valueKey, value)}
                 onDatasetBlur={(valueKey, value) => void handleDatasetBlur(primaryScenario.scenarioId, valueKey, value)}
                 sensitiveDatasetKeys={sensitiveDatasetKeys}
+                services={scenarioServiceProps(primaryScenario.scenarioId)}
+                onRemoveStep={(interactionId) => void handleRemoveStep(primaryScenario.scenarioId, interactionId)}
+                onRestoreStep={(interactionId) => handleRestoreStep(primaryScenario.scenarioId, interactionId)}
               />
             </div>
           )}
@@ -1276,9 +1409,15 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   expanded={Boolean(expandedScenarioIds[s.scenarioId])}
                   onToggleExpanded={() => setExpandedScenarioIds((prev) => ({ ...prev, [s.scenarioId]: !prev[s.scenarioId] }))}
                   datasetValues={scenarioDatasetValues.get(s.scenarioId) ?? sharedDatasetValues}
+                  specDatasetValues={specDatasetOverrides[s.scenarioId] ?? {}}
+                  specGenerationEnabled={specGenerationEnabled}
                   onDatasetValueChange={(valueKey, value) => handleDatasetValueChange(s.scenarioId, valueKey, value)}
+                  onSpecDatasetValueChange={(valueKey, value) => handleSpecDatasetValueChange(s.scenarioId, valueKey, value)}
                   onDatasetBlur={(valueKey, value) => void handleDatasetBlur(s.scenarioId, valueKey, value)}
                   sensitiveDatasetKeys={sensitiveDatasetKeys}
+                  services={scenarioServiceProps(s.scenarioId)}
+                  onRemoveStep={(interactionId) => void handleRemoveStep(s.scenarioId, interactionId)}
+                  onRestoreStep={(interactionId) => handleRestoreStep(s.scenarioId, interactionId)}
                 />
               ))}
             </div>
@@ -1586,11 +1725,19 @@ export function ScenarioCard({
   expanded,
   onToggleExpanded,
   datasetValues,
+  specDatasetValues = {},
+  specGenerationEnabled = false,
   onDatasetValueChange,
+  onSpecDatasetValueChange = () => undefined,
   onDatasetBlur,
   sensitiveDatasetKeys,
+  services,
+  onRemoveStep,
+  onRestoreStep,
 }: {
   projectSlug?: string;
+  onRemoveStep?: (interactionId: string) => void;
+  onRestoreStep?: (interactionId: string) => Promise<void>;
   scenario: RecordedScenario;
   checked: boolean;
   onToggle: () => void;
@@ -1599,14 +1746,28 @@ export function ScenarioCard({
   expanded: boolean;
   onToggleExpanded: () => void;
   datasetValues: Record<string, string | undefined>;
+  specDatasetValues?: Record<string, string | undefined>;
+  specGenerationEnabled?: boolean;
   onDatasetValueChange: (valueKey: string, value: string) => void;
+  onSpecDatasetValueChange?: (valueKey: string, value: string) => void;
   onDatasetBlur: (valueKey: string, value: string) => void;
   sensitiveDatasetKeys: Set<string>;
+  services?: ScenarioServiceProps;
 }) {
+  const [editingSteps, setEditingSteps] = useState(false);
+  // Deleted steps of this session, newest last; "Deshacer" restores them one by one.
+  const [removedSteps, setRemovedSteps] = useState<Array<{ interactionId: string; label: string }>>([]);
+  const undoLastRemoval = async () => {
+    const last = removedSteps.at(-1);
+    if (!last || !onRestoreStep) return;
+    await onRestoreStep(last.interactionId);
+    setRemovedSteps((stack) => stack.filter((item) => item.interactionId !== last.interactionId));
+  };
   const reviewDraft = '';
   const setReviewDraft = (_value: string) => undefined;
   const onReviewChange = (_status: 'PENDING' | 'APPROVED' | 'REJECTED', _expected: string) => undefined;
-  const readiness = resolveScenarioReadiness(scenario, datasetValues);
+  const boundByService = serviceBoundKeys(services?.view);
+  const readiness = resolveScenarioReadiness(scenario, withServicePlaceholders(datasetValues, boundByService));
   const stepRequirementsByKey = new Map(runtimeRequirementsForScenario(scenario).map((requirement) => [requirement.valueKey, requirement] as const));
   const resolveStepPrivacy = (step: RecordedScenarioStep) => {
     const recordedInteraction = step.interactionId
@@ -1668,9 +1829,9 @@ export function ScenarioCard({
   };
   const mutationType = undefined;
   const mutationDiagnostics = scenario.mutationDiagnostics;
-  const metrics = scenarioMetrics(scenario);
   const [otpDrafts, setOtpDrafts] = useState<Record<string, string>>({});
-  const datasetRequirements = groupOtpDatasetRequirements(runtimeRequirementsForScenario(scenario).filter((requirement) => requirement.valueRole !== 'runtime_derived_oracle'));
+  const datasetRequirements = groupOtpDatasetRequirements(runtimeRequirementsForScenario(scenario).filter((requirement) =>
+    requirement.valueRole !== 'runtime_derived_oracle'));
   const datasetGroups = new Map<string, typeof datasetRequirements>();
   for (const requirement of datasetRequirements) {
     const group = requirement.entityScope ?? '__shared__';
@@ -1725,26 +1886,41 @@ export function ScenarioCard({
               {readinessBadge(readiness)}
             </span>
           </div>
-          <p className="text-[11.5px] text-[#58646D] mt-1 leading-snug">{scenario.description}</p>
           {scenario.provenance === 'derived' && scenario.rationale && (
             <div className="mt-2 rounded border border-[#E3D9F7] bg-[#FBF9FF] px-2 py-1.5 text-[10px] text-[#58646D]"><span className="font-semibold text-[#7656A6]">Objetivo de esta variante:</span> {scenario.rationale}</div>
           )}
-          {(
-            <div className="mt-1 text-[10px] text-[#58646D]">
-              {metrics.scenarioStepCount} pasos · {metrics.functionalActionCount} acciones funcionales · {metrics.nonUserSetupSteps} setup/no usuario
-              {scenario.reasonForDifference ? ` · ${scenario.reasonForDifference}` : ''}
+          <section aria-label="Datos de este escenario" className="mt-4 border-t border-[#E5EBF1] pt-3 sm:-ml-[60px]">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="text-[12px] font-semibold text-[#1A1F2E]">Datos de este escenario</h3>
+              </div>
+              <span className={cn(
+                'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-semibold',
+                readiness.dataReadiness
+                  ? 'bg-[#EAF5ED] text-[#34773D]'
+                  : 'bg-[#FFF5DF] text-[#80530D]',
+              )}>
+                {readiness.dataReadiness ? <CheckCircle2 size={12} aria-hidden="true" /> : <AlertTriangle size={12} aria-hidden="true" />}
+                {readiness.dataReadiness
+                  ? 'Datos completos'
+                  : readiness.missingInputs.length > 0
+                    ? `${readiness.missingInputs.length} ${readiness.missingInputs.length === 1 ? 'dato pendiente' : 'datos pendientes'}`
+                    : 'Revisar datos'}
+              </span>
             </div>
-          )}
-          <div className="mt-3 rounded-lg border border-[#E3EAF2] bg-[#F8FAFC] px-2.5 py-2.5">
-            <div className="text-[10px] uppercase tracking-[0.1em] text-[#104B99] font-semibold">Datos de este escenario</div>
             {datasetRequirements.length === 0 ? (
-              <div className="mt-1 text-[10.5px] text-[#58646D]">No requiere inputs de runtime propios.</div>
+              <div className="px-4 py-3 text-[12px] text-[#58646D]">
+                No requiere inputs de runtime propios.
+              </div>
             ) : (
-              <div className="mt-2 space-y-2.5">
+              <div className="mt-3 space-y-4">
                 {[...datasetGroups.entries()].map(([scope, requirements]) => (
-                  <div key={scope}>
-                    <div className="text-[10px] font-semibold text-[#1a1f2e]">{scope === '__shared__' ? 'Datos comunes' : humanEntityScopeLabel(scope)}</div>
-                    <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <fieldset key={scope} className="min-w-0 border-t border-[#E5EBF1] pt-3 first:border-t-0 first:pt-0">
+                    <legend className={cn('flex items-center gap-2 text-[12px] font-semibold text-[#1A1F2E]', scope === '__shared__' && 'sr-only')}>
+                      {scope === '__shared__' ? 'Datos comunes' : humanEntityScopeLabel(scope)}
+                      {scope !== '__shared__' && <span className="text-[10px] font-normal text-[#71808C]">{requirements.length} {requirements.length === 1 ? 'campo' : 'campos'}</span>}
+                    </legend>
+                    <div className={cn('grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2', scope !== '__shared__' && 'mt-2')}>
                       {requirements.map((requirement) => {
                         const segmentKeys = requirement.otpSegmentKeys;
                         const otpDraftKey = JSON.stringify([scenario.sourceRecordingId, scenario.scenarioId, requirement.valueKey]);
@@ -1754,17 +1930,47 @@ export function ScenarioCard({
                         const disabled = !isQaOverridableRuntimeInput(requirement) || requirement.editable === false;
                         const constraintDescription = requirementConstraintDescription(requirement);
                         const listMode = recordedListSelectionMode(scenario, requirement.valueKey);
+                        const bindingKeys = segmentKeys ?? [requirement.valueKey];
+                        const serviceEntry = services
+                          ? fieldEntry(services.view, { primaryKey: requirement.valueKey, keys: bindingKeys, label: humanRequirementLabel(requirement) })
+                          : undefined;
+                        const filledByService = Boolean(serviceEntry?.effective?.serviceKey);
+                        const missing = readiness.missingInputs.some((item) => item.valueKey === requirement.valueKey);
+                        const generatedSpecValue = specDatasetValues[requirement.valueKey] ?? '';
+                        const showSpecField = specGenerationEnabled
+                          && !scenario.promotedSpec
+                          && Boolean(generatedSpecValue)
+                          && requirement.controlType !== 'file-set'
+                          && supportsDataCedulaGeneration(humanRequirementLabel(requirement), requirement.valueKey);
                         return (
-                          <div key={requirement.valueKey} className="block">
-                            <span className={cn('text-[10px]', !value.trim() ? 'text-[#B4463C]' : 'text-[#58646D]')}>
-                              {humanRequirementLabel(requirement)}{requirement.required ? ' · Requerido' : ''}{requirement.sensitive ? ' · QA sensible' : ''}
-                            </span>
-                            {constraintDescription && <div className="mt-0.5 text-[9px] text-[#58646D]">{constraintDescription}</div>}
-                            {requirement.allowedValues?.length ? <div className="mt-0.5 text-[10px] text-[#58646D]">
+                          <div key={requirement.valueKey} className={cn(
+                            'min-w-0',
+                            requirement.controlType === 'file-set' && 'sm:border-l-2 sm:border-[#48A157]/40 sm:pl-3',
+                          )}>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="mr-1 text-[12px] font-semibold text-[#1A1F2E]">{humanRequirementLabel(requirement)}<DataGeneratorButton projectSlug={projectSlug} label={humanRequirementLabel(requirement)} fieldKey={requirement.valueKey} generateSpecValue={!scenario.promotedSpec && specGenerationEnabled} onGenerated={(nextValue) => { onDatasetValueChange(requirement.valueKey, nextValue); onDatasetBlur(requirement.valueKey, nextValue); }} onGeneratedSpec={(nextValue) => onSpecDatasetValueChange(requirement.valueKey, nextValue)} className="ml-1" /></span>
+                              {requirement.required ? missing && <span className="text-[10px] font-medium text-[#80530D]">Requerido</span> : <span className="text-[10px] font-medium text-[#71808C]">Opcional</span>}
+                              {requirement.sensitive && <span className="text-[10px] text-[#42617F]">· QA sensible</span>}
+                              {requirement.required && <span className={cn('ml-auto text-[10px] font-semibold', missing ? 'text-[#A13E36]' : 'text-[#34773D]')}>{missing ? 'Pendiente' : 'Completo'}</span>}
+                            </div>
+                            {constraintDescription && <div className="mt-1 text-[10px] leading-snug text-[#58646D]">{constraintDescription}</div>}
+                            {requirement.allowedValues?.length ? <div className="mt-1 text-[10px] text-[#58646D]">
                               {listMode === 'index' ? 'Lista dinámica · Selección configurable' : listMode === 'value' ? 'Selección por valor' : 'Tipo de lista sin confirmar'}
                             </div> : null}
-                            <div className="mt-0.5 font-mono break-all text-[9px] text-[#8B999D]" title={requirement.valueKey}>valueKey: {requirement.valueKey}</div>
-                            {listMode === 'index' && requirement.allowedValues?.length ? (
+                            {filledByService ? (
+                              <div className="mt-0.5 w-full px-2 py-1 rounded border border-dashed border-[#48A157]/50 bg-[#F4FAF5] text-[11px] text-[#2F7A3D]">
+                                Lo llena el servicio al ejecutar
+                              </div>
+                            ) : requirement.controlType === 'file-set' ? (
+                              <TestDocumentSetInput
+                                variant="light"
+                                area="runs"
+                                projectSlug={projectSlug}
+                                value={value}
+                                disabled={disabled}
+                                onChange={(nextValue) => { onDatasetValueChange(requirement.valueKey, nextValue); onDatasetBlur(requirement.valueKey, nextValue); }}
+                              />
+                            ) : listMode === 'index' && requirement.allowedValues?.length ? (
                               <DynamicListSelection
                                 projectSlug={projectSlug ?? ''} fieldKey={requirement.valueKey}
                                 label={humanRequirementLabel(requirement)} value={value}
@@ -1779,13 +1985,13 @@ export function ScenarioCard({
                                 onChange={(event) => onDatasetValueChange(requirement.valueKey, event.target.value)}
                                 onBlur={(event) => onDatasetBlur(requirement.valueKey, event.currentTarget.value)}
                                 disabled={disabled}
-                                className="mt-0.5 w-full px-2 py-1 rounded border border-[#D9E2EC] bg-white text-[11px] outline-none focus:border-[#104B99] disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"
+                                className="mt-2 min-h-10 w-full rounded-md border border-[#B9C8D7] bg-white px-3 py-2 text-[13px] text-[#1A1F2E] outline-none transition focus:border-[#104B99] focus:ring-2 focus:ring-[#104B99]/15 disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"
                               >
                                 <option value="">{listMode === 'index' ? 'Selecciona una posición' : 'Selecciona un valor observado'}</option>
                                 {requirement.allowedValues.map((option, index) => <option key={option} value={option}>{listMode === 'index' ? `Opción ${index + 1}` : observedOptionLabel(option)}</option>)}
                               </select>
                             ) : (
-                              <input
+                              <RevealableInput
                                 aria-label={humanRequirementLabel(requirement)}
                                 type={requirement.sensitive || requirement.masked ? 'password' : 'text'}
                                 maxLength={segmentKeys ? 6 : undefined}
@@ -1800,24 +2006,53 @@ export function ScenarioCard({
                                 onBlur={(event) => onDatasetBlur(requirement.valueKey, segmentKeys ? event.currentTarget.value[0] ?? '' : event.currentTarget.value)}
                                 disabled={disabled}
                                 placeholder={requirement.sensitive ? 'Valor seguro requerido' : 'Sin valor confirmado'}
-                                className="mt-0.5 w-full px-2 py-1 rounded border border-[#D9E2EC] bg-white text-[11px] outline-none focus:border-[#104B99] disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"
+                                className="mt-2 min-h-10 w-full rounded-md border border-[#B9C8D7] bg-white px-3 py-2 text-[13px] text-[#1A1F2E] outline-none transition placeholder:text-[#7B8792] focus:border-[#104B99] focus:ring-2 focus:ring-[#104B99]/15 disabled:bg-[#F3F4F6] disabled:text-[#8B999D]"
                               />
+                            )}
+                            {services && (
+                              <ServiceBindingField
+                                entry={serviceEntry}
+                                services={services.enabledServices}
+                                identityOptions={datasetRequirements
+                                  .filter((candidate) => !bindingKeys.includes(candidate.valueKey) && !candidate.otpSegmentKeys)
+                                  .map((candidate) => ({ key: candidate.valueKey, label: humanRequirementLabel(candidate) }))}
+                                labelFor={(key) => {
+                                  const known = stepRequirementsByKey.get(key);
+                                  return known ? humanRequirementLabel(known) : key;
+                                }}
+                                offerService={Boolean(segmentKeys) || (requirement.sensitive === true && !/contrase|password|clave/i.test(humanRequirementLabel(requirement)))}
+                                busy={services.busy}
+                                onApply={(scope, serviceKey, params) => services.onApply(scope, bindingKeys, serviceKey, params)}
+                                onTypeByHand={() => services.onTypeByHand(bindingKeys)}
+                                onInherit={() => services.onInherit(bindingKeys)}
+                                onRemoveGeneral={() => services.onRemoveGeneral(bindingKeys)}
+                              />
+                            )}
+                            {showSpecField && (                              <div className="mt-3">
+                                <label className="text-[11px] font-semibold text-[#1A1F2E]" htmlFor={`spec-${scenario.scenarioId}-${requirement.valueKey}`}>Cédula Spec</label>
+                                <input
+                                  id={`spec-${scenario.scenarioId}-${requirement.valueKey}`}
+                                  aria-label="Cédula Spec"
+                                  type="text"
+                                  value={generatedSpecValue}
+                                  onChange={(event) => onSpecDatasetValueChange(requirement.valueKey, event.target.value)}
+                                  className="mt-2 min-h-10 w-full rounded-md border border-[#B9C8D7] bg-white px-3 py-2 text-[13px] text-[#1A1F2E] outline-none transition focus:border-[#104B99] focus:ring-2 focus:ring-[#104B99]/15"
+                                />
+                              </div>
                             )}
                           </div>
                         );
                       })}
                     </div>
-                  </div>
+                  </fieldset>
                 ))}
               </div>
             )}
-            {readiness.missingInputs.length > 0 && (
-              <div className="mt-2 text-[10px] text-[#B4463C]">Faltan {readiness.missingInputs.length} datos; completa los campos marcados en esta card.</div>
-            )}
-          </div>
-          {!readiness.dataReadiness && (
-            <div className="mt-2 rounded border border-[#F0C7C3] bg-[#FDF0EF] px-2 py-1.5 text-[10px] text-[#8E332C]">
-              Faltan: {readiness.missingInputs.map(missingInputLabel).join(', ')}
+          </section>
+          {!readiness.dataReadiness && readiness.missingInputs.length > 0 && (
+            <div role="status" className="mt-2 flex items-start gap-1.5 text-[11px] text-[#A13E36]">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+              <span>Pendientes: {readiness.missingInputs.map(missingInputLabel).join(', ')}</span>
             </div>
           )}
           {mutationType && (
@@ -1849,12 +2084,34 @@ export function ScenarioCard({
               <button type="button" onClick={() => onReviewChange('APPROVED', reviewDraft)} className="mt-1 rounded-full bg-[#1a1f2e] px-2.5 py-1 text-[10px] font-semibold text-white">Aprobar revisión</button>
             </div>
           )}
-          <button
-            onClick={onToggleExpanded}
-            className="text-[11px] font-medium text-[#104B99] mt-2"
-          >
-            {expanded ? 'Ocultar pasos' : `Ver ${scenario.testRailSteps.length} pasos`}
-          </button>
+          <div className="mt-2 flex items-center gap-3 sm:-ml-[60px]">
+            <button
+              onClick={onToggleExpanded}
+              className="text-[11px] font-medium text-[#104B99]"
+            >
+              {expanded ? 'Ocultar pasos' : `Ver ${scenario.testRailSteps.length} pasos`}
+            </button>
+            {expanded && onRemoveStep && (
+              <button
+                type="button"
+                aria-pressed={editingSteps}
+                onClick={() => setEditingSteps((value) => !value)}
+                className="text-[11px] font-medium text-[#58646D] hover:text-[#104B99]"
+              >
+                {editingSteps ? 'Listo' : 'Editar pasos'}
+              </button>
+            )}
+            {expanded && onRestoreStep && removedSteps.length > 0 && (
+              <button
+                type="button"
+                onClick={() => void undoLastRemoval()}
+                title={`Restaurar: ${removedSteps.at(-1)?.label}`}
+                className="text-[11px] font-medium text-[#104B99] hover:underline"
+              >
+                Deshacer eliminación ({removedSteps.length})
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1863,11 +2120,41 @@ export function ScenarioCard({
           <div className="space-y-1.5 border-l-2 border-[#E8EBEC] pl-3 ml-1">
             {scenario.testRailSteps.map((step, i) => {
               const sensitive = resolveStepPrivacy(step).sensitive;
+              const previousPageKey = i > 0 ? scenario.testRailSteps[i - 1]?.pageKey : undefined;
+              const pageContextChanged = Boolean(step.pageKey && previousPageKey && step.pageKey !== previousPageKey);
+              const pageWasSeen = pageContextChanged && scenario.testRailSteps
+                .slice(0, i)
+                .some((previousStep) => previousStep.pageKey === step.pageKey);
               return (
                 <li key={`${scenario.scenarioId}-${step.stepNumber ?? i}`} className="text-[11.5px]">
+                  {pageContextChanged && (
+                    <div
+                      className="mb-1 mt-2 rounded-md border-l-2 border-[#2877A8] bg-[#EAF5FF] px-2 py-1 text-[10px] font-medium text-[#225A7A]"
+                      title={step.routeBefore ?? undefined}
+                      aria-label={`${pageWasSeen ? 'Regreso a' : 'Cambio a'} la pestaña ${step.pageKey}`}
+                    >
+                      {pageWasSeen ? 'Regreso a' : 'Cambio a'} la pestaña {step.pageKey}
+                      {step.routeBefore && <span className="ml-1 font-normal text-[#58646D]">· {new URL(step.routeBefore, window.location.href).hostname}</span>}
+                    </div>
+                  )}
                   <div className="text-[#1a1f2e]">
                     <span className="text-[#8B999D] mr-1.5">{step.stepNumber ?? i + 1}.</span>
                     {renderStep(step)}
+                    {editingSteps && onRemoveStep && step.interactionId && (
+                      <button
+                        type="button"
+                        aria-label={`Eliminar paso ${step.stepNumber ?? i + 1}`}
+                        title="Eliminar paso"
+                        onClick={() => {
+                          if (!window.confirm(`¿Eliminar el paso ${step.stepNumber ?? i + 1} de este escenario?`)) return;
+                          setRemovedSteps((stack) => [...stack, { interactionId: step.interactionId!, label: `${step.stepNumber ?? i + 1}. ${step.content ?? ''}`.trim() }]);
+                          onRemoveStep(step.interactionId!);
+                        }}
+                        className="ml-2 text-[#B4463C] hover:underline"
+                      >
+                        Eliminar
+                      </button>
+                    )}
                   </div>
                   {!sensitive && step.expected.trim() && (
                     <div className="text-[#48A157] mt-0.5">→ {step.expected}</div>
@@ -1877,11 +2164,11 @@ export function ScenarioCard({
             })}
           </div>
           {scenario.stepTargets && scenario.stepTargets.length > 0 && (
-            <div className="mt-3">
-              <div className="text-[11px] font-medium text-[#1a1f2e] mb-1.5">
-                Identificadores ({scenario.stepTargets.length})
-              </div>
-              <div className="space-y-1">
+            <details className="mt-3">
+              <summary className="w-fit cursor-pointer select-none text-[11px] font-medium text-[#104B99] hover:underline">
+                Ver identificadores ({scenario.stepTargets.length})
+              </summary>
+              <div className="mt-2 space-y-1">
                 {scenario.stepTargets.map((t) => (
                   <div
                     key={`${t.stepIndex}-${t.value}`}
@@ -1907,7 +2194,7 @@ export function ScenarioCard({
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           )}
         </div>
       )}

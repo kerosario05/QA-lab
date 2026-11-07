@@ -198,9 +198,9 @@ export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
             <div className="mt-5 flex items-center justify-between">
               <button
                 onClick={onCancel}
-                className="text-[12px] font-medium px-4 py-2.5 rounded-full text-[#58646D] hover:bg-white hover:text-[#1a1f2e] transition flex items-center gap-1.5"
+                className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[#48A157]/25 bg-[#48A157] px-4 py-2 text-[11px] font-semibold text-white shadow-sm transition hover:border-[#347F43] hover:bg-[#347F43] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#48A157]/35 focus-visible:ring-offset-2"
               >
-                <ChevronLeft size={13} /> Volver a los borradores
+                <ChevronLeft size={14} strokeWidth={2.5} aria-hidden="true" /> Volver a los borradores
               </button>
               <button
                 onClick={() => setStep(2)}
@@ -287,9 +287,10 @@ export function NewDraftForm({ onCancel, onCreated }: NewDraftFormProps) {
         <div className="mt-5 flex items-center justify-between">
           <button
             onClick={() => setStep(1)}
-            className="text-[12px] font-medium px-4 py-2.5 rounded-full text-[#58646D] hover:bg-white hover:text-[#1a1f2e] transition flex items-center gap-1.5"
+            className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[#48A157]/25 bg-[#48A157] px-4 py-2 text-[11px] font-semibold text-white shadow-sm transition hover:border-[#347F43] hover:bg-[#347F43] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#48A157]/35 focus-visible:ring-offset-2"
           >
-            <ChevronLeft size={13} /> Cambiar proyecto
+            <ChevronLeft size={14} strokeWidth={2.5} aria-hidden="true" />
+            <span>Cambiar proyecto</span>
           </button>
           <button
             onClick={submit}

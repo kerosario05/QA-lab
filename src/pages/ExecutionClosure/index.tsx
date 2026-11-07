@@ -37,8 +37,8 @@ export function ExecutionClosure({ execution, onClose, onConfirm }: ExecutionClo
   return (
     <div className="p-7 min-h-full" style={{ background: C.canvas }}>
       <div className="max-w-5xl mx-auto">
-        <button onClick={onClose} className="text-[11px] text-[#58646D] hover:text-[#104B99] flex items-center gap-1 transition mb-4">
-          <ChevronLeft size={12} /> Cancelar cierre
+        <button onClick={onClose} className="mb-4 inline-flex min-h-10 items-center gap-2 rounded-full border border-[#48A157]/25 bg-[#48A157] px-4 py-2 text-[11px] font-semibold text-white shadow-sm transition hover:border-[#347F43] hover:bg-[#347F43] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#48A157]/35 focus-visible:ring-offset-2">
+          <ChevronLeft size={14} strokeWidth={2.5} aria-hidden="true" /> Cancelar cierre
         </button>
 
         <BentoCard className="!p-0 overflow-hidden mb-4">

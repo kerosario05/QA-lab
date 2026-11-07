@@ -34,10 +34,10 @@ export function testRailSelectionKey(recordingId: string, scenarioId: string): s
 }
 
 function selectionIdentity(selection: TestRailScenarioSelection): string {
-  const caseId = selection.scenario.testRailCaseId;
-  return typeof caseId === 'number' && Number.isInteger(caseId) && caseId > 0
-    ? JSON.stringify(['testrail-case', caseId])
-    : testRailSelectionKey(selection.recordingId, selection.scenario.scenarioId);
+  // A TestRail case can be linked to more than one captured recording. Those are still
+  // separate replay inputs, so selection must be keyed by the recording/scenario pair.
+  // Deduplicating by TestRail case ID silently drops a checked recording from the batch.
+  return testRailSelectionKey(selection.recordingId, selection.scenario.scenarioId);
 }
 
 export function toggleTestRailSelection(

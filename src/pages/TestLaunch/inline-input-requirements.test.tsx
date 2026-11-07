@@ -81,6 +81,29 @@ describe('inline TestRail input requirements', () => {
     expect(container?.querySelector('input[type="email"]')).not.toBeNull();
   });
 
+  it('renders a file fixture control without mislabeling it as sensitive data', () => {
+    render(<InlineInputRequirements caseId={44757} requirements={[
+      { key: 'form', label: 'Formulario', controlType: 'file', required: true },
+    ]} />);
+
+    expect(container?.querySelector('[aria-label="Archivo de prueba"]')).not.toBeNull();
+    expect(container?.textContent).not.toContain('Por seguridad, este dato sensible');
+  });
+
+  it('keeps the authored file-set editor when inferred field capability is unknown', () => {
+    render(<InlineInputRequirements caseId={44757} requirements={[{
+      key: 'documents',
+      label: 'Documentación',
+      controlType: 'file-set',
+      fieldCapability: { kind: 'unknown' },
+      required: true,
+    }]} />);
+
+    expect(container?.textContent).toContain('Asocia cada etiqueta de documento');
+    expect(container?.textContent).toContain('+ Agregar documento');
+    expect(container?.querySelector('[aria-label="Archivo de prueba"]')).toBeNull();
+  });
+
   it('does not request manual values for supporting synthetic requirements', () => {
     render(
       <InlineInputRequirements

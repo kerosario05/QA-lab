@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { testDesignApi, type TestDesignDraftWithStories, type TestDesignScenario } from '../../services/test-design';
 import { useDraftEditor } from './useDraftEditor';
+import { generatedContractIssues } from './scenario-utils';
 
 let host: HTMLDivElement | undefined;
 let unmount: (() => Promise<void>) | undefined;
@@ -78,5 +79,53 @@ describe('useDraftEditor autosave', () => {
     await vi.waitFor(() => expect(getEditor().saveState).toBe('saved'), { timeout: 2000 });
 
     expect(getEditor().scenarios['story-a'][0].data?.[0].catalogBinding).toEqual(bound.data[0].catalogBinding);
+  });
+
+  it('adopts the refreshed Jira review after a corrected generated step is autosaved', async () => {
+    const sourceSteps = ['Abrir la aplicación configurada del proyecto', 'Validar que se informe que las credenciales no son válidas'];
+    const generated: TestDesignScenario = {
+      ...scenario,
+      title: 'Rechazar credenciales no válidas',
+      steps: sourceSteps.map(action => ({ action, expected: '' })),
+      generationWarnings: ['Revisar este caso antes de publicarlo: JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],
+      jiraSourceScenarioId: 'PAY-77:jira:1',
+      jiraSourceScenario: {
+        scenarioId: 'PAY-77:jira:1', sourceIssueKey: 'PAY-77', title: 'Rechazar credenciales no válidas', steps: sourceSteps,
+        expectedResult: 'Se informa el problema con las credenciales.',
+        validation: {
+          valid: false,
+          errors: ['JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],
+          issues: [{ code: 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED', stepIndex: 2, step: sourceSteps[1] }],
+        },
+      },
+    };
+    const correctedSteps = [generated.steps[0], { action: 'Validar que se muestre "problema de credenciales"', expected: '' }];
+    const reviewed: TestDesignScenario = {
+      ...generated,
+      steps: correctedSteps,
+      generationWarnings: undefined,
+      jiraSourceScenario: {
+        ...generated.jiraSourceScenario as object,
+        scenarioId: 'PAY-77:jira:1:edited-aabbccddeeff0011',
+        steps: correctedSteps.map(step => step.action),
+        validation: { valid: true, errors: [], issues: [], warnings: [] },
+      },
+    };
+    const fixture = {
+      ...draft,
+      stories: [{ ...draft.stories[0], scenarios: [generated] }],
+    } as TestDesignDraftWithStories;
+    vi.spyOn(testDesignApi, 'getDraft').mockResolvedValue(fixture);
+    vi.spyOn(testDesignApi, 'saveScenarios').mockResolvedValue({ ...fixture.stories[0], scenarios: [reviewed] });
+    const getEditor = renderEditor();
+    await vi.waitFor(() => expect(getEditor().draft).not.toBeNull());
+
+    act(() => getEditor().updateScenarios('story-a', [{ ...generated, steps: correctedSteps }]));
+    await act(async () => getEditor().flush());
+
+    const saved = getEditor().scenarios['story-a'][0];
+    expect(saved.generationWarnings).toBeUndefined();
+    expect(generatedContractIssues(saved)).toEqual([]);
+    expect(saved.steps[1].action).toBe('Validar que se muestre "problema de credenciales"');
   });
 });

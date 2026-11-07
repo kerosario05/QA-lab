@@ -83,12 +83,16 @@ export interface RecordedScenarioStep {
   valueKey?: string;
   /** 1-based position within a segmented (OTP-style) input group; picks one character of valueKey's value. */
   segmentPosition?: number;
+  recordingActionType?: 'fill' | 'select' | 'click' | 'check' | 'uncheck' | 'press' | 'navigation' | 'tab_switch' | 'upload' | 'system_observation';
+  fileSetValueKey?: string;
   sensitive?: boolean;
   expected: string;
   expectedType?: 'BUSINESS_ORACLE' | 'TECHNICAL_STATE';
   classification?: string;
   entityScope?: string;
   interactionId?: string;
+  /** Browser tab that owned the recorded action; used to show context switches in the step list. */
+  pageKey?: string;
   sourceEventRefs?: string[];
   screenBeforeRef?: string;
   screenAfterRef?: string;
@@ -164,6 +168,7 @@ export interface RecordedDataField {
   needsReview?: boolean;
   reviewReason?: string;
   formatHint?: string;
+  controlType?: string;
   entityScope?: string;
   technicalTargetRefs?: string[];
   sourceEventRefs?: string[];
@@ -238,6 +243,14 @@ export interface RecordedScenario {
   technicalReadiness?: boolean;
   /** Present once the scenario has been published as a TestRail case. */
   testRailCaseId?: number;
+  promotedSpec?: {
+    appSlug: string;
+    specPath: string;
+    specHash: string;
+    automationId: string;
+    sectionSlug?: string;
+    generatedAt: string;
+  };
   canonicalInteractions?: Array<Record<string, unknown>>;
   entityActionBlocks?: Array<Record<string, unknown>>;
   runtimeInputRequirements?: RuntimeInputRequirement[];

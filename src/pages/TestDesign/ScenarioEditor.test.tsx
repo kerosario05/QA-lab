@@ -75,14 +75,39 @@ describe('scenario step editing',()=>{
 
  it('shows the affected step and concrete correction guidance without rendering sensitive step text',async()=>{
   const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
-  const scenario={...newScenario(),title:'Caso',jiraSourceScenarioId:'AA-1:jira:1',preconditions:'',jiraSourceScenario:{validation:{valid:false,errors:['JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],issues:[{code:'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED',stepIndex:7,step:'Ingresar dato privado'}]}}};
+  const steps=Array.from({length:7},(_,index)=>({action:index===6?'Validar resultado visible':'Paso '+(index+1),expected:''}));
+  const scenario={...newScenario(),title:'Caso',steps,jiraSourceScenarioId:'AA-1:jira:1',preconditions:'',jiraSourceScenario:{validation:{valid:false,errors:['JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],issues:[{code:'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED',stepIndex:7,step:'Validar resultado visible'}]}}};
   try{
    await act(async()=>root.render(<ScenarioEditor scenario={scenario} index={0} count={1} readOnly={false} defaultOpen onChange={()=>{}} onMove={()=>{}} onDelete={()=>{}}/>));
-   expect(host.textContent).toContain('Paso 7: Cambia la comprobación por un resultado visible que el motor pueda verificar.');
+   expect(host.textContent).toContain('Paso 7: En este paso, describe una condición visible que el motor pueda comprobar');
    expect(host.textContent).not.toContain('Ingresar dato privado');
     const preconditions=host.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Sin precondiciones externas"]');
     expect(preconditions).toBeTruthy();
     expect(preconditions?.value).toBe('');
+  }finally{await act(async()=>root.unmount());host.remove();}
+ });
+
+ it('does not label a removed step with its stale step number',async()=>{
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  const previousSteps=Array.from({length:20},(_,index)=>index===19?'Validar que no se muestre el comprobante':`Paso ${index+1}`);
+  const scenario={...newScenario(),title:'Caso',steps:[{action:'Autorizar transferencia',expected:''}],jiraSourceScenarioId:'AA-1:jira:1',generationWarnings:['Revisar este caso antes de publicarlo: JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],jiraSourceScenario:{steps:previousSteps,expectedResult:'No se muestra el comprobante.',validation:{valid:false,errors:['JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],issues:[{code:'JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT',stepIndex:20,step:previousSteps[19]}]}}};
+  try{
+   await act(async()=>root.render(<ScenarioEditor scenario={scenario} index={0} count={1} readOnly={false} defaultOpen onChange={()=>{}} onMove={()=>{}} onDelete={()=>{}}/>));
+   expect(host.textContent).toContain('Revalidación pendiente');
+   expect(host.textContent).not.toContain('Diagnóstico pendiente de actualizar');
+   expect(host.textContent).not.toContain('JIRA_ASSERTION_CAPABILITY_UNSUPPORTED');
+   expect(host.textContent).not.toContain('Paso 20:');
+   expect(host.textContent).not.toContain('Revisar este caso antes de publicarlo');
+  }finally{await act(async()=>root.unmount());host.remove();}
+ });
+
+ it('points expected-result diagnostics to the result field and describes the missing visible outcome',async()=>{
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  const scenario={...newScenario(),title:'Caso',steps:[{action:'Autorizar con token inválido',expected:''}],expectedResult:'No se muestra el comprobante.',jiraSourceScenarioId:'AA-1:jira:1',jiraSourceScenario:{validation:{valid:false,errors:['JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],issues:[{code:'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED',location:'expected_result'}]}}};
+  try{
+   await act(async()=>root.render(<ScenarioEditor scenario={scenario} index={0} count={1} readOnly={false} defaultOpen onChange={()=>{}} onMove={()=>{}} onDelete={()=>{}}/>));
+   expect(host.textContent).toContain('Resultado esperado: En el campo «Resultado esperado», debajo de los pasos, indica el estado visible que debe aparecer tras el rechazo.');
+   expect(host.textContent).toContain('no inventes mensajes');
   }finally{await act(async()=>root.unmount());host.remove();}
  });
 

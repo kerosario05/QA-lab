@@ -252,6 +252,9 @@ describe('TestRailUploadScreen', () => {
         dataOverrides={{}}
         datasetValues={{}}
         scenarioDatasetValues={{}}
+        scenarioSpecDatasetValues={{
+          '["recording-a","REC-A1DCF6A5-01"]': { numero_de_identificacion: 'SPEC-CEDULA-A' },
+        }}
         onBack={vi.fn()}
         onLaunch={onLaunch}
       />,
@@ -263,7 +266,11 @@ describe('TestRailUploadScreen', () => {
     expect(executeCalls).toHaveLength(1);
     expect(executeCalls[0].url).toContain('/api/recordings/execute-batch');
     expect(executeCalls[0].body.selections).toEqual([
-      expect.objectContaining({ recordingId: 'recording-a', scenarioId: 'REC-A1DCF6A5-01' }),
+      expect.objectContaining({
+        recordingId: 'recording-a',
+        scenarioId: 'REC-A1DCF6A5-01',
+        specDatasetValues: { numero_de_identificacion: 'SPEC-CEDULA-A' },
+      }),
       expect.objectContaining({ recordingId: 'recording-b', scenarioId: 'REC-B2DCF6A5-01' }),
     ]);
     expect(onLaunch).toHaveBeenCalledWith(expect.objectContaining({

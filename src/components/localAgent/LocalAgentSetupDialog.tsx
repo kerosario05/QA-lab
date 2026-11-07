@@ -1,11 +1,13 @@
 import { useEffect } from 'react';
-import { AlertTriangle, CheckCircle2, Loader2, Monitor, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Download, Loader2, Monitor, X } from 'lucide-react';
 import { useLocalAgent } from './LocalAgentContext';
-import type { LocalAgentInstallState } from '../../services/localAgent';
+import { AGENT_INSTALLER_FILE, type LocalAgentInstallState } from '../../services/localAgent';
 
 /**
  * "Preparando la grabación": shows the Chromium install the panel started on the user's
- * PC, the PC picker when several agents share one IP, and install failures.
+ * PC, the PC picker when several agents share one IP, and install failures. Before any of
+ * that, the login offers to install the agent itself on a PC that does not have it, or to
+ * update it when it is older than the server's (the same installer does both).
  */
 
 const READY_AUTO_CLOSE_MS = 3000;
@@ -29,6 +31,121 @@ function stageLabel(install: LocalAgentInstallState | null): string {
   }
 }
 
+function AgentOfferDialog() {
+  const { offer, offerKind, status, acceptOffer, declineOffer } = useLocalAgent();
+  const waiting = offer === 'waiting';
+  const update = offerKind === 'update';
+  const installed = status?.agent?.agentVersion;
+  const latest = status?.agent?.latestVersion;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="local-agent-offer-title"
+      data-testid="local-agent-offer"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#1a1f2e]/25 backdrop-blur-[2px]"
+    >
+      <div className="bg-white rounded-2xl border border-[#E8EBEC] w-full max-w-[460px] shadow-[0_8px_30px_rgba(26,31,46,0.12)]">
+        <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-[#E8EBEC]">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#F3F7FC] text-[#104B99]">
+              <Monitor size={18} />
+            </span>
+            <div>
+              <h2 id="local-agent-offer-title" className="text-[17px] font-medium text-[#1a1f2e]" style={{ letterSpacing: '-0.02em' }}>
+                {update ? 'Actualizar el agente de QA Lab' : 'Grabar con el navegador de tu equipo'}
+              </h2>
+              <p className="text-[11px] text-[#58646D] mt-0.5">
+                {update ? `Tu equipo tiene la versión ${installed ?? '?'}; la actual es ${latest ?? '?'}.` : 'Las grabaciones se abren en el Chromium de tu equipo.'}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => declineOffer()} aria-label="Cerrar" className="p-1 hover:bg-[#FAFAF7] rounded-lg transition">
+            <X size={16} className="text-[#58646D]" />
+          </button>
+        </div>
+
+        <div className="px-6 py-5">
+          {offer === 'prompt' && (
+            <div data-testid="local-agent-offer-prompt">
+              {update ? (
+                <>
+                  <p className="text-[13px] text-[#1a1f2e]">
+                    Hay una versión nueva del agente de QA Lab para tu equipo.
+                    No requiere administrador. ¿Actualizar ahora?
+                  </p>
+                  <p className="mt-3 text-[11px] text-[#8B999D]">
+                    El agente se reinicia unos segundos: cierra antes las grabaciones abiertas. Si no actualizas, todo sigue
+                    funcionando como hasta ahora.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-[13px] text-[#1a1f2e]">
+                    Para que las grabaciones se abran en una ventana de tu equipo, QA Lab necesita instalar su agente.
+                    No requiere administrador y solo se hace una vez. ¿Instalar ahora?
+                  </p>
+                  <p className="mt-3 text-[11px] text-[#8B999D]">
+                    Si no lo instalas, puedes seguir grabando con el navegador integrado de QA Lab.
+                  </p>
+                </>
+              )}
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
+                <button onClick={() => declineOffer(true)} className="text-[11px] text-[#8B999D] hover:text-[#58646D] hover:underline">
+                  No volver a preguntar
+                </button>
+                <div className="flex gap-2">
+                  <button onClick={() => declineOffer()} className="text-[12px] font-semibold text-[#58646D] hover:bg-[#FAFAF7] px-3 py-2 rounded-full transition">
+                    Ahora no
+                  </button>
+                  <button
+                    onClick={acceptOffer}
+                    className="flex items-center gap-1.5 bg-[#1a1f2e] hover:bg-black text-white text-[12px] font-semibold px-4 py-2 rounded-full transition"
+                  >
+                    <Download size={13} /> {update ? 'Actualizar' : 'Instalar'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {(waiting || offer === 'not_detected') && (
+            <div data-testid="local-agent-offer-waiting">
+              {waiting ? (
+                <div className="flex items-center gap-2 text-[13px] font-semibold text-[#1a1f2e]">
+                  <Loader2 size={15} className="animate-spin text-[#104B99]" />
+                  {update ? 'Esperando a que se actualice el agente…' : 'Esperando a que se instale el agente…'}
+                </div>
+              ) : (
+                <div className="flex items-start gap-2 text-[13px] text-[#B4463C]">
+                  <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                  <span>{update ? 'El agente de tu equipo no se actualizó.' : 'No se detectó el agente en tu equipo.'}</span>
+                </div>
+              )}
+              <ol className="mt-3 list-decimal space-y-1 pl-5 text-[12px] text-[#58646D]">
+                <li>Abre el archivo descargado <span className="font-mono text-[#1a1f2e]">{AGENT_INSTALLER_FILE}</span> (en la barra de descargas del navegador).</li>
+                <li>Si Windows pregunta, elige <span className="font-semibold">Ejecutar</span>.</li>
+                <li>{update ? 'Al terminar, QA Lab detecta solo la versión nueva.' : 'Al terminar, QA Lab lo detecta solo e instala Chromium.'}</li>
+              </ol>
+              <div className="mt-5 flex justify-end gap-2">
+                <button onClick={() => declineOffer()} className="text-[12px] font-semibold text-[#58646D] hover:bg-[#FAFAF7] px-3 py-2 rounded-full transition">
+                  {waiting ? 'Cancelar' : 'Cerrar'}
+                </button>
+                <button
+                  onClick={acceptOffer}
+                  className="flex items-center gap-1.5 text-[12px] font-semibold text-[#104B99] hover:bg-[#F3F7FC] px-3 py-2 rounded-full transition"
+                >
+                  <Download size={13} /> Descargar de nuevo
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function LocalAgentSetupDialog() {
   const agent = useLocalAgent();
   const { phase, dialogOpen, closeDialog } = agent;
@@ -39,6 +156,7 @@ export function LocalAgentSetupDialog() {
     return () => clearTimeout(timer);
   }, [dialogOpen, phase, closeDialog]);
 
+  if (agent.offer !== 'hidden') return <AgentOfferDialog />;
   if (!dialogOpen || phase === 'unknown' || phase === 'unavailable') return null;
 
   const percent = Math.max(0, Math.min(100, Math.round(agent.install?.percent ?? 0)));

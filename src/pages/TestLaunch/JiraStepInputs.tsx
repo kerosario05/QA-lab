@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { TestDocumentSetInput, documentSetComplete } from '../../components/TestDocumentSetInput';
 import type { JiraInputRequirement, Story } from '../../services/scenarios/types';
 import { matchProjectDataCatalogs, type ProjectDataCatalog } from '../../services/project-data-catalog';
+import { TestFileAssetInput } from '../../components/TestFileAssetInput';
+import { DataGeneratorButton } from '../../services/data-services';
 
 export type JiraCommonValues = Record<string, Record<string, string>>;
 
 function commonIdentity(field: JiraInputRequirement): string | undefined {
   if (field.dataCondition === 'invalid' || field.dataCondition === 'expired') return undefined;
-  return JSON.stringify([field.label.trim().normalize('NFKC').toLocaleLowerCase(), field.operation, field.controlType, field.sensitive]);
+  return JSON.stringify([field.label.trim().normalize('NFKC').toLocaleLowerCase(), field.operation, field.controlType, field.sensitive, field.application ?? "principal"]);
 }
 
 /** Only unambiguous fields repeated across scenarios in the same story may inherit. */
@@ -61,7 +64,7 @@ export function JiraScenarioCommonAction({onApply, available}: {onApply:()=>void
   return <button type="button" disabled={!available} onClick={onApply} className="ml-auto text-xs text-[#5EC470] disabled:opacity-40">Usar datos comunes</button>;
 }
 
-export function JiraCommonInputs({story, values, onChange, catalogs = []}: {story: Story; values: Record<string,string>; onChange: (key:string,value:string)=>void; catalogs?: ProjectDataCatalog[]}) {
+export function JiraCommonInputs({story, values, onChange, catalogs = [], projectSlug}: {story: Story; values: Record<string,string>; onChange: (key:string,value:string)=>void; catalogs?: ProjectDataCatalog[]; projectSlug?: string}) {
   const [expanded, setExpanded] = useState(true);
   const fields = commonJiraFields(story);
   if (!fields.length) return null;
@@ -72,7 +75,7 @@ export function JiraCommonInputs({story, values, onChange, catalogs = []}: {stor
     </button>
     <div hidden={!expanded} className="bg-[#0d1119] p-4 text-white">
     <p className="mt-1 text-xs text-white/60">Se aplican a campos compatibles. Puedes cambiar el valor dentro de cada escenario. Los datos inválidos o vencidos se completan por separado.</p>
-    <JiraStepInputs fields={fields} values={values} onChange={onChange} catalogs={catalogs}/>
+    <JiraStepInputs fields={fields} values={values} onChange={onChange} catalogs={catalogs} projectSlug={projectSlug}/>
     </div>
   </section>;
 }
@@ -82,7 +85,7 @@ export function missingJiraInputs(stories: Story[], selected: string[], values: 
     const selectionKey = `${story.jiraKey}::${index}`;
     if (!selected.includes(selectionKey)) return [];
     const resolved = resolveJiraScenarioValues(story, index, values[selectionKey] ?? {}, common);
-    return (scenario.inputRequirements ?? []).filter(field => field.required && !String(resolved[field.key] ?? '').trim())
+    return (scenario.inputRequirements ?? []).filter(field => field.required && (!String(resolved[field.key] ?? '').trim() || field.controlType === 'file-set' && !documentSetComplete(String(resolved[field.key] ?? ''))))
       .map(field => ({ scenarioTitle: scenario.title, label: field.label, stepIndex: field.stepIndex }));
   }));
 }
@@ -92,7 +95,7 @@ export function missingJiraTransportInputs(stories: Story[], selected: string[],
   return stories.flatMap(story => story.scenarios.flatMap((scenario, index) => {
     if (!selected.includes(`${story.jiraKey}::${index}`) || !scenario.scenarioId) return [];
     const scenarioValues = overrides[scenario.scenarioId] ?? {};
-    return (scenario.inputRequirements ?? []).filter(field => field.required && !String(scenarioValues[field.key] ?? '').trim())
+    return (scenario.inputRequirements ?? []).filter(field => field.required && (!String(scenarioValues[field.key] ?? '').trim() || field.controlType === 'file-set' && !documentSetComplete(String(scenarioValues[field.key] ?? ''))))
       .map(field => ({ scenarioTitle: scenario.title, label: field.label, stepIndex: field.stepIndex }));
   }));
 }
@@ -104,19 +107,20 @@ export function jiraInputHtmlType(field: JiraInputRequirement): string {
   return field.controlType === 'password' ? 'text' : field.controlType;
 }
 
-export function JiraStepInputs({ fields, values, onChange, catalogs = [] }: {
+export function JiraStepInputs({ fields, values, onChange, catalogs = [], projectSlug }: {
   fields: JiraInputRequirement[];
   values: Record<string, string | boolean>;
   onChange: (key: string, value: string) => void;
   catalogs?: ProjectDataCatalog[];
+  projectSlug?: string;
 }) {
-  return <div className="mt-2 space-y-2">{fields.map(field => <JiraFieldInput key={field.key} field={field} value={String(values[field.key] ?? '')} onChange={value => onChange(field.key, value)} catalogs={catalogs}/>)}</div>;
+  return <div className="mt-2 space-y-2">{fields.map(field => <JiraFieldInput key={field.key} field={field} value={String(values[field.key] ?? '')} onChange={value => onChange(field.key, value)} catalogs={catalogs} projectSlug={projectSlug}/>)}</div>;
 }
 
 const CATALOG_SENSITIVE_LABEL = /contrase(?:ñ|n)a|password|\bclave\b|\bpin\b|\botp\b|token|c[oó]digo|\bsms\b/i;
 
-function JiraFieldInput({field, value, onChange, catalogs}: {field: JiraInputRequirement; value: string; onChange: (value:string)=>void; catalogs: ProjectDataCatalog[]}) {
-  const catalogEligible = !field.sensitive && !CATALOG_SENSITIVE_LABEL.test(field.label) && !CATALOG_SENSITIVE_LABEL.test(field.key);
+function JiraFieldInput({field, value, onChange, catalogs, projectSlug}: {field: JiraInputRequirement; value: string; onChange: (value:string)=>void; catalogs: ProjectDataCatalog[]; projectSlug?: string}) {
+  const catalogEligible = (!field.application || field.application === 'principal') && !field.controlType.startsWith('file') && !field.sensitive && !CATALOG_SENSITIVE_LABEL.test(field.label) && !CATALOG_SENSITIVE_LABEL.test(field.key);
   const matches = catalogEligible ? matchProjectDataCatalogs(field.label, catalogs) : [];
   const [selectedCatalogId, setSelectedCatalogId] = useState(matches.length === 1 ? matches[0].id : '');
   const [manualMode, setManualMode] = useState(false);
@@ -135,8 +139,14 @@ function JiraFieldInput({field, value, onChange, catalogs}: {field: JiraInputReq
     const first = matches.find(candidate => candidate.id === catalogId)?.options.find(option => option.active);
     onChange(first?.value ?? '');
   };
+  if (field.controlType === 'file-set') return <div><span>{field.application ? `${field.application} · ` : ''}{field.label}</span>
+    <TestDocumentSetInput area="runs" projectSlug={projectSlug} value={value} onChange={onChange} disabled={!field.editable} /></div>;
+  if (field.controlType === 'file') return <div className="block text-[11px] text-white/70"><span>{field.label}{field.required ? ' *' : ''}</span>
+    <TestFileAssetInput area="runs" projectSlug={projectSlug} value={value} onChange={onChange} disabled={!field.editable} />
+  </div>;
   return <label className="block text-[11px] text-white/70">
-    {field.label}{field.required ? ' *' : ''}
+    {field.application ? `${field.application} · ` : ''}{field.label}{field.required ? ' *' : ''}
+    <DataGeneratorButton projectSlug={projectSlug} label={field.label} fieldKey={field.key} onGenerated={onChange} className="ml-1" />
     {catalog ? <>
       {matches.length > 1 && <select aria-label={`Catálogo para ${field.label}`} value={selectedCatalogId} onChange={event => selectCatalog(event.target.value)} className="mt-1 block w-full rounded-lg border border-white/20 bg-black/30 px-2.5 py-1.5 text-white">
         <option value="">Selecciona catálogo...</option>{matches.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}

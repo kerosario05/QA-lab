@@ -173,6 +173,14 @@ export function updateRecordingScenarioValue(recordingId: string, payload: Recor
   );
 }
 
+export function removeRecordingScenarioStep(recordingId: string, payload: Record<string, unknown>): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-scenario-step-remove',
+    `/api/recordings/${encodeURIComponent(recordingId)}/scenario-step/remove`,
+    { method: 'POST', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
 export function getSemanticRecording(recordingId: string, projectSlug: string): Promise<RecordingsProviderResponse> {
   return callRecordingEndpoint(
     'recordings-semantic',
@@ -217,6 +225,15 @@ export function controlRecording(recordingId: string, payload: Record<string, un
     'recordings-control',
     `/api/recordings/${encodeURIComponent(recordingId)}/control`,
     { method: 'POST', headers: jsonHeaders, body: JSON.stringify(payload) },
+  );
+}
+
+/** Forwards the viewer's multipart selection untouched; the engine owns validation and the file chooser. */
+export function uploadLiveFiles(recordingId: string, contentType: string, body: Buffer): Promise<RecordingsProviderResponse> {
+  return callRecordingEndpoint(
+    'recordings-live-files',
+    `/api/recordings/${encodeURIComponent(recordingId)}/live-files`,
+    { method: 'POST', headers: { 'Content-Type': contentType }, body },
   );
 }
 

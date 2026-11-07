@@ -42,7 +42,7 @@ export function DynamicListSelection({ projectSlug, fieldKey, label, value, opti
     .map(fragment => fragment.replace(/\d[\d.,]*/g, '').replace(/[•*]+/g, '').trim())
     .filter(fragment => fragment.length > 1 && fragment.length <= 120))];
   const pending = mode === 'criteria' && encoded !== value;
-  const inputClass = 'mt-1 w-full rounded border border-[#D9E2EC] bg-white px-2 py-1 text-[11px] disabled:bg-[#F3F4F6]';
+  const inputClass = 'mt-2 min-h-10 w-full rounded-md border border-[#B9C8D7] bg-white px-3 py-2 text-[12px] text-[#1A1F2E] outline-none transition focus:border-[#104B99] focus:ring-2 focus:ring-[#104B99]/15 disabled:bg-[#F3F4F6] disabled:text-[#8B999D]';
   return <div className="mt-1 space-y-1" onBlurCapture={event => {
     const next = event.relatedTarget;
     if (next instanceof Node && event.currentTarget.contains(next)) return;
@@ -71,7 +71,7 @@ export function DynamicListSelection({ projectSlug, fieldKey, label, value, opti
           disabled={disabled} className={inputClass} onChange={event => { setPosition(event.target.value); publishDraft(terms, event.target.value); }} />
       </label>
       <div className="text-[10px] text-[#58646D]">Coincidencias en las opciones grabadas: {matches.length}. Se buscarán de nuevo durante la ejecución.</div>
-      <button type="button" disabled={disabled || !encoded} className="text-[11px] text-[#104B99] disabled:opacity-50"
+      <button type="button" disabled={disabled || !encoded} className="inline-flex min-h-9 items-center rounded-md border border-[#B9C8D7] bg-white px-3 py-2 text-[11px] font-semibold text-[#104B99] transition hover:border-[#104B99] hover:bg-[#F4F8FD] disabled:opacity-50"
         onClick={() => { if (encoded) { onApply(encoded); setNotice('Regla aplicada al escenario.'); } }}>Aplicar regla</button>
       {pending && !onValueChange && <div className="text-[10px] text-[#B4463C]">Cambios pendientes: pulsa Aplicar regla antes de ejecutar.</div>}
       {projectSlug && <div className="flex flex-wrap gap-3 text-[10px] text-[#104B99]">

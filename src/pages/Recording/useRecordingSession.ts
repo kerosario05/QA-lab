@@ -155,7 +155,7 @@ export function useRecordingSession(projectSlug: string) {
   }, [projectSlug]);
 
   const start = useCallback(
-    async (recordingGoal?: string, browserMode: RecordingBrowserMode = 'integrated'): Promise<boolean> => {
+    async (recordingGoal?: string, browserMode: RecordingBrowserMode = 'integrated', deviceSerial?: string): Promise<boolean> => {
       generationRunRef.current += 1;
       setGeneration(null);
       setError(null);
@@ -166,7 +166,7 @@ export function useRecordingSession(projectSlug: string) {
       setNarrative('');
       console.info('[recording:goal-lineage] uiGoal=', recordingGoal);
       try {
-        const res = await recordingsApi.start(projectSlug, recordingGoal, browserMode);
+        const res = await recordingsApi.start(projectSlug, recordingGoal, browserMode, deviceSerial);
         setRecordingId(res.recordingId);
         setSummary(res.summary);
         setPhase('recording');

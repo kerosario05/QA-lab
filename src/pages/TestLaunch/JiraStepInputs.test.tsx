@@ -116,6 +116,21 @@ it('uses the matching project catalog in Jira launch and applies its first activ
  await act(async()=>root.unmount()); container.remove();
 });
 
+it('never binds a file input to a project data catalog', async () => {
+ const fileField: JiraInputRequirement = {...field, key:'attachment.form', label:'Formulario', sensitive:false, controlType:'file'};
+ const catalogs = [{
+  id:'forms', projectSlug:'fenix', name:'Formularios', fieldName:'Formulario', aliases:[], active:true, revision:1,
+  options:[{id:'first', label:'Formulario anterior.pdf', value:'not-a-file-ref', active:true, position:0}],
+ }];
+ const onChange = vi.fn();
+ const container=document.createElement('div'); const root=createRoot(container);
+ await act(async()=>root.render(<JiraStepInputs fields={[fileField]} values={{}} onChange={onChange} catalogs={catalogs}/>));
+ expect(container.querySelector('[aria-label="Archivo de prueba"]')).not.toBeNull();
+ expect(container.querySelector('label label')).toBeNull();
+ expect(onChange).not.toHaveBeenCalled();
+ await act(async()=>root.unmount()); container.remove();
+});
+
 it('keeps only password-labelled fields masked even when common fields carry stale password metadata', async () => {
  const fields: JiraInputRequirement[] = [
   {...field,key:'common.rnc',label:'RNC',sensitive:true,controlType:'password'},

@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import type { Request, Response } from 'express';
 import {
   listRecordings,
@@ -10,12 +10,14 @@ import {
   getRecordingDerivation,
   saveRecordingScenarios,
   updateRecordingScenarioValue,
+  removeRecordingScenarioStep,
   getRecordingTrace,
   getSemanticRecording,
   publishToTestRail,
   executeRecording,
   executeRecordingBatch,
   controlRecording,
+  uploadLiveFiles,
   deleteRecording,
 } from '../recordings-provider';
 import type { RecordingsProviderResponse } from '../recordings-provider';
@@ -132,6 +134,12 @@ router.put('/:recordingId/scenario-value', async (req: Request, res: Response) =
   forward(res, await updateRecordingScenarioValue(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
 });
 
+router.post('/:recordingId/scenario-step/remove', async (req: Request, res: Response) => {
+  const projectSlug = requireProjectSlug(req, res);
+  if (!projectSlug) return;
+  forward(res, await removeRecordingScenarioStep(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
+});
+
 router.get('/:recordingId/semantic', async (req: Request, res: Response) => {
   const projectSlug = requireProjectSlug(req, res);
   if (!projectSlug) return;
@@ -176,6 +184,15 @@ router.post('/:recordingId/control', async (req: Request, res: Response) => {
   const action = (req.body as any)?.action;
   console.log(`[recordings] control request recordingId=${String(req.params.recordingId)} action=${action ?? '—'}`);
   forward(res, await controlRecording(String(req.params.recordingId), { ...(req.body ?? {}), projectSlug }));
+});
+
+// The viewer posts multipart bytes here (no JSON, no projectSlug): relay the raw body to the engine.
+router.post('/:recordingId/live-files', express.raw({ type: 'multipart/form-data', limit: '60mb' }), async (req: Request, res: Response) => {
+  if (!Buffer.isBuffer(req.body) || !req.body.length) {
+    sendJson(res, 400, { ok: false, errorCode: 'INVALID_FILE_UPLOAD', message: 'Selecciona hasta cinco documentos válidos' });
+    return;
+  }
+  forward(res, await uploadLiveFiles(String(req.params.recordingId), String(req.headers['content-type']), req.body));
 });
 
 router.delete('/:recordingId', async (req: Request, res: Response) => {

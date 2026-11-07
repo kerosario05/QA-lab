@@ -156,6 +156,8 @@ export interface MobileLaunchExecutionParams {
   sprintName?: string;
   publishStrategy?: 'always_create' | 'use_existing';
   scenarios: MobileScenario[];
+  /** Emulator or phone of the user's PC (the server pairs the agent); absent = server emulator. */
+  deviceSerial?: string;
 }
 
 export interface MobileRouteLearningScenario {
@@ -197,6 +199,8 @@ export interface MobileRouteLearningParams {
   screenData?: MobileLearnerFieldData[];
   /** Contexto de la HU: habilita la capa interpretativa (IA) del walk en el motor. */
   huContext?: MobileHuContext;
+  /** Emulator or phone of the user's PC (the server pairs the agent); absent = server emulator. */
+  deviceSerial?: string;
 }
 
 export interface MobileRouteLearningStartResponse {
@@ -245,9 +249,14 @@ export interface MobileRunExecuteParams {
   testRunId: number;
   publishedCases: MobilePublishedCase[];
   appSlug: string;
-  scenarios: Array<{ scenarioId: string; title: string; steps: MobileStep[]; requiredData?: MobileDataField[] }>;
+  /** recordingId: the recording a scenario came from; its service bindings (OTP...) apply. */
+  scenarios: Array<{ scenarioId: string; title: string; steps: MobileStep[]; requiredData?: MobileDataField[]; recordingId?: string }>;
   /** User-supplied real values, keyed by scenarioId -> { stepIndex: value }. */
   dataOverrides?: Record<string, Record<number, string>>;
+  /** Emulator or phone of the user's PC (the server pairs the agent); absent = server emulator. */
+  deviceSerial?: string;
+  /** Jira story chosen for the run: defects and the checklist go under it. */
+  issueKey?: string;
 }
 
 export interface MobileRunExecuteResponse {

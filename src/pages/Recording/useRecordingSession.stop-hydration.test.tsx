@@ -221,7 +221,8 @@ describe('useRecordingSession — STOP hydrates the persisted primary immediatel
     let stopPromise!: Promise<void>;
     act(() => { stopPromise = holder.get().stop(); });
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    // The production poll interval is 1000 ms; advance through an actual poll.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(holder.get().phase).toBe('stopping');
     expect(holder.get().live?.events).toBe(11);
     expect(statusCalls).toBeGreaterThan(0);

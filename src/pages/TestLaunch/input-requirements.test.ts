@@ -109,8 +109,8 @@ describe('inputRequirements values', () => {
     values = setByCaseValue(values, '2', 'employee.document', 'DOC-2');
 
     const entries = buildRuntimeEntriesByCase(composition as any, values, [1, 2]);
-    expect(entries?.['1']).toContainEqual({ key: 'auth.username', value: 'user-a', source: 'manual_runtime', sensitive: false });
-    expect(entries?.['2']).toContainEqual({ key: 'auth.username', value: 'user-a', source: 'manual_runtime', sensitive: false });
+    expect(entries?.['1']).toContainEqual({ key: 'auth.username', fieldLabel: 'Usuario', value: 'user-a', source: 'manual_runtime', sensitive: false });
+    expect(entries?.['2']).toContainEqual({ key: 'auth.username', fieldLabel: 'Usuario', value: 'user-a', source: 'manual_runtime', sensitive: false });
   });
 
   it('keeps a case-specific requirement scoped to its own caseId', () => {

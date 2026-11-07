@@ -3,6 +3,9 @@ import { Key, Plus, Trash2 } from 'lucide-react';
 import type { TestDesignDatum } from '../../services/test-design';
 import { hasPlaceholders, isSensitiveKey, textParts } from './scenario-utils';
 import { matchProjectDataCatalogs, projectDataCatalogApi, type ProjectDataCatalog } from '../../services/project-data-catalog';
+import { TestDocumentSetInput } from '../../components/TestDocumentSetInput';
+import { TestFileAssetInput } from '../../components/TestFileAssetInput';
+import { DataGeneratorButton } from '../../services/data-services';
 
 /**
  * Dark editor pieces for test data: a rendered line showing {{key}} as a value chip, and the
@@ -20,7 +23,7 @@ export function DataPreview({ text, data }: { text: string; data: TestDesignDatu
       {textParts(text, data).map((part, i) => {
         if (part.key === undefined) return <span key={i}>{part.text}</span>;
         const datum = part.datum;
-        const shown = !datum?.value ? part.text : datum.sensitive ? '••••••' : datum.value;
+        const shown = datum?.controlType === 'file' ? (datum.value ? 'Archivo adjunto' : part.text) : !datum?.value ? part.text : datum.sensitive ? '••••••' : datum.value;
         const ready = !!datum?.value;
         return (
           <span
@@ -61,6 +64,8 @@ export function CaseDataPanel({
     if (readOnly || catalogs.length === 0) return;
     let changed = false;
     const next = data.map(datum => {
+      // File references point into project-scoped fixture storage, never a data catalogue.
+      if (datum.controlType?.startsWith('file') || datum.application && datum.application !== "principal") return datum;
       if (datum.sensitive || isSensitiveKey(datum.key) || isSensitiveKey(datum.label ?? '')) {
         if (!datum.catalogBinding) return datum;
         changed = true;
@@ -101,7 +106,8 @@ export function CaseDataPanel({
 
       <div className="mt-2 space-y-2">
         {data.map((datum, index) => {
-          const catalogEligible = !datum.sensitive && !isSensitiveKey(datum.key) && !isSensitiveKey(datum.label ?? '');
+          const isFile = datum.controlType?.startsWith('file');
+          const catalogEligible = (!datum.application || datum.application === "principal") && !isFile && !datum.sensitive && !isSensitiveKey(datum.key) && !isSensitiveKey(datum.label ?? '');
           const matches = catalogEligible ? matchProjectDataCatalogs(datum.label ?? datum.key, catalogs) : [];
           const available = catalogEligible ? catalogs.filter(catalog => catalog.active) : [];
           const binding = catalogEligible && datum.catalogBinding ? catalogs.find(catalog => catalog.id === datum.catalogBinding?.catalogId) : undefined;
@@ -110,13 +116,15 @@ export function CaseDataPanel({
           <div key={datum.key} className="grid grid-cols-[minmax(110px,0.85fr)_minmax(125px,1fr)_minmax(145px,1.4fr)_auto_auto] gap-3 items-start">
             <div>
               <div className="text-[12px] font-semibold text-[#E6E9EF]">
-                {datum.label ?? datum.key}
+                {datum.application && datum.application !== "principal" ? `${datum.application} · ` : ""}{datum.label ?? datum.key}
+                {!readOnly && <DataGeneratorButton projectSlug={projectSlug} label={datum.label ?? datum.key} fieldKey={datum.key} onGenerated={(value) => update(index, { value, catalogBinding: undefined })} className="ml-2 align-middle" />}
                 {datum.condition === 'invalid' && <span className="ml-1 font-normal text-[#E58B82]">(inválido)</span>}
                 {datum.condition === 'expired' && <span className="ml-1 font-normal text-[#E58B82]">(vencido)</span>}
               </div>
               {datum.description && <div className="text-[10px] text-[#8B99A6]">{datum.description}</div>}
             </div>
             <div className="min-w-0">
+              {isFile ? <span className="text-[10px] text-[#8B99A6]">Archivo de prueba</span> : <>
               <select className={darkInput} disabled={readOnly || !catalogEligible || available.length === 0} value={binding?.id ?? ''} aria-label={`Catálogo de ${datum.label ?? datum.key}`} onChange={event => {
                 const catalog = available.find(item => item.id === event.target.value);
                 const firstOption = catalog?.options.find(option => option.active);
@@ -126,9 +134,10 @@ export function CaseDataPanel({
                 {available.map(catalog => <option key={catalog.id} value={catalog.id}>{catalog.name} · {catalog.fieldName}</option>)}
               </select>
               {sensitive && <span className="mt-1 block text-[9px] leading-tight text-[#A99662]">Por seguridad, los datos sensibles no usan catálogos.</span>}
+              </>}
             </div>
             <div className="min-w-0">
-              {binding ? <select className={darkInput} disabled={readOnly} value={datum.catalogBinding?.optionId ?? ''} aria-label={`Opción para ${datum.label ?? datum.key}`} onChange={event => {
+              {datum.controlType === 'file-set' ? <TestDocumentSetInput area="test-design" projectSlug={projectSlug} value={datum.value} disabled={readOnly} onChange={value => update(index, { value, catalogBinding: undefined })} /> : isFile ? <TestFileAssetInput area="test-design" projectSlug={projectSlug} value={datum.value} disabled={readOnly} onChange={fileRef => update(index, { value: fileRef, catalogBinding: undefined })} /> : binding ? <select className={darkInput} disabled={readOnly} value={datum.catalogBinding?.optionId ?? ''} aria-label={`Opción para ${datum.label ?? datum.key}`} onChange={event => {
                 const option = binding.options.find(item => item.id === event.target.value && item.active);
                 update(index, { value: option?.value ?? '', catalogBinding: { catalogId: binding.id, optionId: option?.id, revision: binding.revision, mode: datum.catalogBinding?.mode ?? 'manual' } });
               }}><option value="">Selecciona valor…</option>{binding.options.filter(option => option.active).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select> : <input

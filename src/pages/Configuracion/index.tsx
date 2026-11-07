@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, Boxes, Plus, FolderCog, KeyRound, Loader2, X, ChevronDown, Upload } from 'lucide-react';
+import { AlertCircle, Boxes, Plus, Loader2, X, ChevronDown } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
-import { ProjectDataCatalogManager } from './ProjectDataCatalogManager';
+import { RepositoryConfigSection, type RepositoryConfigSectionHandle } from './RepositoryConfigSection';
+import { MobileApkSection, type MobileApkValue } from './MobileApkSection';
+import { apkValidationErrors } from './mobile-apk';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -94,12 +96,6 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [inspecting, setInspecting] = useState(false);
-  const [inspectError, setInspectError] = useState<string | null>(null);
-  const [inspectInfo, setInspectInfo] = useState<string | null>(null);
-  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const apkFileRef = useRef<HTMLInputElement>(null);
   const [loadingEdit, setLoadingEdit] = useState(!!editSlug);
   const isEdit = !!editSlug;
   const [jiraKey, setJiraKey] = useState('');
@@ -112,14 +108,19 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
   const [trOrig, setTrOrig] = useState<Record<string, any> | null>(null);
   const [jiraError, setJiraError] = useState<string | null>(null);
   const [trError, setTrError] = useState<string | null>(null);
+  const repositoryRef = useRef<RepositoryConfigSectionHandle>(null);
+  const [requestCancellationEnabled, setRequestCancellationEnabled] = useState(false);
+  const [requestCancellationOriginal, setRequestCancellationOriginal] = useState(false);
 
   useEffect(() => {
     if (!editSlug) return;
     setLoadingEdit(true);
-    Promise.all([
-      apiRequest<any>(`/api/projects/${encodeURIComponent(editSlug)}`),
-    ])
-      .then(([data]) => {
+    const requests: Promise<any>[] = [apiRequest<any>(`/api/projects/${encodeURIComponent(editSlug)}`)];
+    if (editSlug === 'portal-comercial') {
+      requests.push(apiRequest<any>(`/api/projects/${encodeURIComponent(editSlug)}/request-cancellation-config`));
+    }
+    Promise.all(requests)
+      .then(([data, cancellationConfig]) => {
         const p = data.project;
         setName(p.name || '');
         setSlug(p.slug || '');
@@ -151,6 +152,11 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
           setTrSuiteId(t.suiteId || ''); setTrSectionId(t.sectionId || ''); setTrSessionId(t.sessionId || '');
           setTrOrig({ projectIdTr: t.projectIdTr || '', suiteId: t.suiteId || '', sectionId: t.sectionId || '', sessionId: t.sessionId || '' });
         }
+        if (editSlug === 'portal-comercial') {
+          const enabled = cancellationConfig?.enabled === true;
+          setRequestCancellationEnabled(enabled);
+          setRequestCancellationOriginal(enabled);
+        }
       })
       .catch((e: any) => setSubmitError(e.message))
       .finally(() => setLoadingEdit(false));
@@ -181,68 +187,16 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
         if (!passwordSecretRef.trim()) errs.passwordSecretRef = 'La referencia del secreto es requerida';
       }
     } else {
-      if (!apkPath.trim()) errs.apkPath = 'La ruta del APK es requerida';
-      if (!packageName.trim()) errs.packageName = 'El package name es requerido';
-      if (!mainActivity.trim()) errs.mainActivity = 'La main activity es requerida';
+      Object.assign(errs, apkValidationErrors(apkPath, packageName, mainActivity));
     }
     return errs;
   };
 
-  const handleInspectWithPath = async (targetPath: string) => {
-    setInspectError(null); setInspectInfo(null); setInspecting(true);
-    try {
-      const result = await apiRequest<{ apkPath: string; packageName: string; mainActivity: string; versionName?: string; versionCode?: string; minSdk?: string; targetSdk?: string; inspectionSource?: string }>(
-        '/api/projects/inspect-apk',
-        { method: 'POST', body: JSON.stringify({ apkPath: targetPath }) },
-      );
-      if (result.apkPath) setApkPath(result.apkPath);
-      if (result.packageName) setPackageName(result.packageName);
-      if (typeof result.mainActivity === 'string') setMainActivity(result.mainActivity);
-      if (!result.mainActivity) setInspectInfo('Package detectado. MainActivity no detectada — completa manualmente.');
-      else setInspectInfo(`Inspeccionado via ${result.inspectionSource ?? 'aapt'}`);
-    } catch (err: any) {
-      setInspectError(err.message || 'Error al inspeccionar el APK');
-    } finally { setInspecting(false); }
-  };
-
-  const handleInspectApk = async () => {
-    if (selectedFile) { await handleApkFile(selectedFile); return; }
-    const file = apkFileRef.current?.files?.[0];
-    if (file) { await handleApkFile(file); return; }
-    if (!apkPath.trim()) return;
-    await handleInspectWithPath(apkPath.trim());
-  };
-
-  const handleApkFile = async (file: File) => {
-    if (!file.name.toLowerCase().endsWith('.apk')) { setInspectError('El archivo debe ser .apk'); return; }
-    setSelectedFile(file);
-    setSelectedFileName(file.name);
-    setInspectError(null); setInspectInfo(null); setInspecting(true);
-    try {
-      const fd = new FormData();
-      fd.append('apk', file, file.name);
-      console.log(`[apk-upload-front] hasFile=${String(file instanceof File)} fileName=${file.name} fileSize=${file.size} formDataHasApk=${String(fd.has("apk"))} requestUrl=${API_BASE}/api/projects/inspect-apk`);
-      // NO establecer Content-Type manualmente — el browser genera boundary
-      const res = await fetch(`${API_BASE}/api/projects/inspect-apk`, { method: 'POST', body: fd });
-      const body: any = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(body?.message || body?.error || `Error ${res.status}`);
-      if (body?.apkPath) setApkPath(body.apkPath);
-      // preservar File hasta terminar inspección — no limpiar selectedFile aquí
-      if (body?.packageName) setPackageName(body.packageName);
-      if (typeof body?.mainActivity === 'string') setMainActivity(body.mainActivity);
-      if (!body?.packageName) throw new Error('packageName no detectado');
-      if (!body?.mainActivity) setInspectInfo('Package detectado. MainActivity no detectada — completa manualmente.');
-      else setInspectInfo(`Inspeccionado via ${body.inspectionSource ?? 'apk'} — ${file.name}`);
-    } catch (err: any) {
-      setInspectError(err.message || 'Error al inspeccionar el APK');
-    } finally { setInspecting(false); }
-  };
-
-  const handleApkFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setSelectedFile(file);
-    await handleApkFile(file);
+  const handleMobileChange = (patch: Partial<MobileApkValue>) => {
+    if (patch.apkPath !== undefined) setApkPath(patch.apkPath);
+    if (patch.packageName !== undefined) setPackageName(patch.packageName);
+    if (patch.mainActivity !== undefined) setMainActivity(patch.mainActivity);
+    if (patch.framework !== undefined) setFramework(patch.framework);
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -282,6 +236,14 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
         if (tMod && trProjId.trim()) {
           try { await apiRequest(`/api/projects/${encodeURIComponent(slug)}/testrail`, { method: 'PUT', body: JSON.stringify({ projectIdTr: trProjId, suiteId: trSuiteId || null, sectionId: trSectionId || null, sessionId: trSessionId || null }) }); } catch (e: any) { setTrError(e.message); setSaving(false); return; }
         }
+        if (slug === 'portal-comercial' && requestCancellationEnabled !== requestCancellationOriginal) {
+          await apiRequest(`/api/projects/${encodeURIComponent(slug)}/request-cancellation-config`, {
+            method: 'PUT',
+            body: JSON.stringify({ enabled: requestCancellationEnabled }),
+          });
+        }
+        // The section shows its own error next to the fields.
+        if (await repositoryRef.current?.saveIfChanged()) { setSaving(false); return; }
         onCreated(res.slug, res.status, res.reasons ?? []);
         return;
       } else {
@@ -421,57 +383,7 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
               )}
             </>
           ) : (
-            <>
-              <div>
-                <label className={LABEL_CLS}>APK — seleccionar archivo o ruta local</label>
-                <div className="flex gap-2">
-                  <input value={apkPath} onChange={(e) => { setApkPath(e.target.value); setSelectedFileName(null); setSelectedFile(null); if (apkFileRef.current) apkFileRef.current.value = ''; }} placeholder="C:\qa\app.apk  o  /data/app.apk" className={cn(inputCls('apkPath'), 'flex-1 font-mono')} />
-                  <label className={cn('inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-[12px] font-medium border cursor-pointer transition', inspecting ? 'bg-[#E8EBEC] text-[#BABEC3] border-[#E8EBEC] cursor-not-allowed' : 'bg-white border-[#E8EBEC] text-[#58646D] hover:border-[#104B99]/40')}>
-                    <Upload size={13} /> Seleccionar APK
-                    <input ref={apkFileRef} type="file" accept=".apk" className="hidden" onChange={handleApkFileChange} disabled={inspecting} />
-                  </label>
-                </div>
-                {selectedFileName && <div className="mt-1.5 text-[11px] text-[#58646D] font-mono flex items-center gap-1"><Boxes size={11} /> {selectedFileName} → se inspeccionará automáticamente</div>}
-                <div className="mt-1 text-[10px] text-[#8B999D]">El archivo .apk seleccionado se sube al backend y se inspecciona automáticamente. También puedes escribir una ruta local y usar &ldquo;Inspeccionar APK&rdquo;.</div>
-                {fieldErrors.apkPath && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {fieldErrors.apkPath}</div>}
-              </div>
-              <div>
-                <button
-                  type="button"
-                  onClick={handleInspectApk}
-                  disabled={inspecting || (!apkPath.trim() && !selectedFile)}
-                  className={cn(
-                    'flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-medium transition-all',
-                    inspecting || (!apkPath.trim() && !selectedFile)
-                      ? 'bg-[#E8EBEC] text-[#BABEC3] cursor-not-allowed'
-                      : 'bg-[#1a1f2e] text-white hover:bg-[#1a1f2e]/90'
-                  )}
-                >
-                  {inspecting ? <Loader2 size={13} className="animate-spin" /> : <Boxes size={13} />}
-                  {inspecting ? 'Inspeccionando...' : 'Inspeccionar APK'}
-                </button>
-                {inspectError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {inspectError}</div>}
-                {inspectInfo && !inspectError && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#48A157]"><AlertCircle size={12} /> {inspectInfo}</div>}
-              </div>
-              <div>
-                <label className={LABEL_CLS}>Package Name <span className="normal-case text-[#BABEC3]">(autodetectado)</span></label>
-                <input value={packageName} onChange={(e) => setPackageName(e.target.value)} placeholder="com.example.app" className={cn(inputCls('packageName'), 'font-mono bg-[#F4F1EA]/40')} readOnly={false} title="Autocompletado desde APK — editable si es necesario" />
-                {fieldErrors.packageName && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {fieldErrors.packageName}</div>}
-              </div>
-              <div>
-                <label className={LABEL_CLS}>Main Activity <span className="normal-case text-[#BABEC3]">(editable — override manual)</span></label>
-                <input value={mainActivity} onChange={(e) => setMainActivity(e.target.value)} placeholder="com.example.app.MainActivity" className={cn(inputCls('mainActivity'), 'font-mono')} />
-                {fieldErrors.mainActivity && <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {fieldErrors.mainActivity}</div>}
-              </div>
-              <div>
-                <label className={LABEL_CLS}>Framework <span className="normal-case text-[#BABEC3]">(opcional)</span></label>
-                <input value={framework} onChange={(e) => setFramework(e.target.value)} placeholder="react-native" className={INPUT_CLS} />
-              </div>
-              <div>
-                <label className={LABEL_CLS}>Platform</label>
-                <div className="text-[13px] font-medium text-[#58646D] bg-[#F4F1EA] rounded-xl px-3 py-2.5">Android</div>
-              </div>
-            </>
+            <MobileApkSection value={{ apkPath, packageName, mainActivity, framework }} onChange={handleMobileChange} errors={fieldErrors} isEdit={isEdit} />
           )}
 
           {isEdit && (
@@ -499,6 +411,24 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
                 </div>
                 {trError && <div className="flex items-center gap-1.5 mt-2 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {trError}</div>}
               </div>
+              <RepositoryConfigSection ref={repositoryRef} slug={editSlug!} />
+              {slug === 'portal-comercial' && (
+                <div className="rounded-xl border border-[#E8EBEC] p-3 mt-3">
+                  <div className="text-[11px] font-semibold text-[#58646D] mb-2">Solicitudes QA</div>
+                  <label className="flex items-start gap-2 text-[12px] text-[#58646D] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={requestCancellationEnabled}
+                      onChange={(event) => setRequestCancellationEnabled(event.target.checked)}
+                      className="mt-0.5 rounded"
+                    />
+                    <span>Permitir cancelación controlada de solicitudes QA</span>
+                  </label>
+                  <div className="text-[10px] text-[#8B999D] mt-2">
+                    Si Discovery termina correctamente, cancela solo la solicitud nueva que creó usando la misma sesión QA, antes de reproducir el spec. Si no confirma el ID, la cédula y el estado, bloquea la reproducción.
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -573,7 +503,6 @@ function DeleteProjectModal({ target, onClose, onDeleted }: { target: { slug: st
 }
 
 export function Configuracion() {
-  const [activeTab, setActiveTab] = useState<'projects' | 'catalogs'>('projects');
   const [items, setItems] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -615,33 +544,20 @@ export function Configuracion() {
     <div className="p-7 min-h-full" style={{ background: C.canvas }}>
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-5">
-          <div className="flex items-center gap-2 rounded-full border border-[#E8EBEC] bg-white p-1">
-            <button type="button" onClick={() => setActiveTab('projects')} className={cn('inline-flex items-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition', activeTab === 'projects' ? 'bg-[#1a1f2e] text-white' : 'text-[#58646D] hover:bg-[#F4F1EA]')}>
-              <FolderCog size={14} /> Proyectos
-            </button>
-            <button type="button" onClick={() => setActiveTab('catalogs')} className={cn('inline-flex items-center gap-2 rounded-full px-4 py-2 text-[12px] font-semibold transition', activeTab === 'catalogs' ? 'bg-[#1a1f2e] text-white' : 'text-[#58646D] hover:bg-[#F4F1EA]')}>
-              <KeyRound size={14} /> Catálogos
-            </button>
-          </div>
-          {activeTab === 'projects' && <button
+          <button
             onClick={() => { setShowNew(true); setNotice(null); }}
-            className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black px-4 py-2 rounded-full transition"
+            className="ml-auto inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[#1a1f2e] hover:bg-black px-4 py-2 rounded-full transition"
           >
             <Plus size={13} /> Nuevo proyecto
-          </button>}
+          </button>
         </div>
 
-        {activeTab === 'projects' && notice && (
+        {notice && (
           <div className={cn('mb-4 rounded-xl border px-4 py-3 text-[12px] flex items-center gap-2', notice.kind === 'ok' ? 'border-[#48A157]/30 bg-[#48A157]/5 text-[#357a42]' : 'border-[#E63946]/30 bg-[#E63946]/5 text-[#E63946]')}>
             <AlertCircle size={13} /> {notice.text}
           </div>
         )}
 
-        {activeTab === 'catalogs' ? (
-          loading ? <BentoCard className="!p-6 text-[12px] text-[#8B999D]">Cargando proyectos…</BentoCard>
-            : error ? <BentoCard className="!p-6 text-[12px] text-[#E63946]">{error}</BentoCard>
-              : <ProjectDataCatalogManager projects={items} />
-        ) : <>
         {loading && (
       <div className="space-y-3">
             {[0, 1, 2, 3].map(i => (
@@ -705,7 +621,6 @@ export function Configuracion() {
             ))}
           </div>
         )}
-        </>}
       </div>
 
       {(showNew || editSlug) && (

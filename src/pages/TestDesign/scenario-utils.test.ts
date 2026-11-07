@@ -118,16 +118,66 @@ describe('scenario-utils', () => {
   it('turns contract diagnostics into actionable step guidance without exposing the recorded step text', () => {
     const generated = {
       ...complete(), jiraSourceScenarioId: 'AA-113:jira:1',
+      steps: [{ action: 'Pagar', expected: '' }],
       jiraSourceScenario: { validation: {
         valid: false,
         errors: ['JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],
-        issues: [{ code: 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED', stepIndex: 7, step: 'Ingresar secreto privado' }],
+        issues: [{ code: 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED', stepIndex: 1, step: 'Pagar' }],
       } },
     };
     expect(generatedContractIssues(generated)).toEqual([{
       code: 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED',
-      stepIndex: 7,
-      guidance: 'Cambia la comprobación por un resultado visible que el motor pueda verificar.',
+      stepIndex: 1,
+      guidance: 'En este paso, describe una condición visible que el motor pueda comprobar y especifica el texto o estado esperado en la columna «Resultado esperado». Usa el resultado definido por la HU; no inventes mensajes.',
+    }]);
+  });
+
+  it('marks a diagnostic stale when its old step was removed and hides its stale warning code', () => {
+    const generated = {
+      ...complete(), jiraSourceScenarioId: 'AA-113:jira:1',
+      generationWarnings: ['Revisar este caso antes de publicarlo: JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT'],
+      jiraSourceScenario: { validation: {
+        valid: false,
+        errors: ['JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT'],
+        issues: [{ code: 'JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT', stepIndex: 20, step: 'Validar que no se muestre el comprobante' }],
+      } },
+    };
+    expect(generatedContractIssues(generated)).toEqual([{
+      code: 'JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT',
+      stepIndex: 20,
+      stale: true,
+      guidance: 'La revisión corresponde a una versión anterior: el paso cambió o se eliminó. Espera a que el escenario se guarde para obtener la validación actual.',
+    }]);
+    expect(scenarioReviewWarnings(generated)).toEqual([]);
+  });
+
+  it('explains how to make an absence assertion observable without inventing an error message', () => {
+    const generated = {
+      ...complete(), jiraSourceScenarioId: 'AA-113:jira:1',
+      steps: [{ action: 'Validar que no se muestre el comprobante', expected: '' }],
+      jiraSourceScenario: { validation: {
+        valid: false,
+        issues: [{ code: 'JIRA_ABSENCE_REQUIRES_OBSERVED_CONTEXT', stepIndex: 1, step: 'Validar que no se muestre el comprobante' }],
+      } },
+    };
+    expect(generatedContractIssues(generated)[0].guidance).toContain('validación positiva del estado visible de rechazo definido por la HU');
+    expect(generatedContractIssues(generated)[0].guidance).toContain('Conserva la comprobación de ausencia a continuación');
+  });
+
+  it('gives field-specific guidance when the unsupported assertion belongs to expected result', () => {
+    const generated = {
+      ...complete(), jiraSourceScenarioId: 'AA-113:jira:1',
+      expectedResult: 'No se muestra el comprobante de transacción exitosa.',
+      jiraSourceScenario: { validation: {
+        valid: false,
+        errors: ['JIRA_ASSERTION_CAPABILITY_UNSUPPORTED'],
+        issues: [{ code: 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED', location: 'expected_result' }],
+      } },
+    };
+    expect(generatedContractIssues(generated)).toEqual([{
+      code: 'JIRA_ASSERTION_CAPABILITY_UNSUPPORTED',
+      location: 'expected_result',
+      guidance: 'En el campo «Resultado esperado», debajo de los pasos, indica el estado visible que debe aparecer tras el rechazo. Si verificas que no hay comprobante, deja esa ausencia como paso aparte y describe aquí el rechazo observable definido por la HU; no inventes mensajes.',
     }]);
   });
 

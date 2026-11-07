@@ -67,6 +67,7 @@ export type RecordingBatchSelection = {
   scenarioId: string;
   dataOverrides?: Record<number, string>;
   datasetValues?: Record<string, string | undefined>;
+  specDatasetValues?: Record<string, string | undefined>;
 };
 
 export function buildRecordingExecutePayload(
@@ -83,10 +84,14 @@ export function buildRecordingExecutePayload(
   // — this single call replaces a client-side publish-then-execute sequence, superseding
   // `generateSpec` (the backend decides generation from the same resolution).
   testRailDestination?: RecordingTestRailDestination,
+  specDatasetValues?: Record<string, string>,
+  scenarioSpecDatasetValues?: Record<string, Record<string, string>>,
 ) {
   const base = { projectSlug, scenarioIds, dataOverrides, datasetValues };
-  if (testRailDestination) return { ...base, testRailDestination };
-  return generateSpec === true ? { ...base, generateSpec: true as const } : base;
+  const specValues = specDatasetValues && Object.keys(specDatasetValues).length > 0 ? { specDatasetValues } : {};
+  const scenarioSpecValues = scenarioSpecDatasetValues && Object.keys(scenarioSpecDatasetValues).length > 0 ? { scenarioSpecDatasetValues } : {};
+  if (testRailDestination) return { ...base, ...specValues, ...scenarioSpecValues, testRailDestination };
+  return generateSpec === true ? { ...base, ...specValues, ...scenarioSpecValues, generateSpec: true as const } : { ...base, ...specValues, ...scenarioSpecValues };
 }
 
 /**
@@ -101,10 +106,11 @@ export const recordingsApi = {
       `/api/recordings?projectSlug=${encodeURIComponent(projectSlug)}`,
     ),
 
-  start: (projectSlug: string, recordingGoal?: string, browserMode: 'integrated' | 'desktop' | 'agent' = 'integrated') =>
+  // deviceSerial: a mobile recording on an emulator or phone of the user's PC (the server pairs the agent).
+  start: (projectSlug: string, recordingGoal?: string, browserMode: 'integrated' | 'desktop' | 'agent' = 'integrated', deviceSerial?: string) =>
     request<{ recordingId: string; jobId: string; summary: RecordingSummary }>('/api/recordings/start', {
       method: 'POST',
-      body: JSON.stringify({ projectSlug, label: recordingGoal, recordingGoal, browserMode }),
+      body: JSON.stringify({ projectSlug, label: recordingGoal, recordingGoal, browserMode, ...(deviceSerial ? { deviceSerial } : {}) }),
     }),
 
   status: (recordingId: string, projectSlug: string) =>
@@ -152,6 +158,18 @@ export const recordingsApi = {
       body: JSON.stringify(buildScenarioValueUpdateCommand(projectSlug, scenarioId, valueKey, value)),
     }),
 
+  removeScenarioStep: (recordingId: string, projectSlug: string, scenarioId: string, interactionId: string) =>
+    request<{ scenario: RecordedScenario }>(`/api/recordings/${encodeURIComponent(recordingId)}/scenario-step/remove`, {
+      method: 'POST',
+      body: JSON.stringify({ projectSlug, scenarioId, interactionId }),
+    }),
+
+  restoreScenarioStep: (recordingId: string, projectSlug: string, scenarioId: string, interactionId: string) =>
+    request<{ scenario: RecordedScenario }>(`/api/recordings/${encodeURIComponent(recordingId)}/scenario-step/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ projectSlug, scenarioId, interactionId }),
+    }),
+
   trace: (recordingId: string, projectSlug: string) =>
     request<{ trace: { narrative?: string } }>(
       `/api/recordings/${encodeURIComponent(recordingId)}/trace?projectSlug=${encodeURIComponent(projectSlug)}`,
@@ -196,6 +214,8 @@ export const recordingsApi = {
     datasetValues?: Record<string, string>,
     generateSpec?: boolean,
     testRailDestination?: RecordingTestRailDestination,
+    specDatasetValues?: Record<string, string>,
+    scenarioSpecDatasetValues?: Record<string, Record<string, string>>,
   ) =>
     request<{
       jobId?: string;
@@ -205,7 +225,7 @@ export const recordingsApi = {
       fastPath?: Array<{ scenarioId: string; caseId: number; specPath: string; status: 'passed' | 'failed' | 'skipped'; error?: string }>;
     } & Partial<RecordingReplayAdmission>>(
       `/api/recordings/${encodeURIComponent(recordingId)}/execute`,
-      { method: 'POST', body: JSON.stringify(buildRecordingExecutePayload(projectSlug, scenarioIds, dataOverrides, datasetValues, generateSpec, testRailDestination)) },
+      { method: 'POST', body: JSON.stringify(buildRecordingExecutePayload(projectSlug, scenarioIds, dataOverrides, datasetValues, generateSpec, testRailDestination, specDatasetValues, scenarioSpecDatasetValues)) },
     ),
 
   executeBatch: (

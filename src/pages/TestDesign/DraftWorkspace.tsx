@@ -1,3 +1,4 @@
+import { JiraWorkflowApplications } from '../../components/JiraWorkflowApplications';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
@@ -405,6 +406,7 @@ export function DraftWorkspace({ draftId, onBack }: DraftWorkspaceProps) {
         </div>
       )}
 
+      <JiraWorkflowApplications projectSlug={projectSlug} area="test-design" disabled={!editable || busy || editor.anyGenerating} />
       <div className={`rounded-xl border px-4 py-3 text-[12px] flex flex-wrap items-end gap-3 ${knowledgeProfileReady && !knowledgeProfileDirty ? 'bg-[#F4F8F4] border-[#D7E6D8] text-[#3D6944]' : 'bg-[#FFF8E6] border-[#F1DFA8] text-[#7A5B00]'}`}>
         <div className="flex-1 min-w-[240px]">
           <div className="font-semibold">Proyecto de automatización y conocimiento</div>

@@ -143,14 +143,19 @@ describe('LiveExecution state', () => {
     expect(reconcileJiraScenarioFromLogs(scenario, logs)).toBe(scenario);
   });
 
-  it('marca el último paso completado y muestra la fase de promoción al habilitarse el gate', () => {
+  it('no confunde el gate de elegibilidad con el inicio real de promoción', () => {
+    const progress = parseLiveScenarioProgress('[discovery:workflow] Promotion gate: allowed=true, status=passed');
+    expect(progress).toBeNull();
+  });
+
+  it('marca la fase de promoción cuando inicia una etapa real de promoción', () => {
     const scenario = {
       id: 'PREVIEW-001', title: 'Registro varios clientes', index: 1, total: 1,
       steps: ['Abrir', 'Validar'],
       stepResults: [{ status: 'passed' }, { status: 'running' }],
       currentStepIndex: 1,
     };
-    const progress = parseLiveScenarioProgress('[discovery:workflow] Promotion gate: allowed=true, status=passed');
+    const progress = parseLiveScenarioProgress('[scenario-preview] stdout: [promotion-progress] stage=typescript status=started');
     expect(progress).toEqual({ type: 'promoting' });
     const updated = applyLiveScenarioProgress(scenario, progress!);
     expect(updated?.phase).toBe('promoting');
@@ -162,6 +167,18 @@ describe('LiveExecution state', () => {
   it('marca el paso actual como completado al terminar su verificación semántica', () => {
     const progress = parseLiveScenarioProgress('[critical-path] step=33 phase=semantic_verification_end elapsedMs=1556');
     expect(progress).toEqual({ type: 'step', update: { index: 32, status: 'passed' } });
+  });
+
+  it('muestra como activo el paso de Discovery antes de resolver sus datos', () => {
+    const progress = parseLiveScenarioProgress('[critical-path] step=8 phase=action_start');
+    expect(progress).toEqual({ type: 'step', update: { index: 7, status: 'running' } });
+    const scenario = {
+      id: 'C57345', title: 'Transferencia', index: 1, total: 1,
+      steps: Array.from({ length: 19 }, (_, index) => `Paso ${index + 1}`),
+    };
+    const updated = applyLiveScenarioProgress(scenario, progress!);
+    expect(updated?.currentStepIndex).toBe(7);
+    expect(updated?.stepResults?.[7]?.status).toBe('running');
   });
 
   it('mapea case_started a activeScenario y limpia case_finished sin afectar logs normales', () => {
