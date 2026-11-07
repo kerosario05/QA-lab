@@ -11,12 +11,15 @@ import { recordingsApi } from '../../services/recordings';
 import { TestRailDestinationPicker } from './TestRailDestinationPicker';
 import { JiraRequirementPicker } from './JiraRequirementPicker';
 import { useWebRecordingReplay } from './useWebRecordingReplay';
-import type { RecordingProjectDetail } from './useRecordingExecution';
+import { useRecordingExecution, type RecordingProjectDetail } from './useRecordingExecution';
 import { groupScenariosByRecording } from './groupScenariosByRecording';
 import { testRailSelectionKey } from './testRailSelection';
 
 /**
- * Dedicated destination screen for a web recording.
+ * Dedicated destination screen for a recording, web or mobile.
+ *
+ * Mobile goes through the same screen: the chosen section receives the published cases, the
+ * Test Run is created from them, and the run uses the device picked when recording.
  *
  * Recording's own screen answers "what did I record and which of it is ready to run?" — this
  * one answers a different question, "where in TestRail does it land?", and the two stop being
@@ -47,6 +50,8 @@ export interface TestRailUploadScreenProps {
   datasetValues: Record<string, string | undefined>;
   onBack: () => void;
   onLaunch?: (run: ActiveRun) => void;
+  /** Mobile only: emulator or phone of the user's PC; null = the server's emulator. */
+  deviceSerial?: string | null;
 }
 
 const EMPTY_RECORDING_IDS: string[] = [];
@@ -70,8 +75,11 @@ export function TestRailUploadScreen({
   recordingId,
   onBack,
   onLaunch,
+  deviceSerial = null,
 }: TestRailUploadScreenProps) {
   const replay = useWebRecordingReplay();
+  const mobileExecution = useRecordingExecution();
+  const isMobile = projectDetail?.type === 'mobile';
   const [traceReadiness, setTraceReadiness] = useState<{ checking: boolean; error: string | null }>({ checking: true, error: null });
 
   const destinationReady = Boolean(testRail.destination.projectId && testRail.destination.suiteId && testRail.destination.sectionId);
@@ -119,10 +127,75 @@ export function TestRailUploadScreen({
       : traceReadiness.checking
         ? 'Validando las grabaciones seleccionadas'
         : traceReadiness.error ?? undefined;
-  const running = replay.starting;
+  const running = isMobile ? mobileExecution.running : replay.starting;
+  const executionError = isMobile ? mobileExecution.error : replay.error;
+
+  async function handleExecuteMobile() {
+    if (!projectDetail) return;
+    // Same keys as web: per recording/scenario first, then the bare scenario id.
+    const overrides: Record<string, Record<number, string>> = {};
+    recordingGroups.forEach((group) => group.scenarios.forEach((scenario) => {
+      const selectionKey = testRailSelectionKey(group.recordingId, scenario.scenarioId);
+      const byStep: Record<number, string> = { ...(dataOverrides[selectionKey] ?? dataOverrides[scenario.scenarioId] ?? {}) };
+      // The "Datos de este escenario" panel edits values by field (valueKey), like web; the
+      // mobile run applies them by step. Every step that types that field gets the value.
+      const values = { ...datasetValues, ...(scenarioDatasetValues[selectionKey] ?? scenarioDatasetValues[scenario.scenarioId] ?? {}) };
+      for (const field of scenario.requiredData ?? []) {
+        const value = values[field.key];
+        if (typeof value === 'string' && value.trim() !== '') byStep[field.stepIndex] = value;
+      }
+      if (Object.keys(byStep).length > 0) overrides[scenario.scenarioId] = byStep;
+    }));
+    const selected = recordingGroups.flatMap((group) => group.scenarios);
+    const launch = await mobileExecution.execute(
+      {
+        ...projectDetail,
+        testRail: {
+          projectIdTr: testRail.destination.projectId,
+          suiteId: testRail.destination.suiteId,
+          sectionId: testRail.destination.sectionId,
+        },
+      },
+      selected,
+      overrides,
+      deviceSerial,
+      selectedIssue?.key,
+    );
+    if (!launch) return;
+    onLaunch?.({
+      id: launch.jobId,
+      jobId: launch.jobId,
+      recordingId,
+      scenarioIds: selected.map((scenario) => scenario.scenarioId),
+      project: projectDetail.name,
+      triggered: 'Grabación móvil',
+      startedAt: new Date().toISOString(),
+      progress: 0,
+      total: launch.scenarioCount,
+      completed: 0,
+      passed: 0,
+      failed: 0,
+      currentTest: '',
+      eta: '—',
+      status: 'running',
+      activeScenarios: selected.map((scenario, index) => ({
+        id: scenario.scenarioId,
+        title: scenario.title,
+        index: index + 1,
+        total: selected.length,
+        steps: (scenario.testRailSteps ?? []).map((step) => step.content).filter((step): step is string => typeof step === 'string' && step.trim().length > 0),
+      })),
+      issueKey: launch.issueKey ?? selectedIssue?.key,
+      checklistUrl: launch.checklistUrl,
+    });
+  }
 
   async function handleExecuteAutomation() {
     if (!canExecute || running) return;
+    if (isMobile) {
+      await handleExecuteMobile();
+      return;
+    }
     const selections = recordingGroups.flatMap((group) => group.scenarios.map((scenario) => {
       const overrides = dataOverrides[testRailSelectionKey(group.recordingId, scenario.scenarioId)]
         ?? dataOverrides[scenario.scenarioId];
@@ -227,10 +300,18 @@ export function TestRailUploadScreen({
               <span>{traceReadiness.error}</span>
             </div>
           )}
-          {replay.error && (
+          {executionError && (
             <div className="mt-5 flex items-start gap-2 text-[12px] text-[#B4463C]">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>{replay.error}</span>
+              <span>{executionError}</span>
+            </div>
+          )}
+          {isMobile && mobileExecution.notice && (
+            <div className="mt-5 text-[12px] text-[#58646D]">{mobileExecution.notice}</div>
+          )}
+          {isMobile && (
+            <div className="mt-5 text-[12px] text-[#58646D]" data-testid="testrail-upload-device">
+              {deviceSerial ? `Se ejecuta en ${deviceSerial} de tu equipo.` : 'Se ejecuta en el emulador del servidor.'}
             </div>
           )}
         </BentoCard>

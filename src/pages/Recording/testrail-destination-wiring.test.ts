@@ -20,6 +20,15 @@ describe('Recording page — TestRail destination hand-off wiring', () => {
     expect(source).not.toContain('<TestRailDestinationPicker');
   });
 
+  // Mobile goes through the same destination screen as web, not an inline "Publicar y ejecutar".
+  it('mobile uses the same TestRail hand-off as web', () => {
+    expect(source).not.toContain('Publicar y ejecutar');
+    const button = source.indexOf('data-testid="recording-mobile-to-testrail"');
+    expect(button).toBeGreaterThan(-1);
+    expect(source.slice(button - 400, button)).toContain('onClick={handleReplay}');
+    expect(source).toContain("deviceSerial={projectDetail?.type === 'mobile' ? deviceSerial : null}");
+  });
+
   // CASE 2
   it('renames the web action to "Reproducir y subir a TestRail"', () => {
     expect(source).toContain('Reproducir y subir a TestRail');

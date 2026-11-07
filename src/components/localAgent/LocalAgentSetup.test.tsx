@@ -159,6 +159,72 @@ describe('LocalAgent setup after login', () => {
     clicked.mockRestore();
   });
 
+  const readyAgent = (version: string) => jsonResponse({
+    ok: true, requiredRevision: '1223', pairing: 'found', install: null, ready: true,
+    agent: { ...agent, chromiumInstalled: true, agentVersion: version, latestVersion: '0.3.0', updateAvailable: version !== '0.3.0' },
+  });
+
+  it('outdated agent: the login offers the update and waits for the agent to come back updated', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:instalador'), revokeObjectURL: vi.fn() }));
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    let state: 'old' | 'restarting' | 'new' = 'old';
+    vi.stubGlobal('fetch', vi.fn(async () => (state === 'restarting' ? noAgent() : readyAgent(state === 'old' ? '0.2.0' : '0.3.0'))));
+    render();
+    await flush();
+    expect(latestPhase).toBe('ready');
+    expect(text()).toContain('Actualizar el agente de QA Lab');
+    expect(text()).toContain('Tu equipo tiene la versión 0.2.0; la actual es 0.3.0.');
+
+    await act(async () => { button('Actualizar').click(); });
+    expect(clicked).toHaveBeenCalledTimes(1);
+    expect(text()).toContain('Esperando a que se actualice el agente');
+
+    // The installer stops the agent (no agent for a moment) and starts the new one.
+    state = 'restarting';
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(text()).toContain('Esperando a que se actualice el agente');
+    state = 'new';
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+    expect(latestPhase).toBe('ready');
+    clicked.mockRestore();
+  });
+
+  it('declining an update for good is remembered only for that version', async () => {
+    vi.useFakeTimers();
+    let latest = '0.3.0';
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      ok: true, requiredRevision: '1223', pairing: 'found', install: null, ready: true,
+      agent: { ...agent, chromiumInstalled: true, agentVersion: '0.2.0', latestVersion: latest, updateAvailable: true },
+    })));
+    render();
+    await flush();
+    await act(async () => { button('No volver a preguntar').click(); });
+    expect(localStorage.getItem('qalab.localAgent.updateDismissed')).toBe('0.3.0');
+
+    act(() => root?.unmount());
+    container?.remove();
+    render();
+    await flush();
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+
+    latest = '0.4.0';
+    act(() => root?.unmount());
+    container?.remove();
+    render();
+    await flush();
+    expect(text()).toContain('Actualizar el agente de QA Lab');
+  });
+
+  it('an up-to-date agent is never offered an update', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => readyAgent('0.3.0')));
+    render();
+    await flush();
+    expect(container?.querySelector('[data-testid="local-agent-offer"]')).toBeNull();
+  });
+
   it('the installer points the agent at the panel origin', () => {
     const cmd = agentInstallerCmd('http://SRVDEVQACA01:3003');
     expect(cmd).toContain("'http://SRVDEVQACA01:3003/descargas/instalar-agente.ps1'");

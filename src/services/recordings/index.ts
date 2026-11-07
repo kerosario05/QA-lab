@@ -101,10 +101,11 @@ export const recordingsApi = {
       `/api/recordings?projectSlug=${encodeURIComponent(projectSlug)}`,
     ),
 
-  start: (projectSlug: string, recordingGoal?: string, browserMode: 'integrated' | 'desktop' | 'agent' = 'integrated') =>
+  // deviceSerial: a mobile recording on an emulator or phone of the user's PC (the server pairs the agent).
+  start: (projectSlug: string, recordingGoal?: string, browserMode: 'integrated' | 'desktop' | 'agent' = 'integrated', deviceSerial?: string) =>
     request<{ recordingId: string; jobId: string; summary: RecordingSummary }>('/api/recordings/start', {
       method: 'POST',
-      body: JSON.stringify({ projectSlug, label: recordingGoal, recordingGoal, browserMode }),
+      body: JSON.stringify({ projectSlug, label: recordingGoal, recordingGoal, browserMode, ...(deviceSerial ? { deviceSerial } : {}) }),
     }),
 
   status: (recordingId: string, projectSlug: string) =>

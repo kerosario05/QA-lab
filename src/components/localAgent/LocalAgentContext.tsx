@@ -9,7 +9,8 @@ import { downloadAgentInstaller, localAgentApi, type LocalAgentInstallState, typ
  * install starts on its own and the setup dialog shows its progress. No agent is not
  * an error — recordings keep using the integrated (server) browser — but the login
  * offers to install it: the browser cannot run installers, so accepting downloads a
- * small .cmd the user opens, and the panel waits for the agent to connect.
+ * small .cmd the user opens, and the panel waits for the agent to connect. The same
+ * installer updates an agent older than the server's: the login offers that too.
  */
 
 /**
@@ -17,8 +18,12 @@ import { downloadAgentInstaller, localAgentApi, type LocalAgentInstallState, typ
  * prompt -> waiting (installer downloaded, polling for the agent) -> not_detected (gave up).
  */
 export type LocalAgentOffer = 'hidden' | 'prompt' | 'waiting' | 'not_detected';
+/** install: this PC has no agent. update: its agent is older than the server's. */
+export type LocalAgentOfferKind = 'install' | 'update';
 
 const OFFER_DISMISSED_KEY = 'qalab.localAgent.offerDismissed';
+/** Holds the agent version whose update the user declined for good; a newer one asks again. */
+const UPDATE_DISMISSED_KEY = 'qalab.localAgent.updateDismissed';
 const AGENT_WAIT_POLL_MS = 3000;
 const AGENT_WAIT_MAX_MS = 10 * 60 * 1000;
 
@@ -28,6 +33,18 @@ function offerDismissed(): boolean {
   } catch {
     return false;
   }
+}
+
+function updateDismissed(version: string | undefined): boolean {
+  try {
+    return Boolean(version) && localStorage.getItem(UPDATE_DISMISSED_KEY) === version;
+  } catch {
+    return false;
+  }
+}
+
+function needsUpdate(status: LocalAgentStatus | null | undefined): boolean {
+  return status?.pairing === 'found' && Boolean(status.agent?.updateAvailable);
 }
 
 export type LocalAgentPhase =
@@ -45,8 +62,11 @@ type LocalAgentContextValue = {
   error: string | null;
   dialogOpen: boolean;
   offer: LocalAgentOffer;
-  /** Downloads the agent installer and waits for the agent to connect. */
+  offerKind: LocalAgentOfferKind;
+  /** Downloads the agent installer and waits for the agent to connect (or to come back updated). */
   acceptOffer: () => void;
+  /** Shows the update offer again (e.g. from the device picker) when the agent is outdated. */
+  offerUpdate: () => void;
   /** "Ahora no" hides it until the next login; `forever` remembers it in this browser. */
   declineOffer: (forever?: boolean) => void;
   /** Asks the server again; installs Chromium if the agent is there without it. */
@@ -72,6 +92,7 @@ export function LocalAgentProvider({ enabled, children }: { enabled: boolean; ch
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [offer, setOffer] = useState<LocalAgentOffer>('hidden');
+  const [offerKind, setOfferKind] = useState<LocalAgentOfferKind>('install');
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const agentWaitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const installingRef = useRef(false);
@@ -190,15 +211,18 @@ export function LocalAgentProvider({ enabled, children }: { enabled: boolean; ch
   }, [apply]);
 
   // After the installer is downloaded: ask until the agent connects (then `apply` starts
-  // the Chromium install and its dialog), or give up after AGENT_WAIT_MAX_MS.
-  const waitForAgent = useCallback((startedAt: number) => {
+  // the Chromium install and its dialog), or give up after AGENT_WAIT_MAX_MS. An update
+  // waits instead for the agent to come back with the server's version (the installer
+  // stops it, replaces it and starts it again).
+  const waitForAgent = useCallback((startedAt: number, kind: LocalAgentOfferKind) => {
     if (agentWaitRef.current) clearTimeout(agentWaitRef.current);
     agentWaitRef.current = setTimeout(async () => {
       if (!aliveRef.current) return;
       try {
         const next = await localAgentApi.status();
         if (!aliveRef.current) return;
-        if (next.pairing !== 'none') {
+        const done = kind === 'update' ? next.pairing === 'found' && !needsUpdate(next) : next.pairing !== 'none';
+        if (done) {
           setOffer('hidden');
           apply(next);
           return;
@@ -210,34 +234,52 @@ export function LocalAgentProvider({ enabled, children }: { enabled: boolean; ch
         setOffer('not_detected');
         return;
       }
-      waitForAgent(startedAt);
+      waitForAgent(startedAt, kind);
     }, AGENT_WAIT_POLL_MS);
   }, [apply]);
 
   const acceptOffer = useCallback(() => {
     downloadAgentInstaller();
     setOffer('waiting');
-    waitForAgent(Date.now());
-  }, [waitForAgent]);
+    waitForAgent(Date.now(), offerKind);
+  }, [waitForAgent, offerKind]);
+
+  // Asks again first: the status from login may predate the agent this picker sees.
+  const offerUpdate = useCallback(() => {
+    void localAgentApi.status().then((next) => {
+      if (!aliveRef.current || !needsUpdate(next)) return;
+      setStatus(next);
+      setOfferKind('update');
+      setOffer('prompt');
+    }, () => undefined);
+  }, []);
 
   const declineOffer = useCallback((forever = false) => {
     if (agentWaitRef.current) clearTimeout(agentWaitRef.current);
     if (forever) {
       try {
-        localStorage.setItem(OFFER_DISMISSED_KEY, '1');
+        if (offerKind === 'update') localStorage.setItem(UPDATE_DISMISSED_KEY, status?.agent?.latestVersion ?? '');
+        else localStorage.setItem(OFFER_DISMISSED_KEY, '1');
       } catch {
         // Storage unavailable: it is simply offered again at the next login.
       }
     }
     setOffer('hidden');
-  }, []);
+  }, [offerKind, status]);
 
   // Once per login: the Workspace (and this provider) mounts only when authenticated.
   // Only this check offers the agent; later checks (Recording page) never re-prompt.
   useEffect(() => {
     if (!enabled) return;
     void check().then((next) => {
-      if (aliveRef.current && next?.pairing === 'none' && next.requiredRevision && !offerDismissed()) setOffer('prompt');
+      if (!aliveRef.current) return;
+      if (next?.pairing === 'none' && next.requiredRevision && !offerDismissed()) {
+        setOfferKind('install');
+        setOffer('prompt');
+      } else if (needsUpdate(next) && !updateDismissed(next?.agent?.latestVersion)) {
+        setOfferKind('update');
+        setOffer('prompt');
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
@@ -249,14 +291,16 @@ export function LocalAgentProvider({ enabled, children }: { enabled: boolean; ch
     error,
     dialogOpen,
     offer,
+    offerKind,
     acceptOffer,
+    offerUpdate,
     declineOffer,
     check,
     startInstall,
     select,
     openDialog: () => setDialogOpen(true),
     closeDialog: () => setDialogOpen(false),
-  }), [phase, status, install, error, dialogOpen, offer, acceptOffer, declineOffer, check, startInstall, select]);
+  }), [phase, status, install, error, dialogOpen, offer, offerKind, acceptOffer, offerUpdate, declineOffer, check, startInstall, select]);
 
   return <LocalAgentContext.Provider value={value}>{children}</LocalAgentContext.Provider>;
 }
@@ -269,7 +313,9 @@ const NO_AGENT: LocalAgentContextValue = {
   error: null,
   dialogOpen: false,
   offer: 'hidden',
+  offerKind: 'install',
   acceptOffer: () => undefined,
+  offerUpdate: () => undefined,
   declineOffer: () => undefined,
   check: async () => null,
   startInstall: async () => undefined,

@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { RevealableInput } from '../../components/ui/RevealableInput';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '../../constants/theme';
 import type { MobileScenario } from '../../services/mobile';
@@ -297,7 +298,7 @@ export function MobileScenarioSelectionPanel({
                                           {(field.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
                                         </select>
                                       ) : (
-                                        <input
+                                        <RevealableInput
                                           type={field.sensitive ? 'password' : 'text'}
                                           value={mobileDataValues[scenario.scenarioId]?.[field.stepIndex] ?? field.exampleValue ?? ''}
                                           onChange={(event) => setMobileFieldValue(scenario.scenarioId, field.stepIndex, event.target.value)}

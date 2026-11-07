@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { RevealableInput } from '../../components/ui/RevealableInput';
 import { Key, Lock } from 'lucide-react';
 import { BentoCard } from '../../components/ui/BentoCard';
 import { cn } from '../../constants/theme';
@@ -99,7 +100,7 @@ export function StoryDataPanel({
                 {options.map(option => <option key={option.id} value={option.value}>{option.label}</option>)}
               </select>
             ) : (
-              <input
+              <RevealableInput
               type={sensitive ? 'password' : 'text'}
                 autoComplete="off"
                 value={group.value}

@@ -1,8 +1,10 @@
 import { DynamicListSelection } from "./DynamicListSelection";
+import { RevealableInput } from '../../components/ui/RevealableInput';
 import { groupOtpDatasetRequirements, otpSegmentValues } from './otp-dataset';
 import { parseSelectionRule, selectionRuleDescription } from "../../services/recordings/dynamic-selection-rule";
 import { LiveBrowserView } from './LiveBrowserView';
 import { useLocalAgent } from '../../components/localAgent/LocalAgentContext';
+import { DevicePicker } from '../../components/localAgent/DevicePicker';
 import { GenerationProgressIndicator } from './GenerationProgressIndicator';
 import { RecordingStepper } from './RecordingStepper';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -21,7 +23,7 @@ import {
 } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { useRecordingSession, type RecordingBrowserMode, type RecordingPhase } from './useRecordingSession';
-import { useRecordingExecution, type RecordingProjectDetail } from './useRecordingExecution';
+import type { RecordingProjectDetail } from './useRecordingExecution';
 import { useTestRailDestination } from './useTestRailDestination';
 import { TestRailUploadScreen } from './TestRailUploadScreen';
 import { getTestRailSelections, reconcileTestRailSelection, setTestRailScenarioSelected, testRailSelectionKey, type TestRailSelection } from './testRailSelection';
@@ -284,13 +286,19 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
   const startBrowserMode: RecordingBrowserMode = usePcBrowser && pcBrowserMode ? pcBrowserMode : 'integrated';
   // The mode the CURRENT recording was started with (the switch may change afterwards).
   const [recordingBrowserMode, setRecordingBrowserMode] = useState<RecordingBrowserMode>('integrated');
+  // Mobile: the emulator or phone of this PC to record on; null records on the server's emulator.
+  const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
+  const [recordingDevice, setRecordingDevice] = useState<string | null>(null);
   // Opening the page asks again: the agent may have connected after login.
   useEffect(() => {
     void localAgent.check();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const execution = useRecordingExecution();
-  const testRail = useTestRailDestination(projectDetail?.testRail);
+  // The project's own TestRail configuration (projectIdTr) seeds the picker; the user can
+  // still choose another project/section when executing.
+  const testRail = useTestRailDestination(projectDetail?.testRail
+    ? { projectId: projectDetail.testRail.projectIdTr, suiteId: projectDetail.testRail.suiteId, sectionId: projectDetail.testRail.sectionId }
+    : null);
   const project = projects.find((p) => p.slug === projectSlug);
 
   const primaryScenario = session.scenarios.find((scenario) => scenario.primary) ?? session.scenarios[0];
@@ -715,54 +723,6 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
     });
   }
 
-  async function handleExecute() {
-    if (!projectDetail || executionScenarios.length === 0) return;
-    const executionReadiness = executionScenarios.map((scenario) => ({ scenario, readiness: resolveScenarioReadiness(scenario, scenarioDatasetValues.get(scenario.scenarioId) ?? sharedDatasetValues) }));
-    if (executionReadiness.some(({ scenario, readiness }) => !canReplayScenario({
-      executionReadiness: readiness.executionReadiness,
-      scenarioPersisted: session.persistedScenarioIds?.has(scenario.scenarioId) ?? false,
-    }))) return;
-    // Publishing and executing must land in the same place: the run is created from the
-    // cases this publishes, so honouring the picker here and not there would file the run
-    // against a different section than the one on screen.
-    const target: RecordingProjectDetail = {
-      ...projectDetail,
-      testRail: {
-        projectIdTr: testRail.destination.projectId ?? projectDetail.testRail?.projectIdTr,
-        suiteId: testRail.destination.suiteId ?? projectDetail.testRail?.suiteId,
-        sectionId: testRail.destination.sectionId ?? projectDetail.testRail?.sectionId,
-      },
-    };
-    const launch = await execution.execute(target, executionScenarios, effectiveDataOverrides);
-    if (!launch) return;
-    onLaunch?.({
-      id: launch.jobId,
-      jobId: launch.jobId,
-      recordingId: session.recordingId ?? undefined,
-      scenarioIds: executionScenarios.map((scenario) => scenario.scenarioId),
-      project: projectDetail.name,
-      triggered: 'Grabación',
-      startedAt: new Date().toISOString(),
-      progress: 0,
-      total: launch.scenarioCount,
-      completed: 0,
-      passed: 0,
-      failed: 0,
-      currentTest: '',
-      eta: '—',
-      status: 'running',
-      activeScenarios: executionScenarios.map((scenario, index) => ({
-        id: scenario.scenarioId,
-        title: scenario.title,
-        index: index + 1,
-        total: executionScenarios.length,
-        steps: (scenario.testRailSteps ?? []).map((step) => step.content).filter((step): step is string => typeof step === 'string' && step.trim().length > 0),
-      })),
-      issueKey: launch.issueKey,
-      checklistUrl: launch.checklistUrl,
-    });
-  }
-
   function handleDatasetValueChange(scenarioId: string, valueKey: string, value: string) {
     setDatasetOverrides((previous) => ({
       ...previous,
@@ -898,6 +858,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
         onSelectIssue={setSelectedJiraIssue}
         onBack={() => setTestRailUpload(null)}
         onLaunch={onLaunch}
+        deviceSerial={projectDetail?.type === 'mobile' ? deviceSerial : null}
       />
     );
   }
@@ -1013,7 +974,9 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                   setScenariosPanelCollapsed(false);
                   const mode = startBrowserMode;
                   setRecordingBrowserMode(mode);
-                  void session.start(label.trim() || undefined, mode).then((started) => {
+                  const device = project?.type === 'mobile' ? deviceSerial : null;
+                  setRecordingDevice(device);
+                  void session.start(label.trim() || undefined, mode, device ?? undefined).then((started) => {
                     // The agent may have gone away (or lost Chromium) since the last check.
                     if (!started && mode === 'agent') void localAgent.check();
                   });
@@ -1036,6 +999,12 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
             </button>
           )}
         </div>
+        {!isRecording && project?.type === 'mobile' && (
+          <div className="mt-4">
+            <div className="text-[10px] uppercase tracking-[0.12em] text-[#8B999D] mb-1.5">Dispositivo</div>
+            <DevicePicker value={deviceSerial} onChange={setDeviceSerial} purpose="record" disabled={session.phase === 'starting' || busy} />
+          </div>
+        )}
         {!isRecording && project?.type !== 'mobile' && pcBrowserMode === null && localAgent.phase !== 'unknown' && (
           <LocalAgentHint />
         )}
@@ -1075,7 +1044,7 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               <span className="w-2 h-2 rounded-full bg-[#48A157] animate-pulse" />
               <span className="text-[12px] font-semibold text-[#1a1f2e]">
                 Grabando — {project?.type === 'mobile'
-                  ? 'usa la app en el emulador'
+                  ? (recordingDevice ? `usa la app en ${recordingDevice} de tu equipo` : 'usa la app en el emulador')
                   : recordingBrowserMode === 'agent'
                     ? 'interactúa con la ventana de Chromium que se abrió en tu equipo'
                     : recordingBrowserMode === 'desktop' ? 'interactúa con la ventana Chromium del PC' : 'interactúa con el navegador integrado'}
@@ -1196,18 +1165,16 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
                 {deletingSelectedHistory ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                 {deletingSelectedHistory ? 'Eliminando…' : `Eliminar seleccionadas${selectedHistoryRecordingIds.length ? ` (${selectedHistoryRecordingIds.length})` : ''}`}
               </button>
-              {project?.type !== 'mobile' && (
-                <button
-                  type="button"
-                  onClick={handleReplay}
-                  disabled={session.phase === 'stopping' || replayEntries.length === 0 || selectingHistoryScenarios || loadingHistoryScenarioRecordingIds.length > 0}
-                  title={session.phase === 'stopping' ? 'Espera a que termine la sincronización de la grabación' : 'Configura TestRail y ejecuta los escenarios seleccionados'}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-[#1a1f2e] px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <Play size={12} />
-                  Reproducir y subir a TestRail{replayEntries.length > 0 ? ` (${replayEntries.length})` : ''}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={handleReplay}
+                disabled={session.phase === 'stopping' || replayEntries.length === 0 || selectingHistoryScenarios || loadingHistoryScenarioRecordingIds.length > 0}
+                title={session.phase === 'stopping' ? 'Espera a que termine la sincronización de la grabación' : 'Configura TestRail y ejecuta los escenarios seleccionados'}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#1a1f2e] px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Play size={12} />
+                Reproducir y subir a TestRail{replayEntries.length > 0 ? ` (${replayEntries.length})` : ''}
+              </button>
             </div>
           </div>
           {recordingSelectionNotice && <div role="status" className="mt-2 rounded-lg bg-[#F4F8FD] px-3 py-2 text-[11px] text-[#58646D]">{recordingSelectionNotice}</div>}
@@ -1232,17 +1199,15 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
               )}
               {projectDetail?.type === 'mobile' && (
                 <button
-                  onClick={handleExecute}
-                  disabled={execution.running || executionScenarios.length === 0 || executionBlockedWithLifecycle}
-                  title={
-                    executionBlockedWithLifecycle
-                      ? 'Completa los requisitos de ejecución antes de ejecutar'
-                      : 'Publica y ejecuta únicamente los escenarios seleccionados'
-                  }
+                  type="button"
+                  onClick={handleReplay}
+                  disabled={session.phase === 'stopping' || replayEntries.length === 0}
+                  title={replayEntries.length === 0 ? 'Selecciona al menos un escenario' : 'Elige proyecto y sección de TestRail y la historia de Jira, y ejecuta'}
+                  data-testid="recording-mobile-to-testrail"
                   className="bg-[#1a1f2e] hover:bg-black disabled:opacity-40 text-white text-[12px] font-semibold px-4 py-2 rounded-full flex items-center gap-1.5 transition"
                 >
-                  {execution.running ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
-                  Publicar y ejecutar
+                  <Play size={13} />
+                  Configurar TestRail y ejecutar{replayEntries.length > 0 ? ` (${replayEntries.length})` : ''}
                 </button>
               )}
               <button
@@ -1296,15 +1261,6 @@ export function Recording({ onLaunch }: { onLaunch?: (run: ActiveRun) => void })
 
           {publishResult && (
             <div className="mb-3 text-[12px] text-[#58646D] bg-[#FAFAF7] rounded-lg px-3 py-2">{publishResult}</div>
-          )}
-          {execution.error && (
-            <div className="mb-3 flex items-start gap-2 text-[12px] text-[#B4463C]">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              <span>{execution.error}</span>
-            </div>
-          )}
-          {execution.notice && (
-            <div className="mb-3 text-[12px] text-[#58646D] bg-[#FAFAF7] rounded-lg px-3 py-2">{execution.notice}</div>
           )}
 
           {serviceBindings.view && session.scenarios.length > 0 && (
@@ -1885,7 +1841,7 @@ export function ScenarioCard({
                                 {requirement.allowedValues.map((option, index) => <option key={option} value={option}>{listMode === 'index' ? `Opción ${index + 1}` : observedOptionLabel(option)}</option>)}
                               </select>
                             ) : (
-                              <input
+                              <RevealableInput
                                 aria-label={humanRequirementLabel(requirement)}
                                 type={requirement.sensitive || requirement.masked ? 'password' : 'text'}
                                 maxLength={segmentKeys ? 6 : undefined}

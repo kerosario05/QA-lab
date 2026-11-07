@@ -19,12 +19,50 @@ export type LocalAgentInstallState = {
   message?: string;
 };
 
+/** A phone or emulator adb sees on the user's PC. */
+export type AndroidDevice = {
+  serial: string;
+  /** adb state: 'device' is usable; 'unauthorized' waits for the USB debugging prompt. */
+  state: string;
+  kind: 'emulator' | 'physical';
+  model?: string;
+  avd?: string;
+};
+
+/** Android Studio on the user's PC, as the agent last reported it. */
+export type AndroidStatus = {
+  sdkFound: boolean;
+  adbVersion?: string;
+  emulatorFound: boolean;
+  avds: string[];
+  devices: AndroidDevice[];
+  error?: string;
+  checkedAt: string;
+};
+
+/** An emulator the panel asked the agent to start. */
+export type AgentEmulatorState = {
+  requestId: string;
+  avd: string;
+  state: 'starting' | 'launched' | 'booting' | 'ready' | 'error';
+  serial?: string;
+  message?: string;
+};
+
 export type LocalAgentInfo = {
   agentId: string;
   machine: string;
   windowsUser: string;
   agentVersion: string;
   chromiumInstalled: boolean;
+  /** Android Studio (SDK with adb) found by an agent 0.2.0 or newer. */
+  androidReady?: boolean;
+  android?: AndroidStatus | null;
+  /** managed: the agent (0.3.0+) installs and starts Appium itself; otherwise the user opens it. */
+  appium?: { managed: boolean; installed: boolean; install: { state: string; percent: number; message?: string } | null };
+  /** The server's agent version; updateAvailable when this agent is older (it never updates itself). */
+  latestVersion?: string;
+  updateAvailable?: boolean;
 };
 
 export type LocalAgentStatus = {
@@ -33,6 +71,7 @@ export type LocalAgentStatus = {
   agent: LocalAgentInfo | null;
   candidates?: LocalAgentInfo[];
   install: LocalAgentInstallState | null;
+  emulator?: AgentEmulatorState | null;
   /** Agent connected and Chromium installed: recordings can open on this PC. */
   ready: boolean;
 };
@@ -78,4 +117,6 @@ export const localAgentApi = {
   status: () => api.get<LocalAgentStatus & { ok: true }>('/api/local-agent/status'),
   install: () => api.post<{ ok: true; install: LocalAgentInstallState }>('/api/local-agent/install'),
   select: (agentId: string) => api.post<LocalAgentStatus & { ok: true }>('/api/local-agent/select', { agentId }),
+  startEmulator: (avd: string) => api.post<{ ok: true; emulator: AgentEmulatorState }>('/api/local-agent/android/emulator', { avd }),
+  stopEmulator: (serial: string) => api.post<{ ok: true }>('/api/local-agent/android/emulator/stop', { serial }),
 };
