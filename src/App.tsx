@@ -16,6 +16,7 @@ import { LocalAgentSetupDialog } from './components/localAgent/LocalAgentSetupDi
 import { Configuracion } from './pages/Configuracion';
 import { Usuarios } from './pages/Usuarios';
 import { TestDesign } from './pages/TestDesign';
+import { TestPlanning } from './pages/TestPlanning';
 import { ServiceCatalog } from './pages/ServiceCatalog';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
@@ -64,6 +65,7 @@ const LANDING_ORDER: { id: View; permissions: PermissionKey[] }[] = [
   { id: 'execute', permissions: ['tests.launch'] },
   { id: 'grabacion', permissions: ['recordings.view', 'recordings.create'] },
   { id: 'diseno', permissions: ['testdesign.view'] },
+  { id: 'planificacion', permissions: ['testplanning.view'] },
   { id: 'configuracion', permissions: ['projects.view'] },
   { id: 'servicios', permissions: ['services.view'] },
   { id: 'usuarios', permissions: ['admin.users', 'admin.roles'] },
@@ -167,6 +169,7 @@ function Workspace() {
     configuracion: 'Configuración',
     usuarios: 'Usuarios y roles',
     diseno: 'Diseño de pruebas',
+    planificacion: 'Planificación de pruebas',
     servicios: 'Catálogo de servicios',
   };
 
@@ -181,6 +184,7 @@ function Workspace() {
     configuracion: 'Administración de proyectos de automatización.',
     usuarios: 'Gestiona accesos, roles y permisos por proyecto',
     diseno: 'Genera casos con IA desde historias de Jira, edítalos y publícalos',
+    planificacion: 'Revisa los test-plan de cada HU en las ramas del repositorio',
     servicios: 'Servicios reutilizables (OTP, tokens) que llenan campos al ejecutar',
   };
 
@@ -281,6 +285,9 @@ function Workspace() {
           )}
           {view === 'diseno' && (
             <TestDesign />
+          )}
+          {view === 'planificacion' && (
+            <TestPlanning />
           )}
           {view === 'servicios' && (
             <ServiceCatalog />

@@ -1,9 +1,10 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertCircle, Boxes, Plus, FolderCog, KeyRound, Loader2, X, ChevronDown } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
 import { BentoCard } from '../../components/ui/BentoCard';
 import { ProjectDataCatalogManager } from './ProjectDataCatalogManager';
+import { RepositoryConfigSection, type RepositoryConfigSectionHandle } from './RepositoryConfigSection';
 import { MobileApkSection, type MobileApkValue } from './MobileApkSection';
 import { apkValidationErrors } from './mobile-apk';
 
@@ -108,6 +109,7 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
   const [trOrig, setTrOrig] = useState<Record<string, any> | null>(null);
   const [jiraError, setJiraError] = useState<string | null>(null);
   const [trError, setTrError] = useState<string | null>(null);
+  const repositoryRef = useRef<RepositoryConfigSectionHandle>(null);
 
   useEffect(() => {
     if (!editSlug) return;
@@ -226,6 +228,8 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
         if (tMod && trProjId.trim()) {
           try { await apiRequest(`/api/projects/${encodeURIComponent(slug)}/testrail`, { method: 'PUT', body: JSON.stringify({ projectIdTr: trProjId, suiteId: trSuiteId || null, sectionId: trSectionId || null, sessionId: trSessionId || null }) }); } catch (e: any) { setTrError(e.message); setSaving(false); return; }
         }
+        // The section shows its own error next to the fields.
+        if (await repositoryRef.current?.saveIfChanged()) { setSaving(false); return; }
         onCreated(res.slug, res.status, res.reasons ?? []);
         return;
       } else {
@@ -393,6 +397,7 @@ function NewProjectModal({ onClose, onCreated, editSlug }: { onClose: () => void
                 </div>
                 {trError && <div className="flex items-center gap-1.5 mt-2 text-[11px] text-[#E63946]"><AlertCircle size={12} /> {trError}</div>}
               </div>
+              <RepositoryConfigSection ref={repositoryRef} slug={editSlug!} />
             </div>
           )}
 
