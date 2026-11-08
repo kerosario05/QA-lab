@@ -1,3 +1,4 @@
+import { useAuth } from '../../auth/AuthContext';
 import { useState } from 'react';
 import { ChevronLeft, Lock, Bug, Check, AlertTriangle, Loader2 } from 'lucide-react';
 import { C, cn } from '../../constants/theme';
@@ -18,6 +19,7 @@ const initialFailedTests: FailedTest[] = [
 ];
 
 export function ExecutionClosure({ execution, onClose, onConfirm }: ExecutionClosureProps) {
+  const { user: authUser } = useAuth();
   const [tests, setTests] = useState<FailedTest[]>(initialFailedTests);
   const [notes, setNotes] = useState('');
   const [isConfirming, setIsConfirming] = useState(false);
@@ -170,7 +172,7 @@ export function ExecutionClosure({ execution, onClose, onConfirm }: ExecutionClo
               </div>
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-[#58646D]">Firmado por</span>
-                <span className="font-semibold text-[#1a1f2e]">Carlos M.</span>
+                <span className="font-semibold text-[#1a1f2e]">{authUser?.fullName || 'Usuario'}</span>
               </div>
             </div>
             <button

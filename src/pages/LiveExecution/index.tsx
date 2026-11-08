@@ -1,3 +1,4 @@
+import { useAuth } from '../../auth/AuthContext';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ChevronLeft, FileText, Lock, Pause, Square, CheckCircle2,
@@ -141,6 +142,7 @@ const mapLevel = (level?: string): DisplayLog['type'] => {
 };
 
 export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', onClose, onComplete, onCloseExecution }: LiveExecutionScreenProps) {
+  const { user: authUser } = useAuth();
   const [progress,        setProgress]        = useState(run?.progress ?? 0);
   const [total,           setTotal]           = useState(run?.total ?? 0);
   const [requested,       setRequested]       = useState(run?.total ?? 0);
@@ -1063,7 +1065,7 @@ export function LiveExecutionScreen({ run, closeLabel = 'Volver al dashboard', o
                 {run?.project || 'Proyecto'}
               </h2>
               <div className="text-[12px] text-white/60 mt-2 font-mono">
-                Disparado por {run?.triggered || 'Carlos M.'} · iniciado {formatStartedAt(run?.startedAt)}
+                Disparado por {run?.triggered || authUser?.fullName || 'Usuario'} · iniciado {formatStartedAt(run?.startedAt)}
               </div>
 
               {/* Barra de progreso */}

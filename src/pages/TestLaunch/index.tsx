@@ -1,3 +1,4 @@
+import { useAuth } from '../../auth/AuthContext';
 import { JiraWorkflowApplications } from '../../components/JiraWorkflowApplications';
 import {JiraScenarioReview,jiraReviewBlockingErrors,jiraReviewBlockingMessages,JiraReviewErrorNotice} from './JiraScenarioReview';
 import {JiraScenarioStepEditor,applyReviewedLaunchScenario} from './JiraScenarioStepEditor';
@@ -167,6 +168,8 @@ export function getAutoExpandedCaseId(input: {
 }
 
 export function TestLaunch({ onLaunch }: TestLaunchProps) {
+  const { user: authUser } = useAuth();
+  const launchedBy = authUser?.fullName || 'Usuario';
   // Normalize TestRail project name to appSlug for automation framework
   const normalizeAppSlug = (name: string): string =>
     name
@@ -1529,7 +1532,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         id: result.jobId,
         jobId: result.jobId,
         project: 'App Conversacional',
-        triggered: 'Carlos M.',
+        triggered: launchedBy,
         startedAt: 'Hace 0m',
         progress: 0,
         total: scenariosToLaunch.length,
@@ -2203,7 +2206,7 @@ export function TestLaunch({ onLaunch }: TestLaunchProps) {
         }))));
         onLaunch({
           id: launchResult.discoveryJobId, jobId: launchResult.discoveryJobId,
-          project: proj?.name || 'Proyecto', triggered: 'Carlos M.', startedAt: 'Hace 0m',
+          project: proj?.name || 'Proyecto', triggered: launchedBy, startedAt: 'Hace 0m',
           progress: 0, total: totalSelected, completed: 0, passed: 0, failed: 0,
           currentTest: '', eta: '—', status: 'running', activeScenarios,
         });
@@ -2267,7 +2270,7 @@ try {
           id: jobId,
           jobId,
           project: proj?.name || 'Proyecto',
-          triggered: 'Carlos M.',
+          triggered: launchedBy,
           startedAt: 'Hace 0m',
           progress: 0,
           total: totalSelected,
@@ -2288,7 +2291,7 @@ try {
           id: `launch-${launchResult.launchId}`,
           jobId: `launch-${launchResult.launchId}`,
           project: proj?.name || 'Proyecto',
-          triggered: 'Carlos M.',
+          triggered: launchedBy,
           startedAt: 'Hace 0m',
           progress: 0,
           total: launchResult.publishedCases?.length || totalSelected,

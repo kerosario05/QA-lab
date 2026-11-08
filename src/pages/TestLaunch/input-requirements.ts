@@ -251,6 +251,16 @@ function firstStepMentioning(labels: string[], foldedSteps: Set<string>[]): numb
   return Infinity;
 }
 
+/** Indexes of every step that mentions every significant word of one of the labels. */
+function stepsMentioning(labels: string[], foldedSteps: Set<string>[]): number[] {
+  const candidates = labels.map(significantWords).filter((words) => words.length > 0);
+  const matches: number[] = [];
+  foldedSteps.forEach((step, index) => {
+    if (candidates.some((words) => words.every((word) => step.has(word)))) matches.push(index);
+  });
+  return matches;
+}
+
 function presentationLabels(item: RuntimeInputPresentation): string[] {
   const { requirement } = item;
   return [item.displayLabel, requirement.label, requirement.semanticField, requirement.key.split('.').at(-1)?.replace(/[_-]+/g, ' ')]
@@ -265,7 +275,21 @@ function presentationLabels(item: RuntimeInputPresentation): string[] {
 export function orderRuntimeInputsByStepOrder(groups: RuntimeInputGroups, steps: string[] | undefined): RuntimeInputGroups {
   if (!steps || steps.length === 0) return groups;
   const foldedSteps = steps.map((step) => new Set(foldText(step).split(' ')));
-  const positionOf = (item: RuntimeInputPresentation) => firstStepMentioning(presentationLabels(item), foldedSteps);
+  // Inputs whose labels name the same steps (the same field label twice, e.g. company and related-person
+  // identification) take those steps in order: the lowest key gets the first mention, the next the second.
+  const everyInput = [...groups.general, ...groups.groups.flatMap((group) => group.requirements)];
+  const keyNumber = (item: RuntimeInputPresentation) => Number(/(\d+)$/.exec(item.requirement.key)?.[1] ?? 0);
+  const assigned = new Map<RuntimeInputPresentation, number>();
+  const used = new Map<string, number>();
+  [...everyInput].sort((a, b) => keyNumber(a) - keyNumber(b)).forEach((item) => {
+    const matches = stepsMentioning(presentationLabels(item), foldedSteps);
+    if (matches.length === 0) { assigned.set(item, Infinity); return; }
+    const signature = matches.join(',');
+    const occurrence = used.get(signature) ?? 0;
+    used.set(signature, occurrence + 1);
+    assigned.set(item, matches[Math.min(occurrence, matches.length - 1)]);
+  });
+  const positionOf = (item: RuntimeInputPresentation) => assigned.get(item) ?? firstStepMentioning(presentationLabels(item), foldedSteps);
   const stableSort = <T,>(items: T[], position: (item: T) => number): T[] =>
     items.map((item, index) => ({ item, index, position: position(item) }))
       .sort((a, b) => (a.position === b.position ? a.index - b.index : a.position < b.position ? -1 : 1))

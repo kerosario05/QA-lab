@@ -63,6 +63,11 @@ function formatAction(description: string): string {
   return action;
 }
 
+/** Jira step text as written, with straight quotes shown as « ». */
+function quoteStep(text: string): string {
+  return text.replace(/"([^"]+)"/g, '«$1»');
+}
+
 function formatNecessaryMessage(entry: LiveLogEntry): string | null {
   const original = entry.msg.trim();
   const scenarioStart = original.match(/^\[scenario-preview\]\s+case_started:\s*([^\s]+)\s+\((\d+)\/(\d+)\)\s*(.*)$/);
@@ -85,10 +90,20 @@ function formatNecessaryMessage(entry: LiveLogEntry): string | null {
         failedReason?: unknown;
       };
       if (event.type === 'case_started') return null;
+      // Jira semantic engine: one line per finished step, with its duration.
+      const progress = event as { executionEngine?: unknown; phase?: unknown; totalSteps?: unknown; stepText?: unknown; durationMs?: unknown };
+      if (event.type === 'step_progress' && progress.executionEngine === 'jira_semantic'
+        && typeof event.stepIndex === 'number' && (progress.phase === 'passed' || progress.phase === 'failed')) {
+        const total = typeof progress.totalSteps === 'number' ? `/${progress.totalSteps}` : '';
+        const text = typeof progress.stepText === 'string' ? ` · ${quoteStep(progress.stepText)}` : '';
+        const seconds = typeof progress.durationMs === 'number' ? ` · ${(progress.durationMs / 1000).toFixed(1)} s` : '';
+        return `Paso ${event.stepIndex}${total} · ${progress.phase === 'passed' ? 'Aprobado' : 'Fallido'}${text}${seconds}`;
+      }
       if (event.type === 'case_finished') {
         if (event.status === 'failed') {
           const caseId = typeof event.caseId === 'string' ? event.caseId : 'Escenario';
-          const step = typeof event.failedAtStep === 'number' ? ` · paso ${event.failedAtStep}` : '';
+          const stepName = typeof (event as {failedStepText?: unknown}).failedStepText === 'string' ? ` · ${quoteStep((event as {failedStepText: string}).failedStepText)}` : '';
+          const step = typeof event.failedAtStep === 'number' ? ` · paso ${event.failedAtStep}${stepName}` : '';
           const target = typeof event.failedTarget === 'string' ? ` · ${event.failedTarget}` : '';
           const reason = typeof event.failedReason === 'string' && event.failedReason === 'target_not_found'
             ? ' · destino no encontrado'
