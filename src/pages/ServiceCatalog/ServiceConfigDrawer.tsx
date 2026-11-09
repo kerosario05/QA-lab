@@ -337,7 +337,7 @@ export function ServiceConfigDrawer({ service, projects, onClose, onSaved }: {
               </div>
             ) : (
               <div className="flex items-start gap-1.5 rounded-xl bg-[#E63946]/5 px-3 py-2 text-[12px] text-[#E63946]">
-                <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {testResult.text}
+                <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {'text' in testResult ? testResult.text : ''}
               </div>
             ))}
           </section>

@@ -2,6 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronUp, Database, ListChecks, XCircle } from 'lucide-react';
 import type { ProjectListItem } from '../Configuracion';
 import { ReadyCedulasPanel } from './ReadyCedulasPanel';
+import { PortalCredentialsPanel } from './PortalCredentialsPanel';
+import { CancellationRunPanel } from './CancellationRunPanel';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 type DataConfig = { enabled: boolean; database: string; savedDatabase: string; databases: string[] };
@@ -26,7 +28,7 @@ export function useLegacyServices(projects: ProjectListItem[]): { cards: ReactNo
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!openService || openService === 'ready-cedulas' || enabledProjects.length === 0) return;
+    if (!openService || openService === 'ready-cedulas' || openService === 'cancellation-run' || enabledProjects.length === 0) return;
     let alive = true;
     setLoading(true); setError('');
     const load = async () => {
@@ -86,7 +88,11 @@ export function useLegacyServices(projects: ProjectListItem[]): { cards: ReactNo
       </div>
       <h2 className="text-[16px] font-semibold text-[#1a1f2e]">{service.title}</h2>
       <p className="mt-1 text-[12px] leading-relaxed text-[#58646D]">{service.description}</p>
-      <div className="mt-auto flex justify-end border-t border-[#E8EBEC] pt-4">
+      <div className="mt-auto flex flex-wrap justify-end gap-2 border-t border-[#E8EBEC] pt-4">
+        {service.id === 'cancellation' && <button type="button" onClick={() => setOpenService(openService === 'cancellation-run' ? '' : 'cancellation-run')} aria-expanded={openService === 'cancellation-run'}
+          className={'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold transition ' + (openService === 'cancellation-run' ? 'bg-[#1a1f2e] text-white' : 'bg-[#48A157] text-white hover:opacity-90')}>
+          Ejecutar {openService === 'cancellation-run' ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>}
         <button type="button" onClick={() => setOpenService(open ? '' : service.id)} aria-expanded={open}
           className={'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold transition ' + (open ? 'bg-[#1a1f2e] text-white' : 'border border-[#E8EBEC] bg-white text-[#1a1f2e] hover:border-[#1a1f2e]/40')}>
           {service.id === 'ready-cedulas' ? 'Abrir' : 'Asignar a proyectos'} {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
@@ -97,7 +103,9 @@ export function useLegacyServices(projects: ProjectListItem[]): { cards: ReactNo
 
   const detail = <>
     {openService === 'ready-cedulas' && <ReadyCedulasPanel />}
-    {openService && openService !== 'ready-cedulas' && <div className="rounded-2xl border border-[#E8EBEC] bg-white p-5"><div className="mb-4 flex items-center justify-between"><div><h3 className="text-[13px] font-semibold text-[#1a1f2e]">Asignar {services.find(service => service.id === openService)?.title}</h3><p className="text-[11px] text-[#8B999D]">Activa el servicio por proyecto.</p></div>{loading && <span className="text-[11px] text-[#8B999D]">Cargando…</span>}</div><div className="space-y-2">{enabledProjects.map(project => {
+    {openService === 'cancellation-run' && <CancellationRunPanel />}
+    {(openService === 'data-cedulas' || openService === 'cancellation') && <PortalCredentialsPanel />}
+    {openService && openService !== 'ready-cedulas' && openService !== 'cancellation-run' && <div className="rounded-2xl border border-[#E8EBEC] bg-white p-5"><div className="mb-4 flex items-center justify-between"><div><h3 className="text-[13px] font-semibold text-[#1a1f2e]">Asignar {services.find(service => service.id === openService)?.title}</h3><p className="text-[11px] text-[#8B999D]">Activa el servicio por proyecto.</p></div>{loading && <span className="text-[11px] text-[#8B999D]">Cargando…</span>}</div><div className="space-y-2">{enabledProjects.map(project => {
       const data = dataByProject[project.slug]; const cancellation = cancellationByProject[project.slug]; const enabled = openService === 'data-cedulas' ? data?.enabled === true : cancellation?.enabled === true; const available = openService === 'data-cedulas' ? Boolean(data) : cancellation?.available !== false;
       return <div key={project.slug} className="rounded-xl border border-[#E8EBEC] p-3"><div className="flex flex-wrap items-center justify-between gap-3"><label className="flex items-center gap-2 text-[12px] font-medium text-[#1a1f2e]"><input type="checkbox" checked={enabled} disabled={loading || !available} onChange={event => { if (openService === 'data-cedulas') setDataByProject(previous => ({ ...previous, [project.slug]: { ...previous[project.slug], enabled: event.target.checked } })); else setCancellationByProject(previous => ({ ...previous, [project.slug]: { ...previous[project.slug], enabled: event.target.checked } })); }} /><span>{project.name}</span><span className="text-[10px] text-[#8B999D]">{project.slug}</span></label>{openService === 'data-cedulas' && data && <button type="button" onClick={() => void saveData(project.slug)} disabled={saving === project.slug || (data.enabled && !data.database)} className="rounded-full bg-[#1a1f2e] px-3 py-1.5 text-[10px] font-semibold text-white disabled:opacity-50">{saving === project.slug ? 'Guardando…' : 'Guardar'}</button>}{openService === 'cancellation' && cancellation?.available && <button type="button" onClick={() => void saveCancellation(project.slug)} disabled={saving === project.slug} className="rounded-full bg-[#48A157] px-3 py-1.5 text-[10px] font-semibold text-white disabled:opacity-50">{saving === project.slug ? 'Guardando…' : 'Guardar'}</button>}</div>{openService === 'data-cedulas' && data?.enabled && <div className="mt-3 max-w-sm pl-6"><label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[#8B999D]" htmlFor={`tns-${project.slug}`}>Base TNS</label><select id={`tns-${project.slug}`} value={data.database} onChange={event => setDataByProject(previous => ({ ...previous, [project.slug]: { ...previous[project.slug], database: event.target.value } }))} className="w-full rounded-lg border border-[#E8EBEC] bg-white px-3 py-2 text-[12px]"><option value="">Selecciona una base</option>{data.databases.map(alias => <option key={alias} value={alias}>{alias}</option>)}</select></div>}</div>;
     })}{enabledProjects.length === 0 && <p className="text-[12px] text-[#8B999D]">No hay proyectos habilitados.</p>}</div>{error && <p role="alert" className="mt-3 text-[12px] text-[#E63946]">{error}</p>}</div>}

@@ -10,7 +10,12 @@ export function documentSetComplete(value: string): boolean {
   } catch { return false; }
 }
 type DocumentRow = { id: string; label: string; fileRef: string };
-const newRowId = () => crypto.randomUUID();
+// `crypto.randomUUID` only exists in secure contexts (https/localhost); the panel is also served over plain http.
+// The id is only a React row key, so a random fallback is enough.
+const newRowId = () => {
+  try { if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID(); } catch { /* insecure context */ }
+  return `row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
 const rowsOf = (value: string): DocumentRow[] => {
   try { const parsed = JSON.parse(value); return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
     ? Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
