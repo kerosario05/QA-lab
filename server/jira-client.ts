@@ -241,9 +241,10 @@ export class JiraClient {
     issueType?: string;
     labels?: string[];
     assigneeAccountId?: string;
+    reporterAccountId?: string;
     customFields?: Record<string, unknown>;
   }): Promise<{ key: string; id: string; self: string }> {
-    const { projectKey, summary, description, issueType = 'Bug', labels = [], assigneeAccountId, customFields } = payload;
+    const { projectKey, summary, description, issueType = 'Bug', labels = [], assigneeAccountId, reporterAccountId, customFields } = payload;
 
     // Use plain string for v2 API (ADF only works with v3)
     const descString = typeof description === 'string'
@@ -267,6 +268,20 @@ export class JiraClient {
     // Spread custom fields (field IDs mapped by createmeta)
     if (customFields) {
       Object.assign(fields, customFields);
+    }
+
+    // Reporter defaults to the API token's owner; set the real tester. Needs "Modify Reporter" permission: if Jira
+    // rejects it, create the issue again without it rather than losing the defect.
+    if (reporterAccountId) {
+      try {
+        return await this.request<{ key: string; id: string; self: string }>('/rest/api/2/issue', {
+          method: 'POST',
+          body: JSON.stringify({ fields: { ...fields, reporter: { accountId: reporterAccountId } } }),
+        });
+      } catch (err: any) {
+        if (!(err instanceof JiraClientError && err.status === 400)) throw err;
+        console.log('[jira-api] createIssue retrying without reporter (reporter field rejected or 400 unrelated)');
+      }
     }
 
     const fieldKeys = Object.keys(fields);
@@ -301,6 +316,14 @@ export class JiraClient {
       }
       throw err;
     }
+  }
+
+  /** Jira accountId of the user with exactly this email, if visible to the API token. */
+  async findAccountIdByEmail(email: string): Promise<string | undefined> {
+    const data = await this.request<any>(`/rest/api/2/user/search?${new URLSearchParams({ query: email }).toString()}`);
+    const users: any[] = Array.isArray(data) ? data : (data?.values ?? []);
+    return users.find((u) => String(u.emailAddress ?? '').toLowerCase() === email.toLowerCase())?.accountId
+      ?? (users.length === 1 ? users[0].accountId : undefined);
   }
 
   async searchUsers(query: string, projectKey: string): Promise<Array<{ accountId: string; displayName: string; emailAddress?: string; avatarUrl?: string }>> {

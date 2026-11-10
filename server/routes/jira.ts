@@ -149,7 +149,17 @@ router.get('/users/search', async (req: Request, res: Response) => {
 
 // POST /api/jira/issues/upload-defects
 router.post('/issues/upload-defects', async (req: Request, res: Response) => {
-  const { appSlug, sourceIssueKey, jiraProjectKey, defects, assigneeAccountId } = req.body ?? {};
+  const { appSlug, sourceIssueKey, jiraProjectKey, defects, assigneeAccountId, reporterEmail } = req.body ?? {};
+  // Reporter = the QA Lab user running the tests, not the owner of the shared Jira token.
+  let reporterAccountId: string | undefined;
+  if (typeof reporterEmail === 'string' && reporterEmail.includes('@')) {
+    try {
+      reporterAccountId = await client.findAccountIdByEmail(reporterEmail.trim());
+      console.log(`[jira-defects] reporter lookup found=${reporterAccountId ? 'yes' : 'no'}`);
+    } catch (e: any) {
+      console.log(`[jira-defects] reporter lookup failed reason=${e?.message}`);
+    }
+  }
 
   const projectKey = jiraProjectKey || process.env.JIRA_DEFECT_PROJECT_KEY || process.env.JIRA_PROJECT_KEY || '';
   if (!projectKey) {
@@ -193,32 +203,46 @@ router.post('/issues/upload-defects', async (req: Request, res: Response) => {
   // Resolve custom fields by name from createmeta for the target issue type
   const normField = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
   const fieldMappings: Record<string, { id: string; name: string; type: string } | undefined> = {};
+  // The project's defect screen also has option fields (Estado defecto, Tipos de Impacto, Origen defecto) and text fields
+  // (Nombre general, Pasos para reproducir); Jira rejects the create with "Campos Requeridos" when they stay empty.
+  let allFieldsForDefects: Array<{ id: string; name: string; schema?: { type: string }; allowedValues?: any[] }> = [];
+  const optionFor = (fieldName: string, wanted: string | undefined): { value: string } | undefined => {
+    if (!wanted) return undefined;
+    const field = allFieldsForDefects.find((f) => normField(f.name) === normField(fieldName));
+    const allowed = field?.allowedValues?.map((v: any) => String(v.value ?? v.name ?? '')) ?? [];
+    const hit = allowed.find((v) => normField(v) === normField(wanted));
+    return hit ? { value: hit } : undefined;
+  };
+  const impactFor = (severity?: string) => ({ critical: 'Bloqueante', high: 'Alto', medium: 'Medio', low: 'Bajo' } as Record<string, string>)[String(severity ?? '').toLowerCase()];
   try {
     const meta = await client.getIssueCreateMetadata(projectKey);
     const issueTypeMeta = meta?.projects?.[0]?.issuetypes?.find((t: any) => t.name === issueType);
     const rawFields = (issueTypeMeta?.fields ?? {}) as Record<string, any>;
 
     // createmeta returns fields as object { customfield_X: { name, required, schema } }, not array
-    const allFields: Array<{ id: string; name: string; schema?: { type: string }; required: boolean }> =
+    const allFields: Array<{ id: string; name: string; schema?: { type: string }; required: boolean; allowedValues?: any[] }> =
       Array.isArray(rawFields)
         ? rawFields.map((f: any) => ({
             id: f.fieldId ?? f.id ?? f.key,
             name: f.name,
             schema: f.schema,
             required: f.required,
+            allowedValues: f.allowedValues,
           }))
         : Object.entries(rawFields).map(([id, f]: [string, any]) => ({
             id,
             name: f.name,
             schema: f.schema,
             required: f.required,
+            allowedValues: f.allowedValues,
           }));
+    allFieldsForDefects = allFields;
 
     const fieldNames = allFields.map(f => `${f.name}(${f.id},type=${f.schema?.type ?? 'string'})`).join(', ');
     console.log(`[jira-api] createmeta fields issueType=${issueType} count=${allFields.length} fields=${fieldNames.substring(0, 500)}`);
 
     // Match fields by normalized name
-    const wantedNames = ['Descripción del defecto', 'Resultado esperado', 'Resultado real'];
+    const wantedNames = ['Descripción del defecto', 'Resultado esperado', 'Resultado real', 'Nombre general del defecto', 'Pasos para reproducir', 'Estado defecto', 'Tipos de Impacto', 'Origen defecto'];
     for (const wanted of wantedNames) {
       const nw = normField(wanted);
       const match = allFields.find(f => normField(f.name) === nw);
@@ -233,7 +257,7 @@ router.post('/issues/upload-defects', async (req: Request, res: Response) => {
     console.log(`[jira-api] createmeta fields lookup failed reason=${metaErr.message}`);
   }
 
-  const created: Array<{ defectId: string; jiraIssueKey: string; jiraIssueUrl: string }> = [];
+  const created: Array<{ defectId: string; jiraIssueKey: string; jiraIssueUrl: string; evidenceAttached?: boolean; attachmentStatus?: string; attachmentName?: string; attachmentReasonCode?: string }> = [];
   const failed: Array<{ defectId: string; reason: string }> = [];
   const skipped: Array<{ defectId: string; reason: string; jiraIssueKey?: string }> = [];
   const warnings: Array<{ defectId: string; jiraIssueKey: string; type: string; reason: string }> = [];
@@ -281,7 +305,7 @@ router.post('/issues/upload-defects', async (req: Request, res: Response) => {
 
     try {
       // Build custom fields from createmeta mappings
-      const customFields: Record<string, string> = {};
+      const customFields: Record<string, unknown> = {};
       const descField = fieldMappings['Descripción del defecto'];
       const expectedField = fieldMappings['Resultado esperado'];
       const actualField = fieldMappings['Resultado real'];
@@ -295,6 +319,20 @@ router.post('/issues/upload-defects', async (req: Request, res: Response) => {
       if (actualField) {
         customFields[actualField.id] = d.failureReason || 'El escenario falló durante la ejecución automatizada y requiere revisión.';
       }
+      const nameField = fieldMappings['Nombre general del defecto'];
+      if (nameField) customFields[nameField.id] = d.title || d.scenarioTitle || d.scenarioId || 'Defecto QA Lab';
+      const stepsField = fieldMappings['Pasos para reproducir'];
+      if (stepsField) customFields[stepsField.id] = (/Paso fallido:\s*([^\r\n]+)/i.exec(defectDesc)?.[1] ?? '').trim() || defectDesc.split(/\r?\n/)[0] || 'Ver la descripción del defecto.';
+      const stateField = fieldMappings['Estado defecto'];
+      const stateValue = optionFor('Estado defecto', 'Nuevo');
+      if (stateField && stateValue) customFields[stateField.id] = stateValue;
+      const impactField = fieldMappings['Tipos de Impacto'];
+      const impactValue = optionFor('Tipos de Impacto', impactFor(d.severity));
+      if (impactField && impactValue) customFields[impactField.id] = impactValue;
+      // Where the defect comes from is a QA decision; default to the env value so it can be changed without code.
+      const originField = fieldMappings['Origen defecto'];
+      const originValue = optionFor('Origen defecto', process.env.JIRA_DEFECT_ORIGIN || 'Código');
+      if (originField && originValue) customFields[originField.id] = originValue;
 
       if (Object.keys(customFields).length > 0) {
         const applied = Object.entries(fieldMappings).filter(([, v]) => v && customFields[v.id]).map(([k]) => k).join(',');
@@ -308,12 +346,34 @@ router.post('/issues/upload-defects', async (req: Request, res: Response) => {
         issueType,
         labels: d.scenarioId ? [d.scenarioId.toLowerCase().replace(/[^a-z0-9-]/g, '-')] : [],
         assigneeAccountId,
+        reporterAccountId,
         customFields,
       });
 
       const issueUrl = `${process.env.JIRA_BASE_URL?.replace(/\/+$/, '')}/browse/${issue.key}`;
-      created.push({ defectId, jiraIssueKey: issue.key, jiraIssueUrl: issueUrl });
+      const createdEntry: (typeof created)[number] = { defectId, jiraIssueKey: issue.key, jiraIssueUrl: issueUrl };
+      created.push(createdEntry);
       console.log(`[jira-defects] created defectId=${defectId} issueKey=${issue.key}`);
+
+      // Attach the evidence PDF of THIS defect's scenario only: the engine owns the evidence, so it builds and attaches it.
+      try {
+        const evidenceRes = await fetch(`${engineBaseUrl()}/api/jira/issues/${encodeURIComponent(issue.key)}/retry-evidence`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...engineHeaders() },
+          body: JSON.stringify({ sourceIssueKey, defectId }),
+        });
+        const evidence = await evidenceRes.json().catch(() => ({})) as Record<string, any>;
+        createdEntry.evidenceAttached = evidence.attachmentStatus === 'attached';
+        createdEntry.attachmentStatus = evidence.attachmentStatus ?? 'upload_failed';
+        createdEntry.attachmentName = evidence.attachmentName;
+        createdEntry.attachmentReasonCode = evidence.attachmentReasonCode ?? (evidenceRes.ok ? undefined : `engine_${evidenceRes.status}`);
+        console.log(`[jira-defects] evidence defectId=${defectId} issueKey=${issue.key} status=${createdEntry.attachmentStatus} reason=${createdEntry.attachmentReasonCode ?? 'none'}`);
+      } catch (evidenceErr: any) {
+        createdEntry.evidenceAttached = false;
+        createdEntry.attachmentStatus = 'upload_failed';
+        createdEntry.attachmentReasonCode = evidenceErr?.message ?? 'evidence_request_failed';
+        console.log(`[jira-defects] evidence request failed defectId=${defectId} reason=${createdEntry.attachmentReasonCode}`);
+      }
 
       // Add comment with QA context
       const commentBody = [

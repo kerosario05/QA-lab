@@ -24,6 +24,7 @@ import {
   isSelectedForPublish,
   JIRA_PUBLISH_ENABLED,
   moveItem,
+  moveItemTo,
   pendingData,
   scenarioReviewWarnings,
   PRIORITY_LABELS,
@@ -135,15 +136,27 @@ function StepsTable({
 
   return (
     <div className="rounded-xl border border-[#2A3140] overflow-hidden bg-[#12161E]">
-      <div className="grid grid-cols-[32px_minmax(0,1fr)_minmax(0,1fr)_96px] bg-[#171C26] text-[10px] uppercase tracking-wider text-[#8B99A6] font-semibold">
+      <div className="grid grid-cols-[56px_minmax(0,1fr)_minmax(0,1fr)_96px] bg-[#171C26] text-[10px] uppercase tracking-wider text-[#8B99A6] font-semibold">
         <div className="px-2 py-2 text-center">#</div>
         <div className="px-2 py-2">Acción</div>
         <div className="px-2 py-2">Resultado esperado</div>
         <div />
       </div>
       {steps.map((step, index) => (
-        <div key={index} className="grid grid-cols-[32px_minmax(0,1fr)_minmax(0,1fr)_96px] border-t border-[#232A38] items-start">
-          <div className="px-2 py-2.5 text-center text-[11px] font-semibold text-[#8B99A6]">{index + 1}</div>
+        <div key={index} className="grid grid-cols-[56px_minmax(0,1fr)_minmax(0,1fr)_96px] border-t border-[#232A38] items-start">
+          <div className="px-1 py-2 text-center text-[11px] font-semibold text-[#8B99A6]">
+            {readOnly ? index + 1 : (
+              <select
+                value={index}
+                title="Mover este paso a otra posición"
+                aria-label={`Posición del paso ${index + 1}`}
+                onChange={(e) => onChange(moveItemTo(steps, index, Number(e.target.value)))}
+                className="w-full rounded bg-[#171C26] border border-[#2A3140] text-[11px] text-[#E6E9EF] py-1 cursor-pointer"
+              >
+                {steps.map((_, position) => <option key={position} value={position}>{position + 1}</option>)}
+              </select>
+            )}
+          </div>
           <div className="p-1.5 min-w-0">
             <textarea
               value={step.action}

@@ -20,6 +20,8 @@ export interface UploadDefectsPayload {
   jiraProjectKey: string;
   defects: UploadDefectInput[];
   assigneeAccountId?: string;
+  /** Email of the QA Lab user running the tests; the BFF resolves it to the Jira reporter. */
+  reporterEmail?: string;
 }
 
 export interface UploadDefectsResponse {

@@ -3,6 +3,7 @@ import { ClipboardList, ArrowLeft, ExternalLink, Check, Upload, User, Loader2 } 
 import { ChecklistFetchError, getChecklist, type ChecklistResponse, type Defect } from '../../services/checklist';
 import { uploadDefectsToJira, searchJiraUsers, type JiraUser } from '../../services/jira';
 import { isNeutralChecklistIdentity } from './route';
+import { useAuth } from '../../auth/AuthContext';
 
 /* ── Helpers ── */
 const sevLabel: Record<string, string> = { critical: 'Crítica', high: 'Alta', medium: 'Media', low: 'Baja' };
@@ -75,6 +76,7 @@ function getDefectSummary(d: Defect): string {
 interface Props { issueKey: string; jobId?: string; scenarioIds?: string[]; onBack: () => void; }
 
 export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }: Props) {
+  const { user: authUser } = useAuth();
   const [data, setData] = useState<ChecklistResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<'not_found' | 'error' | null>(null);
@@ -164,7 +166,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
 
   // ── Jira upload state ──
   const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<{ created: number; failed: number; skipped: number; evidenceAttached: number; evidenceNotAvailable: number; evidenceFailed: number } | null>(null);
+  const [uploadResult, setUploadResult] = useState<{ created: number; failed: number; skipped: number; evidenceAttached: number; evidenceNotAvailable: number; evidenceFailed: number; failureReason?: string } | null>(null);
 
   // ── localStorage helpers for cross-refresh protection ──
   const lsKey = `qa-lab:jira-defect-keys:${issueKey}`;
@@ -293,6 +295,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
         };
       }),
       assigneeAccountId: selectedAssignee?.accountId,
+      reporterEmail: authUser?.email ?? undefined,
     };
 
     try {
@@ -316,11 +319,12 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
         evidenceAttached,
         evidenceNotAvailable,
         evidenceFailed,
+        failureReason: result.failed[0]?.reason,
       });
 
       console.log(`[defects:jira] uploaded created=${result.created.length} failed=${result.failed.length} skipped=${result.skipped.length + alreadyUploaded.length}`);
     } catch (err: any) {
-      setUploadResult({ created: 0, failed: toUpload.length, skipped: alreadyUploaded.length, evidenceAttached: 0, evidenceNotAvailable: 0, evidenceFailed: 0 });
+      setUploadResult({ created: 0, failed: toUpload.length, skipped: alreadyUploaded.length, evidenceAttached: 0, evidenceNotAvailable: 0, evidenceFailed: 0, failureReason: err?.message });
       console.log(`[defects:jira] failed error=${err.message}`);
     } finally {
       setUploading(false);
@@ -507,7 +511,7 @@ export default function DefectChecklist({ issueKey, jobId, scenarioIds, onBack }
               if (uploadResult.evidenceFailed > 0) successParts.push(`${uploadResult.evidenceFailed} adjuntos fallidos`);
               if (uploadResult.skipped > 0) successParts.push(`${uploadResult.skipped} ya existían`);
               const successText = successParts.join(" · ");
-              const failText = `${uploadResult.created} creado(s), ${uploadResult.failed} fallido(s)${uploadResult.skipped > 0 ? `, ${uploadResult.skipped} omitido(s)` : ""}`;
+              const failText = `${uploadResult.created} creado(s), ${uploadResult.failed} fallido(s)${uploadResult.skipped > 0 ? `, ${uploadResult.skipped} omitido(s)` : ""}${uploadResult.failureReason ? ` · Motivo: ${uploadResult.failureReason.slice(0, 300)}` : ""}`;
               return (
               <>
                 <div className={`rounded-[16px] px-5 py-3 mb-2 text-[13px] font-semibold shadow-sm flex items-center gap-3 ${uploadResult.failed > 0 ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'}`}>

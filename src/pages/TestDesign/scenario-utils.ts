@@ -70,6 +70,14 @@ export function duplicateScenario(source: TestDesignScenario): TestDesignScenari
   };
 }
 
+/** Moves the item at `from` to position `to` (both 0-based) in one step. */
+export function moveItemTo<T>(items: T[], from: number, to: number): T[] {
+  if (from === to || to < 0 || to >= items.length || from < 0 || from >= items.length) return items;
+  const next = [...items];
+  next.splice(to, 0, next.splice(from, 1)[0]);
+  return next;
+}
+
 export function moveItem<T>(items: T[], index: number, delta: -1 | 1): T[] {
   const target = index + delta;
   if (target < 0 || target >= items.length) return items;

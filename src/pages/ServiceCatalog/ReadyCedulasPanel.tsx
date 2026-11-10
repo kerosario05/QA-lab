@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { PortalCredentialsPanel } from './PortalCredentialsPanel';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
-type Status = { running: boolean; target: number | null; startedAt: string | null; finishedAt: string | null; approved: number; rejected: number; lastLog: string };
+type Status = { running: boolean; target: number | null; startedAt: string | null; finishedAt: string | null; approved: number; added?: number; rejected: number; lastLog: string };
 
 async function call(path: string, init?: RequestInit) {
   const response = await fetch(`${API_BASE}/api/data-cedulas${path}`, init);
@@ -65,16 +65,16 @@ export function ReadyCedulasPanel() {
 
   const credentialsAttention = /credentials_rejected/.test(status?.lastLog ?? '') ? 'El Portal rechazó las credenciales guardadas. Vuelve a escribirlas y genera de nuevo.'
     : /credenciales del Portal/i.test(error) ? 'Faltan las credenciales del Portal: guárdalas aquí para generar cédulas.' : undefined;
-  const percent = status && status.target ? Math.min(100, Math.round((status.approved / status.target) * 100)) : 0;
+  const percent = status && status.target ? Math.min(100, Math.round(((status.added ?? status.approved) / status.target) * 100)) : 0;
   return <div className="space-y-4">
   <PortalCredentialsPanel attention={credentialsAttention} />
   <div className="rounded-2xl border border-[#E8EBEC] bg-white p-5">
     <div className="mb-4"><h3 className="text-[13px] font-semibold text-[#1a1f2e]">Generar cédulas listas</h3><p className="text-[11px] text-[#8B999D]">Renueva la fecha de consulta de cada cédula en la base de buró (con respaldo) y deja solo las que el motor de decisión aprueba.</p></div>
     <div className="grid max-w-3xl gap-3 md:grid-cols-2">
-      <label className="text-[10px] font-semibold uppercase tracking-wide text-[#8B999D]">Cantidad<input type="number" min={1} max={5000} value={target} onChange={event => setTarget(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-[#E8EBEC] bg-white px-3 py-2 text-[12px] font-normal normal-case text-[#1a1f2e]" /></label>
+      <label className="text-[10px] font-semibold uppercase tracking-wide text-[#8B999D]">Cantidad a agregar al stock<input type="number" min={1} max={5000} value={target} onChange={event => setTarget(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-[#E8EBEC] bg-white px-3 py-2 text-[12px] font-normal normal-case text-[#1a1f2e]" /></label>
       <label className="text-[10px] font-semibold uppercase tracking-wide text-[#8B999D]">Base TNS<select value={database} onChange={event => setDatabase(event.target.value)} className="mt-1 w-full rounded-lg border border-[#E8EBEC] bg-white px-3 py-2 text-[12px] font-normal normal-case text-[#1a1f2e]"><option value="">Selecciona una base</option>{databases.map(alias => <option key={alias} value={alias}>{alias}</option>)}</select></label>
     </div>
-    <label className="mt-3 flex items-center gap-2 text-[11px] text-[#1a1f2e]"><input type="checkbox" checked={renew} onChange={event => setRenew(event.target.checked)} />Renovar desde cero (vuelve a preparar y validar todas)</label>
+    <label className="mt-3 flex items-center gap-2 text-[11px] text-[#1a1f2e]"><input type="checkbox" checked={renew} onChange={event => setRenew(event.target.checked)} />Renovar desde cero (aparta el stock actual y vuelve a preparar y validar todas; lo normal es NO marcarlo)</label>
     <div className="mt-4 flex gap-2">
       <button type="button" onClick={() => void start()} disabled={busy || status?.running === true || !database || target < 1} className="rounded-full bg-[#48A157] px-4 py-2 text-[11px] font-semibold text-white disabled:opacity-50">Generar cédulas</button>
       <button type="button" onClick={() => void stop()} disabled={busy || status?.running !== true} className="rounded-full bg-[#1a1f2e] px-4 py-2 text-[11px] font-semibold text-white disabled:opacity-50">Detener</button>
